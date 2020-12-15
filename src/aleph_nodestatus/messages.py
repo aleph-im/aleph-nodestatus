@@ -33,7 +33,7 @@ async def process_message_history(tags, message_types, api_server,
                 'contentTypes': ','.join(message_types),
                 'pagination': request_count,
                 'sort_order': request_sort
-                }) as resp:
+        }) as resp:
             items = await resp.json()
             messages = items['messages']
             if request_sort == '-1':
@@ -56,3 +56,8 @@ async def process_message_history(tags, message_types, api_server,
 
                 if earliest is not None and earliest >= min_height:
                     yield earliest, message
+
+
+async def set_status(account, nodes):
+    await create_aggregate(
+        account, 'nodes', nodes, channel=settings.aleph_channel)
