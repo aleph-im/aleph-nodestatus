@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     
     staking_threshold: int = 10000
     node_threshold: int = 200000
+    node_activation: int = 500000
 
     node_post_type: str = "corechan-operation"
     staker_post_type: str = "corechan-delegation"

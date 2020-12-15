@@ -5,8 +5,9 @@ from .utils import merge
 import asyncio
 
 
-NODE_AMT = settings.node_threshold * DECIMALS
-STAKING_AMT = settings.staking_threshold * DECIMALS
+NODE_AMT = settings.node_threshold
+STAKING_AMT = settings.staking_threshold
+ACTIVATION_AMT = settings.node_activation
 
 
 async def prepare_items(item_type, iterator):
@@ -27,6 +28,10 @@ class NodesStatus:
         node_info['stakers'] = {addr: self.balances[addr]
                                 for addr in node_info['stakers'].keys()}
         node_info['total_staked'] = sum(node_info['stakers'].values())
+        if node_info['total_staked'] >= ACTIVATION_AMT:
+            node_info['status'] = 'active'
+        else:
+            node_info['status'] = 'waiting'
 
     async def remove_node(self, node_hash):
         node = self.nodes[node_hash]
@@ -48,18 +53,20 @@ class NodesStatus:
             changed = True
             if evt_type == 'balance-update':
                 balances, changed_addresses = content
+                self.balances = {addr: bal/DECIMALS
+                                 for addr, bal in balances.items()}
                 for addr in changed_addresses:
                     if addr in self.address_nodes:
-                        if balances[addr] < NODE_AMT:
+                        if self.balances[addr] < NODE_AMT:
                             print(f"{addr}: should delete that node "
-                                  f"({balances[addr]/DECIMALS}).")
+                                  f"({self.balances[addr]}).")
 
                             await self.remove_node(self.address_nodes[addr])
 
                     elif addr in self.address_staking:
-                        if balances[addr] < STAKING_AMT:
+                        if self.balances[addr] < STAKING_AMT:
                             print(f"{addr}: should kill its stake "
-                                  f"({balances[addr]/DECIMALS}).")
+                                  f"({self.balances[addr]}).")
                             await self.remove_stake(addr)
                         else:
                             await self.update_node_stats(
@@ -89,7 +96,7 @@ class NodesStatus:
                     # Ignore creation if there is a node already or imbalance
                     if (post_action == "create-node"
                             and address not in self.address_nodes
-                            and balances[address] > NODE_AMT):
+                            and self.balances[address] > NODE_AMT):
                         details = post_content.get('details', {})
                         new_node = {
                             'hash': content['item_hash'],
@@ -99,7 +106,8 @@ class NodesStatus:
                             'multiaddress': details.get('multiaddress', ''),
                             'stakers': {},
                             'total_staked': 0,
-                            'status': 'waiting'
+                            'status': 'waiting',
+                            'time': content['time']
                         }
                         self.address_nodes[address] = content['item_hash']
                         self.nodes[content['item_hash']] = new_node
@@ -119,12 +127,12 @@ class NodesStatus:
 
                 elif post_type == settings.staker_post_type:
                     if (post_action == "stake"
-                            and balances[address] > STAKING_AMT
+                            and self.balances[address] > STAKING_AMT
                             and ref is not None and ref in self.nodes):
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
-                        self.nodes[ref][address] = balances[address]
+                        self.nodes[ref][address] = self.balances[address]
                         self.address_staking[address] = ref
                         await self.update_node_stats(ref)
 
