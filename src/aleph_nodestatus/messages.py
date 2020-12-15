@@ -1,23 +1,58 @@
 import aiohttp
+from hexbytes import HexBytes
+from functools import lru_cache
+from collections import deque
 from .settings import settings
+from .ethereum import get_web3
+from aleph_client.chains.ethereum import ETHAccount
+from aleph_client.asynchronous import create_aggregate
 
 
-async def process_message_history(tags, message_types, api_server):
+@lru_cache(maxsize=2)
+def get_aleph_account():
+    if settings.ethereum_pkey:
+        pri_key = HexBytes(settings.ethereum_pkey)
+        account = ETHAccount(pri_key)
+        return account
+    else:
+        return None
+
+
+UNCONFIRMED_MESSAGES = deque([], maxlen=500)
+
+
+async def process_message_history(tags, message_types, api_server,
+                                  min_height=0, request_count=100000,
+                                  request_sort='1'):
+    web3 = get_web3()
+    last_block = web3.eth.blockNumber
     async with aiohttp.ClientSession() as session:
         async with session.get(f'{api_server}/api/v0/messages.json', params={
                 'msgType': 'POST',
                 'tags': ','.join(tags),
                 'contentTypes': ','.join(message_types),
-                'pagination': 100000,
-                'sort_order': '1'
+                'pagination': request_count,
+                'sort_order': request_sort
                 }) as resp:
             items = await resp.json()
-            print(items)
+            messages = items['messages']
+            if request_sort == '-1':
+                messages = reversed(messages)
+
             for message in items['messages']:
+                if message['item_hash'] in UNCONFIRMED_MESSAGES:
+                    continue
+
                 earliest = None
                 for conf in message.get('confirmations', []):
                     if conf['chain'] == 'ETH':
                         if earliest is None or conf['height'] < earliest:
                             earliest = conf['height']
-                if earliest is not None:
+                # print(earliest, min_height)
+                if earliest is None:
+                    # let's assign the current block height... (ugly)
+                    earliest = last_block
+                    UNCONFIRMED_MESSAGES.append(message['item_hash'])
+
+                if earliest is not None and earliest >= min_height:
                     yield earliest, message
