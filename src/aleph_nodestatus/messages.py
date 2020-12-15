@@ -60,4 +60,5 @@ async def process_message_history(tags, message_types, api_server,
 
 async def set_status(account, nodes):
     await create_aggregate(
-        account, 'nodes', nodes, channel=settings.aleph_channel)
+        account, 'corechannel',
+        {'nodes': list(nodes.values())}, channel=settings.aleph_channel)
