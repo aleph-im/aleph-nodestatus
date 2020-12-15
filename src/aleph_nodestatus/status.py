@@ -49,15 +49,15 @@ async def process():
     ]
 
     # Initialize the state machine
-    nodes = []
+    nodes = {}
     address_nodes = {}
     address_staking = {}
     balances = {}
 
     async for height, (evt_type, content) in merge(*iterators):
+        changed = True
         if evt_type == 'balance-update':
             balances, changed_addresses = content
-            print({addr: balances[addr] for addr in changed_addresses})
             for addr in changed_addresses:
                 if addr in address_nodes:
                     if balances[addr] < NODE_AMT:
@@ -67,7 +67,7 @@ async def process():
                         await remove_node(address_nodes[addr], address_nodes,
                                           address_staking, nodes)
 
-                if addr in address_staking:
+                elif addr in address_staking:
                     if balances[addr] < STAKING_AMT:
                         print(f"{addr}: should kill its stake "
                               f"({balances[addr]/DECIMALS}).")
@@ -76,6 +76,9 @@ async def process():
                     else:
                         await update_node_stats(balances,
                                                 nodes[address_staking[addr]])
+                        
+                else:
+                    changed = False
 
         elif evt_type == 'staking-update':
             message_content = content['content']
@@ -99,12 +102,13 @@ async def process():
                 if (post_action == "create-node"
                         and address not in address_nodes
                         and balances[address] > NODE_AMT):
+                    details = post_content.get('details', {})
                     new_node = {
                         'hash': content['item_hash'],
                         'owner': address,
-                        'reward': post_content.get('reward_address', address),
-                        'name': post_content.get('name', ''),
-                        'multiaddress': post_content.get('multiaddress', ''),
+                        'reward': details.get('reward_address', address),
+                        'name': details.get('name', ''),
+                        'multiaddress': details.get('multiaddress', ''),
                         'stakers': {},
                         'total_staked': 0,
                         'status': 'waiting'
@@ -141,4 +145,6 @@ async def process():
                       and existing_staking == ref):
                     await remove_stake(address, address_staking,
                                        nodes, balances)
-                        
+        if changed:
+            print(height, nodes)
+    
