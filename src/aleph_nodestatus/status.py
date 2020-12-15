@@ -96,7 +96,7 @@ class NodesStatus:
                     # Ignore creation if there is a node already or imbalance
                     if (post_action == "create-node"
                             and address not in self.address_nodes
-                            and self.balances[address] > NODE_AMT):
+                            and self.balances[address] >= NODE_AMT):
                         details = post_content.get('details', {})
                         new_node = {
                             'hash': content['item_hash'],
@@ -121,18 +121,14 @@ class NodesStatus:
                             if ref == existing_node:
                                 await self.remove_node(ref)
 
-                    else:
-                        print("This message wasn't registered (invalid)")
-                        changed = False
-
-                elif post_type == settings.staker_post_type:
-                    if (post_action == "stake"
-                            and self.balances[address] > STAKING_AMT
+                    elif (post_action == "stake"
+                            and self.balances[address] >= STAKING_AMT
                             and ref is not None and ref in self.nodes):
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
-                        self.nodes[ref][address] = self.balances[address]
+                        self.nodes[ref]['stakers'][address] =\
+                            self.balances[address]
                         self.address_staking[address] = ref
                         await self.update_node_stats(ref)
 
@@ -141,6 +137,10 @@ class NodesStatus:
                           and ref is not None
                           and existing_staking == ref):
                         await self.remove_stake(address)
+
+                    else:
+                        print("This message wasn't registered (invalid)")
+                        changed = False
 
             if changed:
                 print(height, self.nodes, self.balances)
@@ -161,8 +161,7 @@ async def process():
             settings.ethereum_token_contract, settings.ethereum_min_height)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
-            [settings.node_post_type,
-             settings.staker_post_type],
+            [settings.node_post_type],
             settings.aleph_api_server))
     ]
     nodes = None
@@ -180,8 +179,7 @@ async def process():
             prepare_items('staking-update',
                           process_message_history(
                               [settings.filter_tag],
-                              [settings.node_post_type,
-                               settings.staker_post_type],
+                              [settings.node_post_type],
                               settings.aleph_api_server,
                               min_height=last_height,
                               request_count=1000,
