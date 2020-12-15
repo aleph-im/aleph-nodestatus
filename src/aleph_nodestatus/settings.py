@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     node_activation: int = 500000
 
     node_post_type: str = "corechan-operation"
-    staker_post_type: str = "corechan-delegation"
+    # staker_post_type: str = "corechan-delegation"
     filter_tag: str = "mainnet"
 
     class Config:
