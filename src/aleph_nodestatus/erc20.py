@@ -55,4 +55,5 @@ async def process_contract_history(contract_address, start_height):
         changed_addresses.add(args['_to'])
         last_height = height
 
-    yield (end_height, (balances, changed_addresses))
+    if len(changed_addresses):
+        yield (last_height, (balances, changed_addresses))
