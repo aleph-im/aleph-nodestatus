@@ -18,30 +18,17 @@ Note: This skeleton file can be safely removed if not needed!
 import argparse
 import sys
 import logging
+import asyncio
 
 from aleph_nodestatus import __version__
+from .ethereum import get_account
+from .status import process
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
 __license__ = "mit"
 
-_logger = logging.getLogger(__name__)
-
-
-def fib(n):
-    """Fibonacci example function
-
-    Args:
-      n (int): integer
-
-    Returns:
-      int: n-th Fibonacci number
-    """
-    assert n > 0
-    a, b = 1, 1
-    for i in range(n-1):
-        a, b = b, a+b
-    return a
+LOGGER = logging.getLogger(__name__)
 
 
 def parse_args(args):
@@ -54,16 +41,11 @@ def parse_args(args):
       :obj:`argparse.Namespace`: command line parameters namespace
     """
     parser = argparse.ArgumentParser(
-        description="Just a Fibonacci demonstration")
+        description="Aleph.im node status updater")
     parser.add_argument(
         "--version",
         action="version",
         version="aleph-nodestatus {ver}".format(ver=__version__))
-    parser.add_argument(
-        dest="n",
-        help="n-th Fibonacci number",
-        type=int,
-        metavar="INT")
     parser.add_argument(
         "-v",
         "--verbose",
@@ -92,6 +74,8 @@ def setup_logging(loglevel):
                         format=logformat, datefmt="%Y-%m-%d %H:%M:%S")
 
 
+
+
 def main(args):
     """Main entry point allowing external calls
 
@@ -100,9 +84,9 @@ def main(args):
     """
     args = parse_args(args)
     setup_logging(args.loglevel)
-    _logger.debug("Starting crazy calculations...")
-    print("The {}-th Fibonacci number is {}".format(args.n, fib(args.n)))
-    _logger.info("Script ends here")
+    account = get_account()
+    LOGGER.debug(f"Starting with ETH account {account.address}")
+    asyncio.run(process())
 
 
 def run():
