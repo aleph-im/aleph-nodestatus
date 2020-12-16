@@ -53,8 +53,9 @@ async def process_message_history(tags, message_types, api_server,
                     # let's assign the current block height... (ugly)
                     earliest = last_block
                     UNCONFIRMED_MESSAGES.append(message['item_hash'])
+                    yield earliest, message
 
-                if earliest is not None and earliest >= min_height:
+                elif earliest >= min_height:
                     yield earliest, message
 
 
