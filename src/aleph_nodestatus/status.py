@@ -128,7 +128,8 @@ class NodesStatus:
 
                     elif (post_action == "stake"
                             and self.balances.get(address, 0) >= STAKING_AMT
-                            and ref is not None and ref in self.nodes):
+                            and ref is not None and ref in self.nodes
+                            and address not in self.address_nodes):
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
