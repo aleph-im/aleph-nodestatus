@@ -190,7 +190,8 @@ async def process():
                 prepare_items('balance-update',
                               process_contract_history(
                                   settings.ethereum_token_contract,
-                                  last_height)))
+                                  last_height,
+                                  balances=state_machine.balances.copy())))
         nodes = None
         async for height, nodes in state_machine.process(iterators):
             pass

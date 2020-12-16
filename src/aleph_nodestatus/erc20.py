@@ -26,14 +26,16 @@ def get_contract(address, web3):
                              abi=get_contract_abi())
 
 
-async def process_contract_history(contract_address, start_height):
+async def process_contract_history(contract_address, start_height,
+                                   balances=None):
     web3 = get_web3()
     contract = get_contract(contract_address, web3)
     abi = contract.events.Transfer._get_event_abi()
     topic = construct_event_topic_set(abi, web3.codec)
-    balances = {
-        settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
-    }
+    if balances is None:
+        balances = {
+            settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
+        }
     last_height = start_height
     end_height = web3.eth.blockNumber
 
