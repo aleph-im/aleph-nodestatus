@@ -25,7 +25,7 @@ class NodesStatus:
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
-        node_info['stakers'] = {addr: self.balances[addr]
+        node_info['stakers'] = {addr: self.balances.get(addr, 0)
                                 for addr in node_info['stakers'].keys()}
         node_info['total_staked'] = sum(node_info['stakers'].values())
         if node_info['total_staked'] >= ACTIVATION_AMT:
@@ -57,16 +57,16 @@ class NodesStatus:
                                  for addr, bal in balances.items()}
                 for addr in changed_addresses:
                     if addr in self.address_nodes:
-                        if self.balances[addr] < NODE_AMT:
+                        if self.balances.get(addr, 0) < NODE_AMT:
                             print(f"{addr}: should delete that node "
-                                  f"({self.balances[addr]}).")
+                                  f"({self.balances.get(addr, 0)}).")
 
                             await self.remove_node(self.address_nodes[addr])
 
                     elif addr in self.address_staking:
-                        if self.balances[addr] < STAKING_AMT:
+                        if self.balances.get(addr, 0) < STAKING_AMT:
                             print(f"{addr}: should kill its stake "
-                                  f"({self.balances[addr]}).")
+                                  f"({self.balances.get(addr, 0)}).")
                             await self.remove_stake(addr)
                         else:
                             await self.update_node_stats(
@@ -96,7 +96,7 @@ class NodesStatus:
                     # Ignore creation if there is a node already or imbalance
                     if (post_action == "create-node"
                             and address not in self.address_nodes
-                            and self.balances[address] >= NODE_AMT):
+                            and self.balances.get(address, 0) >= NODE_AMT):
                         details = post_content.get('details', {})
                         new_node = {
                             'hash': content['item_hash'],
