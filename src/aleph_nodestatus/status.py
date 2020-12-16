@@ -22,6 +22,8 @@ class NodesStatus:
         self.address_staking = {}
         self.balances = {}
         self.last_checked_height = initial_height
+        self.last_balance_height = initial_height
+        self.last_message_height = initial_height
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
@@ -75,6 +77,9 @@ class NodesStatus:
                     else:
                         changed = False
 
+                if height > self.last_balance_height:
+                    self.last_balance_height = height
+
             elif evt_type == 'staking-update':
                 message_content = content['content']
                 post_type = message_content['type']
@@ -122,7 +127,7 @@ class NodesStatus:
                                 await self.remove_node(ref)
 
                     elif (post_action == "stake"
-                            and self.balances[address] >= STAKING_AMT
+                            and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes):
                         if address in self.address_staking:
                             # remove any existing stake
@@ -141,6 +146,9 @@ class NodesStatus:
                     else:
                         print("This message wasn't registered (invalid)")
                         changed = False
+
+                if height > self.last_message_height:
+                    self.last_message_height = height
 
             if changed:
                 print(height, self.nodes, self.balances)
@@ -174,14 +182,13 @@ async def process():
     i = 0
     while True:
         i += 1
-        last_height = state_machine.last_checked_height+1
         iterators = [
             prepare_items('staking-update',
                           process_message_history(
                               [settings.filter_tag],
                               [settings.node_post_type],
                               settings.aleph_api_server,
-                              min_height=last_height,
+                              min_height=state_machine.last_message_height+1,
                               request_count=1000,
                               request_sort='-1'))
         ]
@@ -190,8 +197,11 @@ async def process():
                 prepare_items('balance-update',
                               process_contract_history(
                                   settings.ethereum_token_contract,
-                                  last_height,
-                                  balances=state_machine.balances.copy())))
+                                  state_machine.last_balance_height+1,
+                                  balances={addr: bal*DECIMALS
+                                            for addr, bal
+                                            in state_machine.balances.items()})
+            ))
         nodes = None
         async for height, nodes in state_machine.process(iterators):
             pass
