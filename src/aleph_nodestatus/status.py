@@ -174,7 +174,7 @@ async def process():
     i = 0
     while True:
         i += 1
-        last_height = state_machine.last_checked_height+1
+        last_height = state_machine.last_checked_height
         iterators = [
             prepare_items('staking-update',
                           process_message_history(
