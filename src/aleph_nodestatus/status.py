@@ -152,7 +152,6 @@ class NodesStatus:
                     self.last_message_height = height
 
             if changed:
-                print(height, self.nodes, self.balances)
                 yield(height, self.nodes)
 
             if height > self.last_checked_height:
