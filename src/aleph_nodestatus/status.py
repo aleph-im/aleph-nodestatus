@@ -192,7 +192,7 @@ async def process():
             settings.ethereum_token_contract, settings.ethereum_min_height)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
-            [settings.node_post_type],
+            [settings.node_post_type, 'amend'],
             settings.aleph_api_server))
     ]
     nodes = None
@@ -209,7 +209,7 @@ async def process():
             prepare_items('staking-update',
                           process_message_history(
                               [settings.filter_tag],
-                              [settings.node_post_type],
+                              [settings.node_post_type, 'amend'],
                               settings.aleph_api_server,
                               min_height=state_machine.last_message_height+1,
                               request_count=1000,
