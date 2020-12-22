@@ -60,6 +60,16 @@ async def process_message_history(tags, message_types, api_server,
 
 
 async def set_status(account, nodes):
+    nodes = [
+        {**node.copy(), **{
+            'total_staked': str(node['total_staked']),
+            'stakers': {
+                addr: str(amt)
+                for addr, amt in node['stakers'].items()
+            }
+        }}
+        for node in nodes.values()
+    ]
     await create_aggregate(
         account, 'corechannel',
-        {'nodes': list(nodes.values())}, channel=settings.aleph_channel)
+        {'nodes': nodes}, channel=settings.aleph_channel)

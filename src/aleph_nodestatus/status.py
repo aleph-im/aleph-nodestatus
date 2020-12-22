@@ -5,9 +5,16 @@ from .utils import merge
 import asyncio
 
 
-NODE_AMT = settings.node_threshold
-STAKING_AMT = settings.staking_threshold
-ACTIVATION_AMT = settings.node_activation
+NODE_AMT = settings.node_threshold * DECIMALS
+STAKING_AMT = settings.staking_threshold * DECIMALS
+ACTIVATION_AMT = settings.node_activation * DECIMALS
+
+EDITABLE_FIELDS = [
+    'name',
+    'multiaddress',
+    'picture',
+    'description'
+]
 
 
 async def prepare_items(item_type, iterator):
@@ -55,7 +62,7 @@ class NodesStatus:
             changed = True
             if evt_type == 'balance-update':
                 balances, changed_addresses = content
-                self.balances = {addr: bal/DECIMALS
+                self.balances = {addr: bal
                                  for addr, bal in balances.items()}
                 for addr in changed_addresses:
                     if addr in self.address_nodes:
@@ -106,14 +113,16 @@ class NodesStatus:
                         new_node = {
                             'hash': content['item_hash'],
                             'owner': address,
-                            'reward': details.get('reward_address', address),
-                            'name': details.get('name', ''),
-                            'multiaddress': details.get('multiaddress', ''),
+                            'reward': details.get('reward', address),
                             'stakers': {},
                             'total_staked': 0,
                             'status': 'waiting',
                             'time': content['time']
                         }
+                        
+                        for field in EDITABLE_FIELDS:
+                            new_node[field] = details.get(field, '')
+                            
                         self.address_nodes[address] = content['item_hash']
                         self.nodes[content['item_hash']] = new_node
                         if address in self.address_staking:
@@ -147,7 +156,21 @@ class NodesStatus:
                     else:
                         print("This message wasn't registered (invalid)")
                         changed = False
-
+                        
+                elif (post_type == 'amend'
+                      and address in self.address_nodes
+                      and ref is not None
+                      and ref in self.nodes
+                      and ref == existing_node):
+                    node = self.nodes[ref]
+                    details = post_content.get('details', {})
+                    for field in EDITABLE_FIELDS:
+                        node[field] = details.get(field, node.get(field, ''))
+                    
+                else:
+                    print("This message wasn't registered (invalid)")
+                    changed = False
+                        
                 if height > self.last_message_height:
                     self.last_message_height = height
 
@@ -198,7 +221,7 @@ async def process():
                               process_contract_history(
                                   settings.ethereum_token_contract,
                                   state_machine.last_balance_height+1,
-                                  balances={addr: bal*DECIMALS
+                                  balances={addr: bal
                                             for addr, bal
                                             in state_machine.balances.items()})
             ))
