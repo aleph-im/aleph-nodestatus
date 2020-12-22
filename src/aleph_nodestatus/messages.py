@@ -4,6 +4,7 @@ from functools import lru_cache
 from collections import deque
 from .settings import settings
 from .ethereum import get_web3
+from .erc20 import DECIMALS
 from aleph_client.chains.ethereum import ETHAccount
 from aleph_client.asynchronous import create_aggregate
 
@@ -62,9 +63,9 @@ async def process_message_history(tags, message_types, api_server,
 async def set_status(account, nodes):
     nodes = [
         {**node.copy(), **{
-            'total_staked': str(node['total_staked']),
+            'total_staked': node['total_staked']/DECIMALS,
             'stakers': {
-                addr: str(amt)
+                addr: amt/DECIMALS
                 for addr, amt in node['stakers'].items()
             }
         }}
