@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     ethereum_min_height: int = 10939070
     ethereum_decimals: int = 18
     ethereum_swap_fee: int = 10
+
+    reward_start_height: int = 11478000
     
     staking_threshold: int = 10000
     node_threshold: int = 200000
