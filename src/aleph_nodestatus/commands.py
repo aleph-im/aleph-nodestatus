@@ -64,10 +64,23 @@ def main(verbose):
 
 
 async def process_distribution(start_height, end_height, act=False):
+            
     account = get_account()
     LOGGER.debug(f"Starting with ETH account {account.address}")
 
-    reward_start, end_height, rewards = prepare_distribution(start_height, end_height)
+    if end_height == -1:
+        end_height = get_web3().eth.blockNumber
+
+    if start_height == -1:
+        last_end_height, dist = await get_latest_successful_distribution()
+
+        if last_end_height and dist:
+            start_height = last_end_height + 1
+        
+        else:
+            start_height = 0
+
+    reward_start, end_height, rewards = await prepare_distribution(start_height, end_height)
 
     distribution = dict(
         incentive="corechannel",
@@ -108,18 +121,6 @@ def distribute(verbose, act=False, start_height=-1, end_height=-1):
     """
     setup_logging(verbose)
     print(verbose, act, start_height, end_height)
-    
-    if end_height == -1:
-        end_height = get_web3().eth.blockNumber
-
-    if start_height == -1:
-        last_end_height, dist = get_latest_successful_distribution()
-
-        if last_end_height and dist:
-            start_height = last_end_height + 1
-        
-        else:
-            start_height = 0
     
     asyncio.run(process_distribution(start_height, end_height, act=act))
 

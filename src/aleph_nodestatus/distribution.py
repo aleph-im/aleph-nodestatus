@@ -55,7 +55,7 @@ async def get_latest_successful_distribution():
 async def prepare_distribution(start_height, end_height):
     state_machine = NodesStatus()
     account = get_aleph_account()
-    reward_start = max(settings.reward_start, start_height)
+    reward_start = max(settings.reward_start_height, start_height)
     web3 = get_web3()
 
     rewards = dict()
@@ -71,17 +71,22 @@ async def prepare_distribution(start_height, end_height):
     ]
     nodes = None
     # TODO: handle decay
-    nodes_rewards = settings.rewards_nodes_daily / settings.ethereum_blocks_per_day
+    nodes_rewards = settings.reward_nodes_daily / settings.ethereum_blocks_per_day
 
     def process_distribution(nodes, since, current):
         # Ignore if we aren't in distribution period yet.
         # Handle calculation for previous period now.
         block_count = current - since
+        LOGGER.debug(f"Calculating for block {current}, {block_count} blocks")
         active_nodes = [node for node
                         in nodes.values()
                         if node['status'] == 'active']
+        if not active_nodes:
+            return
+
         # TODO: handle decay
-        stakers_reward = (((math.log10(len(active_nodes))+1)/3) * settings.reward_stakers_daily_base) / settings.ethereum_blocks_per_day
+        per_day = ((math.log10(len(active_nodes))+1)/3) * settings.reward_stakers_daily_base
+        stakers_reward = (per_day / settings.ethereum_blocks_per_day) * block_count
 
         per_node = (nodes_rewards / len(active_nodes)) * block_count
         total_staked = sum([
@@ -99,18 +104,22 @@ async def prepare_distribution(start_height, end_height):
             rewards[reward_address] = rewards.get(reward_address, 0) + per_node
 
             for addr, value in node['stakers'].items():
-                rewards[addr] = rewards.get(addr, 0) + ((value / total_staked) * stakers_reward * block_count)
+                rewards[addr] = rewards.get(addr, 0) + ((value / total_staked) * stakers_reward)
 
     last_height = reward_start
     async for height, nodes in state_machine.process(iterators):
+        if height == last_height:
+            continue
+
         if height > end_height:
             break
         if height > reward_start:
             process_distribution(nodes, max(last_height, reward_start), height)
 
-        last_height = reward_start
+        last_height = height
 
     process_distribution(nodes, last_height, end_height)
+    LOGGER.info(f'Rewards from {reward_start} to {end_height}, total {sum(rewards.values())}')
     return reward_start, end_height, rewards
 
     
