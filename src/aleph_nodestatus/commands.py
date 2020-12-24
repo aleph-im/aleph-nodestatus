@@ -19,6 +19,7 @@ import argparse
 import sys
 import logging
 import asyncio
+import click
 
 from aleph_nodestatus import __version__
 from .ethereum import get_account
@@ -30,60 +31,27 @@ __license__ = "mit"
 
 LOGGER = logging.getLogger(__name__)
 
-
-def parse_args(args):
-    """Parse command line parameters
-
-    Args:
-      args ([str]): command line parameters as list of strings
-
-    Returns:
-      :obj:`argparse.Namespace`: command line parameters namespace
-    """
-    parser = argparse.ArgumentParser(
-        description="Aleph.im node status updater")
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="aleph-nodestatus {ver}".format(ver=__version__))
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        dest="loglevel",
-        help="set loglevel to INFO",
-        action="store_const",
-        const=logging.INFO)
-    parser.add_argument(
-        "-vv",
-        "--very-verbose",
-        dest="loglevel",
-        help="set loglevel to DEBUG",
-        action="store_const",
-        const=logging.DEBUG)
-    return parser.parse_args(args)
-
-
-def setup_logging(loglevel):
+def setup_logging(verbose):
     """Setup basic logging
 
     Args:
       loglevel (int): minimum loglevel for emitting messages
     """
+    loglevel = [logging.WARNING, logging.INFO, logging.DEBUG][verbose]
     logformat = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s"
     logging.basicConfig(level=loglevel, stream=sys.stdout,
                         format=logformat, datefmt="%Y-%m-%d %H:%M:%S")
 
 
 
-
-def main(args):
-    """Main entry point allowing external calls
-
-    Args:
-      args ([str]): command line parameter list
+@click.command()
+@click.option('-v', '--verbose', count=True)
+@click.version_option(version=__version__)
+def main(verbose):
+    """NodeStatus: Keeps an aggregate up to date with current nodes statuses
     """
-    args = parse_args(args)
-    setup_logging(args.loglevel)
+    setup_logging(verbose)
+    LOGGER.debug("Starting nodestatus")
     account = get_account()
     LOGGER.debug(f"Starting with ETH account {account.address}")
     asyncio.run(process())
