@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ethereum_decimals: int = 18
     ethereum_swap_fee: int = 10
     ethereum_blocks_per_day: int = 6500
+    ethereum_batch_size: int = 200
 
     reward_start_height: int = 11478000
     reward_nodes_daily: int = 15000

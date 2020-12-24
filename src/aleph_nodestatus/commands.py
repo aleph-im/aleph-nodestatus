@@ -20,10 +20,15 @@ import sys
 import logging
 import asyncio
 import click
+import math
 
 from aleph_nodestatus import __version__
-from .ethereum import get_account
+from .ethereum import get_account, get_web3, transfer_tokens
 from .status import process
+from .settings import settings
+from .distribution import (create_distribution_tx_post,
+                           get_latest_successful_distribution,
+                           prepare_distribution)
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
@@ -58,6 +63,38 @@ def main(verbose):
     asyncio.run(process())
 
 
+async def process_distribution(start_height, end_height, act=False):
+    account = get_account()
+    LOGGER.debug(f"Starting with ETH account {account.address}")
+
+    reward_start, end_height, rewards = prepare_distribution(start_height, end_height)
+
+    distribution = dict(
+        incentive="corechannel",
+        status="calculation",
+        start_height=reward_start,
+        end_height=end_height,
+        rewards=rewards
+    )
+
+    if act:
+        # distribution['status'] = ''
+        print("Doing distribution")
+        print(distribution)
+        distribution['status'] = 'distribution'
+
+        max_items = settings.ethereum_batch_size
+
+        distribution_list = list(rewards.items())
+
+        for i in range(math.ceil(len(distribution_list) / max_items)):
+            step_items = distribution_list[max_items*i:max_items*(i+1)]
+            print(f"doing batch {i} of {len(step_items)} items")
+            transfer_tokens(dict(step_items), metadata=distribution)
+
+    await create_distribution_tx_post(distribution)
+
+
 @click.command()
 @click.option('-v', '--verbose', count=True)
 @click.option('-a', '--act', help='Do actual batch transfer', is_flag=True)
@@ -71,6 +108,20 @@ def distribute(verbose, act=False, start_height=-1, end_height=-1):
     """
     setup_logging(verbose)
     print(verbose, act, start_height, end_height)
+    
+    if end_height == -1:
+        end_height = get_web3().eth.blockNumber
+
+    if start_height == -1:
+        last_end_height, dist = get_latest_successful_distribution()
+
+        if last_end_height and dist:
+            start_height = last_end_height + 1
+        
+        else:
+            start_height = 0
+    
+    asyncio.run(process_distribution(start_height, end_height, act=act))
 
 
 def run():

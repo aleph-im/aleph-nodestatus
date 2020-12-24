@@ -17,7 +17,7 @@ async def create_distribution_tx_post(distribution):
     post = await create_post(
         get_aleph_account(),
         distribution,
-        post_type='incentive-distribution',
+        post_type='staking-rewards-distribution',
         channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
     return post
