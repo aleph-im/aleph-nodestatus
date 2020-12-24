@@ -48,13 +48,29 @@ def setup_logging(verbose):
 @click.option('-v', '--verbose', count=True)
 @click.version_option(version=__version__)
 def main(verbose):
-    """NodeStatus: Keeps an aggregate up to date with current nodes statuses
+    """
+    NodeStatus: Keeps an aggregate up to date with current nodes statuses
     """
     setup_logging(verbose)
     LOGGER.debug("Starting nodestatus")
     account = get_account()
     LOGGER.debug(f"Starting with ETH account {account.address}")
     asyncio.run(process())
+
+
+@click.command()
+@click.option('-v', '--verbose', count=True)
+@click.option('-a', '--act', help='Do actual batch transfer', is_flag=True)
+@click.option('-s', '--start-height:',
+              'start_height', help='Starting height', default=-1)
+@click.option('-e', '--start-height',
+              'end_height', help='Ending height', default=-1)
+def distribute(verbose, act=False, start_height=-1, end_height=-1):
+    """
+    Staking distribution script.
+    """
+    setup_logging(verbose)
+    print(verbose, act, start_height, end_height)
 
 
 def run():

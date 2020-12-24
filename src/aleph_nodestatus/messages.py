@@ -18,13 +18,17 @@ def get_aleph_account():
     else:
         return None
 
+@lru_cache(maxsize=32)
+def get_aleph_address():
+    return (get_aleph_account()).get_address()
+
 
 UNCONFIRMED_MESSAGES = deque([], maxlen=500)
 
 
 async def process_message_history(tags, message_types, api_server,
                                   min_height=0, request_count=100000,
-                                  request_sort='1'):
+                                  request_sort='1', yield_unconfirmed=True):
     web3 = get_web3()
     last_block = web3.eth.blockNumber
     async with aiohttp.ClientSession() as session:
@@ -50,7 +54,7 @@ async def process_message_history(tags, message_types, api_server,
                         if earliest is None or conf['height'] < earliest:
                             earliest = conf['height']
                 # print(earliest, min_height)
-                if earliest is None:
+                if earliest is None and yield_unconfirmed:
                     # let's assign the current block height... (ugly)
                     earliest = last_block
                     UNCONFIRMED_MESSAGES.append(message['item_hash'])
