@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ethereum_blocks_per_day: int = 6500
     ethereum_batch_size: int = 200
 
-    reward_start_height: int = 11478000
+    reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
     
