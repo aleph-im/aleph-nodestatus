@@ -6,6 +6,7 @@ from pathlib import Path
 from eth_account import Account
 from hexbytes import HexBytes
 from functools import lru_cache
+import aiohttp
 from .settings import settings
 
 import logging
@@ -45,9 +46,15 @@ def get_token_contract(web3):
     return tokens
 
 
-def get_gas_price():
-    w3 = get_web3()
-    return w3.eth.generateGasPrice()
+async def get_gas_price():
+    if settings.ethereum_chain_id == 1:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://www.gasnow.org/api/v3/gas/price?utm_source=alephim') as resp:
+                content = await resp.json()
+                return content['data']['standard']
+    else:
+        w3 = get_web3()
+        return w3.eth.generateGasPrice()
 
 
 @lru_cache(maxsize=2)
@@ -70,7 +77,7 @@ def transfer_tokens(targets, metadata=None):
     total = sum(targets.values())
 
     LOGGER.info(f"Preparing transfer of {total} to {addr_count}")
-    gas_price = get_gas_price()
+    gas_price = await get_gas_price()
 
     if NONCE is None:
         NONCE = w3.eth.getTransactionCount(account.address)
@@ -93,7 +100,7 @@ def transfer_tokens(targets, metadata=None):
         #     })
         # print(gas)
         tx = tx.buildTransaction({
-            'chainId': 1,
+            'chainId': settings.ethereum_chain_id,
             'gas': 20000+(30000*len(targets)),
             'gasPrice': gas_price,
             'nonce': NONCE,
