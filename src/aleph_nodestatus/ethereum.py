@@ -67,7 +67,7 @@ def get_account():
         return None
 
 
-def transfer_tokens(targets, metadata=None):
+async def transfer_tokens(targets, metadata=None):
     global NONCE
     w3 = get_web3()
     contract = get_token_contract(w3)

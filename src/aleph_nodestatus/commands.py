@@ -103,7 +103,7 @@ async def process_distribution(start_height, end_height, act=False):
         for i in range(math.ceil(len(distribution_list) / max_items)):
             step_items = distribution_list[max_items*i:max_items*(i+1)]
             print(f"doing batch {i} of {len(step_items)} items")
-            transfer_tokens(dict(step_items), metadata=distribution)
+            await transfer_tokens(dict(step_items), metadata=distribution)
 
     await create_distribution_tx_post(distribution)
 
