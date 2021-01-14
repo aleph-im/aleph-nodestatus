@@ -34,7 +34,10 @@ class NodesStatus:
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
-        node_info['stakers'] = {addr: self.balances.get(addr, 0)
+        node_info['stakers'] = {addr: int(
+                                        self.balances.get(addr, 0) /
+                                        len(self.address_staking.get(addr, [])
+                                        )) 
                                 for addr in node_info['stakers'].keys()}
         node_info['total_staked'] = sum(node_info['stakers'].values())
         if node_info['total_staked'] >= ACTIVATION_AMT:
@@ -49,13 +52,28 @@ class NodesStatus:
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
 
-    async def remove_stake(self, staker):
-        node_hash = self.address_staking[staker]
-        node = self.nodes[node_hash]
-        if staker in node['stakers']:
-            node['stakers'].pop(staker)
-        await self.update_node_stats(node_hash)
-        self.address_staking.pop(staker)
+    async def remove_stake(self, staker, node_hash=None):
+        """ Removes a staker's stake. If a node_hash isn't given, remove all.
+        """
+        # Let's copy it so we can iterate after modification
+        node_hashes = self.address_staking[staker].copy()
+        
+        if node_hash is not None:
+            # Remove specific stake so the total is ok (used in
+            # update_node_stats)
+            self.address_staking[staker].remove(node_hash)
+            
+        for nhash in node_hashes:
+            if node_hash is None or nhash == node_hash:
+                # if we should remove that stake
+                node = self.nodes[nhash]
+                if staker in node['stakers']:
+                    node['stakers'].pop(staker)
+            await self.update_node_stats(nhash)
+
+        if node_hash is None or len(self.address_staking[staker]) == 0:
+            # if we have been asked to remove it all or there is no stake left
+            self.address_staking.pop(staker)
 
     async def process(self, iterators):
         async for height, (evt_type, content) in merge(*iterators):
@@ -78,8 +96,8 @@ class NodesStatus:
                                   f"({self.balances.get(addr, 0)}).")
                             await self.remove_stake(addr)
                         else:
-                            await self.update_node_stats(
-                                self.address_staking[addr])
+                            for nhash in self.address_staking[addr]:
+                                await self.update_node_stats(nhash)
 
                     else:
                         changed = False
@@ -100,7 +118,7 @@ class NodesStatus:
                       content['content']['content'])
 
                 existing_node = self.address_nodes.get(address, None)
-                existing_staking = self.address_staking.get(address, None)
+                existing_staking = self.address_staking.get(address, list())
                 ref = message_content.get('ref', None)
 
                 if post_type == settings.node_post_type:
@@ -144,13 +162,27 @@ class NodesStatus:
                             await self.remove_stake(address)
                         self.nodes[ref]['stakers'][address] =\
                             self.balances[address]
-                        self.address_staking[address] = ref
+                        self.address_staking[address] = [ref, ]
                         await self.update_node_stats(ref)
+                        
+                    elif (post_action == "stake-split"
+                            and self.balances.get(address, 0) >= STAKING_AMT
+                            and ref is not None and ref in self.nodes
+                            and address not in self.address_nodes
+                            and address in self.address_staking
+                            and ref not in self.address_staking[address]):
+                        self.address_staking[address].append(ref)
+                        self.nodes[ref]['stakers'][address] =\
+                            int(self.balances[address] /
+                                len(self.address_staking[address]))
+                        for node_ref in self.address_staking:
+                            await self.update_node_stats(node_ref)
 
                     elif (post_action == "unstake"
                           and address in self.address_staking
                           and ref is not None
-                          and existing_staking == ref):
+                          and ref in existing_staking):
+                        
                         await self.remove_stake(address)
 
                     else:
