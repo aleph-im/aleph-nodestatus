@@ -40,7 +40,7 @@ class NodesStatus:
                                         )) 
                                 for addr in node_info['stakers'].keys()}
         node_info['total_staked'] = sum(node_info['stakers'].values())
-        if node_info['total_staked'] >= ACTIVATION_AMT:
+        if node_info['total_staked'] >= (ACTIVATION_AMT-(1*DECIMALS)):
             node_info['status'] = 'active'
         else:
             node_info['status'] = 'waiting'
@@ -169,13 +169,16 @@ class NodesStatus:
                             and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes
                             and address not in self.address_nodes
-                            and address in self.address_staking
-                            and ref not in self.address_staking[address]):
+                            and ref not in existing_staking):
+                        if address not in self.address_staking:
+                            self.address_staking[address] = list()
+                            
                         self.address_staking[address].append(ref)
                         self.nodes[ref]['stakers'][address] =\
                             int(self.balances[address] /
                                 len(self.address_staking[address]))
-                        for node_ref in self.address_staking:
+                            
+                        for node_ref in self.address_staking[address]:
                             await self.update_node_stats(node_ref)
 
                     elif (post_action == "unstake"
@@ -183,7 +186,7 @@ class NodesStatus:
                           and ref is not None
                           and ref in existing_staking):
                         
-                        await self.remove_stake(address)
+                        await self.remove_stake(address, ref)
 
                     else:
                         print("This message wasn't registered (invalid)")
