@@ -34,6 +34,7 @@ class NodesStatus:
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
+                  
         node_info['stakers'] = {addr: int(
                                         self.balances.get(addr, 0) /
                                         len(self.address_staking.get(addr, [])
@@ -48,7 +49,9 @@ class NodesStatus:
     async def remove_node(self, node_hash):
         node = self.nodes[node_hash]
         for staker in node['stakers'].keys():
-            del self.address_staking[staker]
+            self.address_staking[staker].remove(node_hash)
+            if len(self.address_staking[staker]) == 0:
+                del self.address_staking[staker]
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
 
