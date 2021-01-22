@@ -13,7 +13,8 @@ EDITABLE_FIELDS = [
     'name',
     'multiaddress',
     'picture',
-    'description'
+    'description',
+    'reward'
 ]
 
 
