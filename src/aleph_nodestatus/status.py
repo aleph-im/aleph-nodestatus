@@ -13,6 +13,7 @@ EDITABLE_FIELDS = [
     'name',
     'multiaddress',
     'picture',
+    'banner',
     'description',
     'reward'
 ]
@@ -143,6 +144,10 @@ class NodesStatus:
                         }
                         
                         for field in EDITABLE_FIELDS:
+                            if field == 'reward':
+                                # special case already handled
+                                continue
+                            
                             new_node[field] = details.get(field, '')
                             
                         self.address_nodes[address] = content['item_hash']
