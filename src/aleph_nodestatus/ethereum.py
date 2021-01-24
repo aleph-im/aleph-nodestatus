@@ -101,7 +101,7 @@ async def transfer_tokens(targets, metadata=None):
         # print(gas)
         tx = tx.buildTransaction({
             'chainId': settings.ethereum_chain_id,
-            'gas': 650000+(9500*len(targets)),
+            'gas': 30000+(20000*len(targets)),
             'gasPrice': gas_price,
             'nonce': NONCE,
         })
