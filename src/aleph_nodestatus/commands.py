@@ -113,7 +113,7 @@ async def process_distribution(start_height, end_height, act=False):
 @click.option('-a', '--act', help='Do actual batch transfer', is_flag=True)
 @click.option('-s', '--start-height:',
               'start_height', help='Starting height', default=-1)
-@click.option('-e', '--start-height',
+@click.option('-e', '--end-height',
               'end_height', help='Ending height', default=-1)
 def distribute(verbose, act=False, start_height=-1, end_height=-1):
     """
