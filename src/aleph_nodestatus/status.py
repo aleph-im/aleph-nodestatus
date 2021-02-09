@@ -15,7 +15,8 @@ EDITABLE_FIELDS = [
     'picture',
     'banner',
     'description',
-    'reward'
+    'reward',
+    'locked'
 ]
 
 
@@ -137,6 +138,7 @@ class NodesStatus:
                             'hash': content['item_hash'],
                             'owner': address,
                             'reward': details.get('reward', address),
+                            'locked': bool(details.get('locked', False)),
                             'stakers': {},
                             'total_staked': 0,
                             'status': 'waiting',
@@ -144,7 +146,7 @@ class NodesStatus:
                         }
                         
                         for field in EDITABLE_FIELDS:
-                            if field == 'reward':
+                            if field in ['reward', 'locked']:
                                 # special case already handled
                                 continue
                             
@@ -165,7 +167,8 @@ class NodesStatus:
                     elif (post_action == "stake"
                             and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes
-                            and address not in self.address_nodes):
+                            and address not in self.address_nodes
+                            and not self.nodes[ref]['locked']):
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
@@ -178,7 +181,8 @@ class NodesStatus:
                             and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes
                             and address not in self.address_nodes
-                            and ref not in existing_staking):
+                            and ref not in existing_staking
+                            and not self.nodes[ref]['locked']):
                         if address not in self.address_staking:
                             self.address_staking[address] = list()
                             
@@ -209,7 +213,15 @@ class NodesStatus:
                     node = self.nodes[ref]
                     details = post_content.get('details', {})
                     for field in EDITABLE_FIELDS:
-                        node[field] = details.get(field, node.get(field, ''))
+                        if field == 'reward':
+                            node[field] = details.get(field,
+                                                      node.get(field, address))
+                        elif field == 'locked':
+                            node[field] = bool(details.get(field,
+                                                        node.get(field, False)))
+                        else:
+                            node[field] = details.get(field,
+                                                      node.get(field, ''))
                     
                 else:
                     print("This message wasn't registered (invalid)")
