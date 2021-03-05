@@ -6,6 +6,7 @@ from pathlib import Path
 from eth_account import Account
 from hexbytes import HexBytes
 from functools import lru_cache
+from requests import ReadTimeout
 import aiohttp
 from .settings import settings
 
@@ -137,7 +138,7 @@ async def get_logs_query(web3, contract, start_height, end_height, topics):
                              'topics': topics})
     for log in logs:
         yield log
-
+        
 
 async def get_logs(web3, contract, start_height, topics=None):
     try:
@@ -145,16 +146,18 @@ async def get_logs(web3, contract, start_height, topics=None):
                               start_height+1, 'latest', topics=topics)
         async for log in logs:
             yield log
-    except ValueError as e:
+    except (ValueError, ReadTimeout) as e:
         # we got an error, let's try the pagination aware version.
-        if e.args[0]['code'] != -32005:
-            return
+        if isinstance(e, ValueError):
+            if e.args[0]['code'] not in [-32000, -32005]:
+                print(e.args)
+                return
 
         last_block = web3.eth.blockNumber
 #         if (start_height < config.ethereum.start_height.value):
 #             start_height = config.ethereum.start_height.value
 
-        end_height = start_height + 50000
+        end_height = start_height + settings.ethereum_block_width_big
 
         while True:
             try:
@@ -165,7 +168,7 @@ async def get_logs(web3, contract, start_height, topics=None):
                     yield log
 
                 start_height = end_height + 1
-                end_height = start_height + 50000
+                end_height = start_height + settings.ethereum_block_width_big
 
                 if start_height > last_block:
                     LOGGER.info("Ending big batch sync")
@@ -173,6 +176,6 @@ async def get_logs(web3, contract, start_height, topics=None):
 
             except ValueError as e:
                 if e.args[0]['code'] == -32005:
-                    end_height = start_height + 10000
+                    end_height = start_height + settings.ethereum_block_width_small
                 else:
                     raise

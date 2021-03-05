@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     aleph_channel: str = "TEST"
     aleph_api_server: str = "https://api2.aleph.im"
     token_symbol: str = "ALEPH"
+    chain_name: str = "ETH"
 
     ethereum_api_server: str = None
     ethereum_token_contract: str = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
@@ -21,6 +22,8 @@ class Settings(BaseSettings):
     ethereum_swap_fee: int = 10
     ethereum_blocks_per_day: int = 6500
     ethereum_batch_size: int = 200
+    ethereum_block_width_big: int = 50000
+    ethereum_block_width_small: int = 10000
 
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
