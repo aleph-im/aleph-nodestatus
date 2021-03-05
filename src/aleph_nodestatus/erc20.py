@@ -1,10 +1,12 @@
 import json
 import os
+import asyncio
 from pathlib import Path
+from collections import deque
 from .settings import settings
 from .ethereum import get_web3, get_logs
 
-
+from aleph_client.asynchronous import create_aggregate
 from web3 import Web3
 from web3._utils.events import (
     construct_event_topic_set,
@@ -40,7 +42,7 @@ async def process_contract_history(contract_address, start_height,
     end_height = web3.eth.blockNumber
 
     changed_addresses = set()
-
+    
     to_append = list()
 
     async for i in get_logs(web3, contract, start_height, topics=topic):
@@ -71,3 +73,45 @@ async def process_contract_history(contract_address, start_height,
 
     if len(changed_addresses):
         yield (last_height, (balances, changed_addresses))
+
+
+async def update_balances(account, height, balances):
+    return await create_aggregate(
+        account, '{}_{}'.format(settings.token_symbol, settings.chain_name),
+        {'height': height,
+         'token_contract': settings.ethereum_token_contract,
+         'token_symbol': settings.token_symbol,
+         'network_id': settings.ethereum_chain_id,
+         'chain': settings.chain_name,
+         'balances': {addr: value / DECIMALS
+                      for addr, value in balances.items()}},
+        channel=settings.aleph_channel,
+        api_server=settings.aleph_api_server)
+
+
+async def erc20_monitoring_process():
+    from .messages import get_aleph_account
+    last_seen_txs = deque([], maxlen=100)
+    account = get_aleph_account()
+    items = process_contract_history(
+            settings.ethereum_token_contract, settings.ethereum_min_height,
+            last_seen=last_seen_txs)
+    balances = {}
+    last_height = settings.ethereum_min_height
+    async for height, (balances, changed_items) in items:
+        last_height = height
+        balances = balances
+    
+    await update_balances(account, height, balances)
+    
+    while True:
+        changed_items = None
+        async for height, (balances, changed_items) in process_contract_history(
+                settings.ethereum_token_contract, last_height+1,
+                balances=balances, last_seen=last_seen_txs):
+            pass
+        
+        if changed_items:
+            await update_balances(account, height, balances)
+        
+        await asyncio.sleep(5)

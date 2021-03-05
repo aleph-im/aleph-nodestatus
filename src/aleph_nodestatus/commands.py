@@ -24,6 +24,7 @@ import math
 
 from aleph_nodestatus import __version__
 from .ethereum import get_account, get_web3, transfer_tokens
+from .erc20 import process_contract_history, erc20_monitoring_process
 from .status import process
 from .settings import settings
 from .distribution import (create_distribution_tx_post,
@@ -123,6 +124,18 @@ def distribute(verbose, act=False, start_height=-1, end_height=-1):
     print(verbose, act, start_height, end_height)
     
     asyncio.run(process_distribution(start_height, end_height, act=act))
+    
+
+@click.command()
+@click.option('-v', '--verbose', count=True)
+@click.version_option(version=__version__)
+def monitor_erc20(verbose):
+    """
+    ERC20BalancesMonitor: Pushes current token balances at each change.
+    """
+    setup_logging(verbose)
+    LOGGER.debug("Starting erc20 balance monitor")
+    asyncio.run(erc20_monitoring_process())
 
 
 def run():
