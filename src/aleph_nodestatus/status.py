@@ -243,7 +243,7 @@ class NodesStatus:
 async def process():
     state_machine = NodesStatus()
     account = get_aleph_account()
-
+    
     # Let's keep the last 100 seen TXs aside so we don't count a transfer twice
     # in case of a reorg
     last_seen_txs = deque([], maxlen=100)
@@ -286,7 +286,7 @@ async def process():
                                   balances={addr: bal
                                             for addr, bal
                                             in state_machine.balances.items()},
-                                  last_seen=last_seen_txs
+                                  last_seen=last_seen_txs)
             ))
         nodes = None
         async for height, nodes in state_machine.process(iterators):
