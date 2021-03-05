@@ -1,3 +1,4 @@
+from collections import deque
 from .erc20 import process_contract_history, DECIMALS
 from .messages import process_message_history, get_aleph_account, set_status
 from .settings import settings
@@ -243,9 +244,14 @@ async def process():
     state_machine = NodesStatus()
     account = get_aleph_account()
 
+    # Let's keep the last 100 seen TXs aside so we don't count a transfer twice
+    # in case of a reorg
+    last_seen_txs = deque([], maxlen=100)
+
     iterators = [
         prepare_items('balance-update', process_contract_history(
-            settings.ethereum_token_contract, settings.ethereum_min_height)),
+            settings.ethereum_token_contract, settings.ethereum_min_height,
+            last_seen=last_seen_txs)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
@@ -279,7 +285,8 @@ async def process():
                                   state_machine.last_balance_height+1,
                                   balances={addr: bal
                                             for addr, bal
-                                            in state_machine.balances.items()})
+                                            in state_machine.balances.items()},
+                                  last_seen=last_seen_txs
             ))
         nodes = None
         async for height, nodes in state_machine.process(iterators):
