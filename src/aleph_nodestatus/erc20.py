@@ -47,7 +47,6 @@ async def process_contract_history(contract_address, start_height,
 
     async for i in get_logs(web3, contract, start_height, topics=topic):
         evt_data = get_event_data(web3.codec, abi, i)
-        print("Item", i, evt_data)
         args = evt_data['args']
         height = evt_data['blockNumber']
         
@@ -84,7 +83,8 @@ async def update_balances(account, height, balances):
          'network_id': settings.ethereum_chain_id,
          'chain': settings.chain_name,
          'balances': {addr: value / DECIMALS
-                      for addr, value in balances.items()}},
+                      for addr, value in balances.items()
+                      if value > 0}},
         channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
 
