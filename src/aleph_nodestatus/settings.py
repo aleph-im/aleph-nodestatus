@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
     
-    staking_threshold: int = 10000
-    node_threshold: int = 200000
+    staking_threshold: int = 9999
+    node_threshold: int = 199999
     node_activation: int = 500000
 
     node_post_type: str = "corechan-operation"
