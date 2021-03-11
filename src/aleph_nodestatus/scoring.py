@@ -5,11 +5,10 @@ import logging
 import time
 from dataclasses import dataclass
 from functools import partial
-from typing import Dict, Iterator, NewType, Optional, Coroutine
+from typing import Dict, Iterator, NewType, Optional, Coroutine, Union
 
 import aiohttp
-import motor.motor_asyncio
-# import libp2p
+import libp2p
 from aleph_client.asynchronous import create_post
 from aleph_client.chains.ethereum import get_fallback_account
 from dataclasses_json import dataclass_json
@@ -18,12 +17,11 @@ from libp2p.crypto.secp256k1 import create_new_key_pair
 from libp2p.peer.peerinfo import info_from_p2p_addr
 from multiaddr import multiaddr, Multiaddr
 
-from aleph.model import get_db
-
 logger = logging.getLogger()
 logger.setLevel(logging.ERROR)
 Url = NewType('Url', str)
 
+MAX_LATENCY = 5.
 
 @dataclass_json
 @dataclass
@@ -47,36 +45,58 @@ class Node:
 @dataclass
 class NodeMetrics:
     """Metrics obtained from a node."""
-    error: Optional[Exception] = None
-    p2p_connect_latency: Optional[float] = None
-    http_index_latency: Optional[float] = None
-    http_aggregate_latency: Optional[float] = None
-    http_store_latency: Optional[float] = None
+    p2p_connect_latency: Optional[Union[float, Exception]] = None
+    http_index_latency: Optional[Union[float, Exception]] = None
+    http_aggregate_latency: Optional[Union[float, Exception]] = None
+    http_store_latency: Optional[Union[float, Exception]] = None
 
-    def global_score(self):
-        if self.error is None and self.p2p_connect_latency:
-            return max(1-self.p2p_connect_latency or 1, 0) * \
-                   max(1-self.http_index_latency or 1, 0) * \
-                   max(1-self.http_aggregate_latency or 1, 0) * \
-                   max(1-(self.http_store_latency or 1), 0)
+    def get_errors(self) -> Iterator[Exception]:
+        for attr in dataclasses.fields(self):
+            attr: dataclasses.Field
+            value = getattr(self, attr.name)
+            if isinstance(value, Exception):
+                yield value
+
+    def contains_error(self) -> bool:
+        return any(self.get_errors())
+
+    def global_score(self) -> float:
+        if not self.contains_error():
+            total = 1.
+            for field in dataclasses.fields(self):
+                value: float = getattr(self, field.name) / MAX_LATENCY
+                score = max(1 - value or 1, 0)
+                total *= score
+            return total
         else:
-            return 0
+            return 0.
 
     def __str__(self):
-        if self.error:
-            return str(self.error)
-        else:
-            return f"{self.p2p_connect_latency:.3f} {self.http_index_latency:.3f} " \
-                   f"{self.http_aggregate_latency:.3f} {self.http_store_latency:.3f} " \
-                   f"-> {self.global_score():.3f}"
+        result = ""
+        for value in (
+            self.p2p_connect_latency,
+            self.http_index_latency,
+            self.http_aggregate_latency,
+            self.http_store_latency,
+            self.global_score()
+        ):
+            if isinstance(value, Exception):
+                result += "error "
+            else:
+                result += f"{value:.3f} "
+        return result
+
 
     def to_dict_with_score(self) -> Dict:
-        if self.error:
-            return {'error': str(self.error)}
-        else:
-            result = self.to_dict()
-            result['global_score'] = self.global_score()
-            return result
+        result = {}
+        for attr in dataclasses.fields(self):
+            value = getattr(self, attr.name)
+            if isinstance(value, Exception):
+                result[attr.name] = str(value)
+            else:
+                result[attr.name] = float(value)
+        result['global_score'] = self.global_score()
+        return result
 
 
 async def get_aggregate(url: Url):
@@ -92,7 +112,8 @@ def nodes_from_aggregate(aggregate: Dict) -> Iterator[Node]:
         yield Node.from_dict(node)
 
 
-async def measure_coroutine_latency(coroutine: Coroutine, timeout: float=2.) -> Optional[float]:
+async def measure_coroutine_latency(coroutine: Coroutine, timeout: float=MAX_LATENCY
+                                    ) -> Optional[float]:
     """Execute a coroutine and return how much time it took to execute."""
     t0 = time.time()
     dt: float
@@ -174,17 +195,15 @@ store_message = {
 }
 
 
-async def get_random_message():
-    """Get a random message in MongoDB"""
-    db = get_db(mongodb_uri="mongodb://127.0.0.1",
-                mongodb_database="alephtest")
-
-    matches = db.messages.aggregate([
-        {'$match': {'type': 'STORE'}},
-        {'$sample': {'size': 1 } },  # Random message
-    ])
-    async for item in matches:
-        return item
+async def get_random_message() -> Dict:
+    """Get a random message from an Aleph Node"""
+    async with aiohttp.ClientSession() as session:
+        async with session.get('http://163.172.70.92:4024/api/v0/messages/random.json') as resp:
+            print(resp.status)
+            resp.raise_for_status()
+            result = await resp.json()
+            print(result)
+    return result
 
 
 def get_ipfs_cid_from_url(url: str) -> bytes:
@@ -194,7 +213,7 @@ def get_ipfs_cid_from_url(url: str) -> bytes:
     $ curl --output - "https://releases.ubuntu.com/20.04.1/ubuntu-20.04.1-desktop-amd64.iso" | ipfs add --only-hash -Q
     """
     from subprocess import Popen, PIPE
-    curl_process = Popen(['curl', '--output', '-', '--no-progress-meter', url], stdout=PIPE)
+    curl_process = Popen(['curl', '--output', '-', '--silent', url], stdout=PIPE)
     ipfs_process = Popen(['ipfs', 'add', '--only-hash', '-Q'],
                          stdin=curl_process.stdout, stdout=PIPE)
     curl_process.stdout.close()  # enable write error in dd if ssh dies
@@ -214,7 +233,7 @@ def get_sha256_from_url(url: str) -> bytes:
     $ curl --output - "https://releases.ubuntu.com/20.04.1/ubuntu-20.04.1-desktop-amd64.iso" | sha256sum
     """
     from subprocess import Popen, PIPE
-    curl_process = Popen(['curl', '--output', '-', '--no-progress-meter', url], stdout=PIPE)
+    curl_process = Popen(['curl', '--output', '-', '--silent', url], stdout=PIPE)
     sha256_process = Popen(['sha256sum'],
                          stdin=curl_process.stdout, stdout=PIPE)
     curl_process.stdout.close()  # enable write error in dd if ssh dies
@@ -245,18 +264,42 @@ async def http_get_stored_file(address: Multiaddr, message: Dict) -> bool:
         raise ValueError(f"Hashes differ: '{item_hash.decode()}' != '{served_hash.decode()}'")
 
 
-async def get_message_store():
-    client = motor.motor_asyncio.AsyncIOMotorClient()
-    db = client.alephtest
-    message = db.messages.find({}).limit(1).skip(r)
-
-
 secret = b'#\xb8\xc1\xe99$V\xde>\xb1;\x90FhRW\xbd\xd6@\xfb\x06g\x1a\xd1\x1c\x801\x7f\xa3\xb1y\x9d'
 transport_opt = f"/ip4/127.0.0.1/tcp/1234"
 
 
+async def compute_node_metrics(multiaddress: str, p2p_host, random_message: Dict):
+    metrics = NodeMetrics()
+
+    try:
+        address = Multiaddr(multiaddress)
+    except multiaddr.exceptions.StringParseError as error:
+        for field in dataclasses.fields(metrics):
+            field: dataclasses.Field
+            setattr(metrics, field.name, error)
+        return metrics
+
+    for name, coroutine in {
+        'p2p_connect_latency': p2p_connect(p2p_host, address),
+        'http_index_latency': http_get_index(address),
+        'http_aggregate_latency': http_get_aggregate(address),
+        'http_store_latency': http_get_stored_file(address, random_message),
+    }.items():
+        try:
+            measurement = await measure_coroutine_latency(coroutine)
+            setattr(metrics, name, measurement)
+        except (
+                libp2p.network.exceptions.SwarmException,
+                aiohttp.client_exceptions.ClientResponseError,
+                ValueError,
+                TimeoutError,
+        ) as error:
+            setattr(metrics, name, error)
+    return metrics
+
+
 async def main():
-    aggregate_url = "https://api2.aleph.im/api/v0/aggregates/0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10.json"
+    aggregate_url = Url("https://api2.aleph.im/api/v0/aggregates/0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10.json")
     aggregate = await get_aggregate(aggregate_url)
 
     p2p_host = await new_node(
@@ -272,31 +315,13 @@ async def main():
     print(f"Scoring using message {random_message['_id']}")
 
     for node in nodes:
-        metrics = NodeMetrics()
-        try:
-            address = Multiaddr(node.multiaddress)
+        metrics = await compute_node_metrics(node.multiaddress,
+                                             p2p_host,
+                                             random_message)
 
-            # print('=>', address.protocols())
-            metrics.p2p_connect_latency = await measure_coroutine_latency(p2p_connect(p2p_host, address))
-            metrics.http_index_latency = await measure_coroutine_latency(http_get_index(address))
-            metrics.http_aggregate_latency = await measure_coroutine_latency(http_get_aggregate(address))
-            metrics.http_store_latency = await measure_coroutine_latency(http_get_stored_file(address, random_message))
-
-        except multiaddr.exceptions.StringParseError as error:
-            metrics.error = error
-            logger.warning(f"Invalid multiaddress {node.multiaddress}")
-        except aiohttp.client_exceptions.ClientResponseError as error:
-            metrics.error = error
-            logger.warning(f"Error on {node.multiaddress}")
-        except ValueError as error:
-            metrics.error = error
-            logger.warning(f"Error on {node.multiaddress}")
-        except TimeoutError as error:
-            metrics.error = error
-            logger.warning(f"TimeoutError on {node.multiaddress} {error}")
-        finally:
-            scores[node.hash] = metrics.to_dict_with_score()
-            print(node.hash, metrics)
+        print(metrics.contains_error())
+        scores[node.hash] = metrics.to_dict_with_score()
+        print(node.hash, metrics)
 
     account = get_fallback_account()
     content = {
@@ -311,10 +336,11 @@ async def main():
         content,
         post_type='scoring',
         channel='TEST',
-        api_server="http://163.172.70.92:4024")
+        api_server="https://api2.aleph.im")
     print(post)
 
 
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main())
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
 
