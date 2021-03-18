@@ -64,7 +64,8 @@ def main(verbose):
     asyncio.run(process())
 
 
-async def process_distribution(start_height, end_height, act=False):
+async def process_distribution(start_height, end_height, act=False,
+                               reward_sender=None):
             
     account = get_account()
     LOGGER.debug(f"Starting with ETH account {account.address}")
@@ -73,7 +74,8 @@ async def process_distribution(start_height, end_height, act=False):
         end_height = get_web3().eth.blockNumber
 
     if start_height == -1:
-        last_end_height, dist = await get_latest_successful_distribution()
+        last_end_height, dist = await get_latest_successful_distribution(
+            reward_sender)
 
         if last_end_height and dist:
             start_height = last_end_height + 1
@@ -81,7 +83,8 @@ async def process_distribution(start_height, end_height, act=False):
         else:
             start_height = 0
 
-    reward_start, end_height, rewards = await prepare_distribution(start_height, end_height)
+    reward_start, end_height, rewards = await prepare_distribution(
+        start_height, end_height)
 
     distribution = dict(
         incentive="corechannel",
@@ -116,14 +119,20 @@ async def process_distribution(start_height, end_height, act=False):
               'start_height', help='Starting height', default=-1)
 @click.option('-e', '--end-height',
               'end_height', help='Ending height', default=-1)
-def distribute(verbose, act=False, start_height=-1, end_height=-1):
+@click.option('--reward-sender',
+              'reward_sender',
+              help='Reward emitting addresss (to see last distributions)',
+              default=None)
+def distribute(verbose, act=False, start_height=-1, end_height=-1,
+               reward_sender=None):
     """
     Staking distribution script.
     """
     setup_logging(verbose)
     print(verbose, act, start_height, end_height)
     
-    asyncio.run(process_distribution(start_height, end_height, act=act))
+    asyncio.run(process_distribution(start_height, end_height, act=act,
+                                     reward_sender=reward_sender))
     
 
 @click.command()

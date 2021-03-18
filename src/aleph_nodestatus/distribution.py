@@ -24,10 +24,12 @@ async def create_distribution_tx_post(distribution):
     return post
 
 
-async def get_latest_successful_distribution():
+async def get_latest_successful_distribution(sender=None):
+    if sender is None:
+        sender = get_aleph_address()
     posts = await get_posts(
         types=["staking-rewards-distribution"],
-        addresses=[get_aleph_address()],
+        addresses=[sender],
         api_server=settings.aleph_api_server)
 
     current_post = None
