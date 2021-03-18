@@ -52,12 +52,16 @@ class NodesStatus:
 
     async def remove_node(self, node_hash):
         node = self.nodes[node_hash]
+        nodes_to_update = set()
         for staker in node['stakers'].keys():
             self.address_staking[staker].remove(node_hash)
             if len(self.address_staking[staker]) == 0:
                 del self.address_staking[staker]
+            else:
+                nodes_to_update.update(self.address_staking[staker])
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
+        [await self.update_node_stats(nhash) for nhash in nodes_to_update]
 
     async def remove_stake(self, staker, node_hash=None):
         """ Removes a staker's stake. If a node_hash isn't given, remove all.
