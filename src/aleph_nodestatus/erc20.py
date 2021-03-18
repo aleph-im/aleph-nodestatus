@@ -60,7 +60,10 @@ async def process_contract_history(contract_address, start_height,
         if height != last_height:
             yield (last_height, (balances, changed_addresses))
             changed_addresses = set()
-            last_seen.extend(to_append)
+
+            if last_seen is not None:
+                last_seen.extend(to_append)
+                
             to_append = list()
 
         balances[args['_from']] = (balances.get(args['_from'], 0)
