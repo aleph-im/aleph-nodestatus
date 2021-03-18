@@ -1,5 +1,6 @@
 import math
 import asyncio
+from collections import deque
 from .status import NodesStatus, prepare_items
 from .erc20 import process_contract_history, DECIMALS
 from .ethereum import get_web3
@@ -60,9 +61,12 @@ async def prepare_distribution(start_height, end_height):
 
     rewards = dict()
 
+    last_seen_txs = deque([], maxlen=100)
+
     iterators = [
         prepare_items('balance-update', process_contract_history(
-            settings.ethereum_token_contract, settings.ethereum_min_height)),
+            settings.ethereum_token_contract, settings.ethereum_min_height,
+            last_seen=last_seen_txs)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
