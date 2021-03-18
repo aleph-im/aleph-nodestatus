@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
     
+    bonus_modifier: float = 1.25
+    bonus_start: int = 12020360
+    bonus_decay: float = 0.0000001
+    
     staking_threshold: int = 9999
     node_threshold: int = 199999
     node_activation: int = 500000

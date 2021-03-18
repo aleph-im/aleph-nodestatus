@@ -99,15 +99,28 @@ async def prepare_distribution(start_height, end_height):
             sum(node['stakers'].values())
             for node in active_nodes
         ])
+        per_bonus_node = per_node
+        if current > settings.bonus_start:
+            modifier = (
+                settings.bonus_modifier
+                - ((current-settings.bonus_start) * settings.bonus_decay)
+            )
+            if modifier > 1:
+                per_bonus_node = per_node * modifier
+                
         for node in active_nodes:
             reward_address = node['owner']
+            this_node = per_node
+            if node['has_bonus']:
+                this_node = per_bonus_node
+                
             try:
                 taddress = web3.toChecksumAddress(node.get('reward', None))
                 if taddress:
                     reward_address = taddress
             except Exception:
                 LOGGER.debug("Bad reward address, defaulting to owner")
-            rewards[reward_address] = rewards.get(reward_address, 0) + per_node
+            rewards[reward_address] = rewards.get(reward_address, 0) + this_node
 
             for addr, value in node['stakers'].items():
                 rewards[addr] = rewards.get(addr, 0) + ((value / total_staked) * stakers_reward)
