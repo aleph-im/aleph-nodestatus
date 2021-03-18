@@ -157,6 +157,11 @@ class NodesStatus:
                             
                             new_node[field] = details.get(field, '')
                             
+                        if height < settings.bonus_start:
+                            new_node['has_bonus'] = True
+                        else:
+                            new_node['has_bonus'] = False
+                            
                         self.address_nodes[address] = content['item_hash']
                         self.nodes[content['item_hash']] = new_node
                         if address in self.address_staking:
