@@ -93,12 +93,14 @@ async def process_distribution(start_height, end_height, act=False,
         end_height=end_height,
         rewards=rewards
     )
+    distribution['tags'] = ['calculation', settings.filter_tag]
 
     if act:
         # distribution['status'] = ''
         print("Doing distribution")
         print(distribution)
         distribution['status'] = 'distribution'
+        distribution['tags'] = ['distribution', settings.filter_tag]
 
         max_items = settings.ethereum_batch_size
 
