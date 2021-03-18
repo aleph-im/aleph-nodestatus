@@ -49,13 +49,6 @@ async def process_contract_history(contract_address, start_height,
         evt_data = get_event_data(web3.codec, abi, i)
         args = evt_data['args']
         height = evt_data['blockNumber']
-        
-        if last_seen is not None:
-            tx_hash = evt_data.transactionHash.hex()
-            if tx_hash in last_seen:
-                continue
-            else:
-                to_append.append(tx_hash)
 
         if height != last_height:
             yield (last_height, (balances, changed_addresses))
@@ -63,8 +56,15 @@ async def process_contract_history(contract_address, start_height,
 
             if last_seen is not None:
                 last_seen.extend(to_append)
-                
+
             to_append = list()
+        
+        if last_seen is not None:
+            tx_hash = evt_data.transactionHash.hex()
+            if tx_hash in last_seen:
+                continue
+            else:
+                to_append.append(tx_hash)
 
         balances[args['_from']] = (balances.get(args['_from'], 0)
                                    - args['_value'])
