@@ -48,7 +48,7 @@ async def get_latest_successful_distribution(sender=None):
             if post['content']['end_height'] >= current_end_height:
                 current_post = post
                 current_end_height = post['content']['end_height']
-                break
+                continue
     
     if current_post is not None:
         return current_end_height, current_post['content']
