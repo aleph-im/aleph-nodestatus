@@ -126,7 +126,7 @@ async def prepare_distribution(start_height, end_height):
                 rewards[addr] = rewards.get(addr, 0) + ((value / total_staked) * stakers_reward)
 
     last_height = reward_start
-    async for height, nodes in state_machine.process(iterators):
+    async for height, nodes, resource_nodes in state_machine.process(iterators):
         if height == last_height:
             continue
 

@@ -13,6 +13,7 @@ ACTIVATION_AMT = settings.node_activation * DECIMALS
 EDITABLE_FIELDS = [
     'name',
     'multiaddress',
+    'address',
     'picture',
     'banner',
     'description',
@@ -29,6 +30,7 @@ async def prepare_items(item_type, iterator):
 class NodesStatus:
     def __init__(self, initial_height=0):
         self.nodes = {}
+        self.resource_nodes = {}
         self.address_nodes = {}
         self.address_staking = {}
         self.balances = {}
@@ -167,12 +169,40 @@ class NodesStatus:
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
+                            
+                    elif (post_action == "create-resource-node"
+                          and 'type' in post_content.get('details', {})):
+                        details = post_content.get('details', {})
+                        new_node = {
+                            'hash': content['item_hash'],
+                            'type': details['type'],
+                            'owner': address,
+                            'reward': details.get('reward', address),
+                            'status': 'waiting',
+                            'parent': None, # parent core node
+                            'time': content['time']
+                        }
+                        
+                        for field in EDITABLE_FIELDS:
+                            if field in ['reward']:
+                                # special case already handled
+                                continue
+                            
+                            new_node[field] = details.get(field, '')
+                            
+                        self.resource_nodes[content['item_hash']] = new_node
 
                     elif (post_action == "drop-node"
                           and address in self.address_nodes):
                         if ref is not None and ref in self.nodes:
                             if ref == existing_node:
                                 await self.remove_node(ref)
+
+                    elif (post_action == "drop-node"
+                          and ref is not None
+                          and ref in self.resource_nodes
+                          and self.resource_nodes[ref]['owner'] == address):
+                        await self.remove_resource_node(ref)
 
                     elif (post_action == "stake"
                             and self.balances.get(address, 0) >= STAKING_AMT
@@ -241,7 +271,7 @@ class NodesStatus:
                     self.last_message_height = height
 
             if changed:
-                yield(height, self.nodes)
+                yield(height, self.nodes, self.resource_nodes)
 
             if height > self.last_checked_height:
                 self.last_checked_height = height
@@ -267,11 +297,11 @@ async def process():
             settings.aleph_api_server))
     ]
     nodes = None
-    async for height, nodes in state_machine.process(iterators):
+    async for height, nodes, resource_nodes in state_machine.process(iterators):
         pass
     
     print("should set status")
-    await set_status(account, nodes)
+    await set_status(account, nodes, resource_nodes)
 
     i = 0
     while True:
@@ -298,11 +328,11 @@ async def process():
                                   last_seen=last_seen_txs)
             ))
         nodes = None
-        async for height, nodes in state_machine.process(iterators):
+        async for height, nodes, resource_nodes in state_machine.process(iterators):
             pass
 
         if nodes is not None:
-            await set_status(account, nodes)
+            await set_status(account, nodes, resource_nodes)
             print("should set status")
 
         await asyncio.sleep(1)

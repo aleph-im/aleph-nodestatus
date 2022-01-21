@@ -67,7 +67,7 @@ async def process_message_history(tags, message_types, api_server,
                     yield earliest, message
 
 
-async def set_status(account, nodes):
+async def set_status(account, nodes, resource_nodes):
     nodes = [
         {**node.copy(), **{
             'total_staked': node['total_staked']/DECIMALS,
@@ -80,5 +80,5 @@ async def set_status(account, nodes):
     ]
     await create_aggregate(
         account, 'corechannel',
-        {'nodes': nodes}, channel=settings.aleph_channel,
+        {'nodes': nodes, 'resource_nodes': resource_nodes}, channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
