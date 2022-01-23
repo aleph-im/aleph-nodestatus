@@ -24,8 +24,7 @@ async def merge(*iterables, key=None, reverse=False):
             yield line
     except TypeError:
         log.debug(
-            "Couldn't fall back to naive implementation. Using async version.",
-            exc_info=True,
+            "Couldn't fall back to naive implementation. Using async version."
         )
 
     h = []
