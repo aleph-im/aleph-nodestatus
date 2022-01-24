@@ -80,5 +80,5 @@ async def set_status(account, nodes, resource_nodes):
     ]
     await create_aggregate(
         account, 'corechannel',
-        {'nodes': nodes, 'resource_nodes': resource_nodes}, channel=settings.aleph_channel,
+        {'nodes': nodes, 'resource_nodes': list(resource_nodes.values())}, channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
