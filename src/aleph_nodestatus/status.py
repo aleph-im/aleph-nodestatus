@@ -182,6 +182,7 @@ class NodesStatus:
                             'type': details['type'],
                             'owner': address,
                             'reward': details.get('reward', address),
+                            'locked': bool(details.get('locked', False)),
                             'status': 'waiting',
                             'parent': None, # parent core node
                             'time': content['time']
@@ -256,6 +257,23 @@ class NodesStatus:
                       and ref in self.nodes
                       and ref == existing_node):
                     node = self.nodes[ref]
+                    details = post_content.get('details', {})
+                    for field in EDITABLE_FIELDS:
+                        if field == 'reward':
+                            node[field] = details.get(field,
+                                                      node.get(field, address))
+                        elif field == 'locked':
+                            node[field] = bool(details.get(field,
+                                                        node.get(field, False)))
+                        else:
+                            node[field] = details.get(field,
+                                                      node.get(field, ''))
+                        
+                elif (post_type == 'amend'
+                      and ref is not None
+                      and ref in self.resource_nodes
+                      and self.resource_nodes[ref]['owner'] == address):
+                    node = self.resource_nodes[ref]
                     details = post_content.get('details', {})
                     for field in EDITABLE_FIELDS:
                         if field == 'reward':
