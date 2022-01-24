@@ -64,6 +64,10 @@ class NodesStatus:
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
         [await self.update_node_stats(nhash) for nhash in nodes_to_update]
+        
+    async def remove_resource_node(self, node_hash):
+        node = self.resource_nodes[node_hash]
+        del self.resource_nodes[node_hash]
 
     async def remove_stake(self, staker, node_hash=None):
         """ Removes a staker's stake. If a node_hash isn't given, remove all.
@@ -193,10 +197,11 @@ class NodesStatus:
                         self.resource_nodes[content['item_hash']] = new_node
 
                     elif (post_action == "drop-node"
-                          and address in self.address_nodes):
-                        if ref is not None and ref in self.nodes:
-                            if ref == existing_node:
-                                await self.remove_node(ref)
+                          and address in self.address_nodes
+                          and ref is not None
+                          and ref in self.nodes
+                          and ref == existing_node):
+                        await self.remove_node(ref)
 
                     elif (post_action == "drop-node"
                           and ref is not None
