@@ -199,6 +199,28 @@ class NodesStatus:
                             
                         self.resource_nodes[content['item_hash']] = new_node
 
+                    # resource node to core channel node link
+                    elif (post_action == 'link'
+                          # address should have a ccn
+                          and address in self.address_nodes
+                          # and it should not be over limit
+                          and len(self.nodes[existing_node]['resource_nodes']) < MAX_LINKED
+                          and ref is not None
+                          # resource node should exist
+                          and ref in self.resource_nodes
+                          # it shouldn't be linked already
+                          and ref not in self.nodes[existing_node]['resource_nodes']
+                          # the target shouldn't have a parent
+                          and self.resource_nodes[ref]['parent'] is None
+                          # nor be locked
+                          and not self.resource_nodes[ref]['locked']):
+                        
+                        node = self.nodes[existing_node]
+                        resource_node = self.resource_nodes[ref]
+                        node['resource_nodes'].append(ref)
+                        resource_node['parent'] = existing_node
+                        await self.update_node_stats(existing_node)
+                        
                     elif (post_action == "drop-node"
                           and address in self.address_nodes
                           and ref is not None
