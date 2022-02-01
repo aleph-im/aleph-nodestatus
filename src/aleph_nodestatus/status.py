@@ -62,12 +62,19 @@ class NodesStatus:
                 del self.address_staking[staker]
             else:
                 nodes_to_update.update(self.address_staking[staker])
+        for rnode_hash in node['resource_nodes']:
+            # unlink resource nodes from this parent
+            self.resource_nodes[rnode_hash]['parent'] = None
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
         [await self.update_node_stats(nhash) for nhash in nodes_to_update]
         
     async def remove_resource_node(self, node_hash):
         node = self.resource_nodes[node_hash]
+        if node['parent'] is not None:
+            # unlink the node from the parent
+            self.nodes[node['parent']]['resource_nodes'].remove(node_hash)
+            await self.update_node_stats(node['parent'])
         del self.resource_nodes[node_hash]
 
     async def remove_stake(self, staker, node_hash=None):
@@ -198,7 +205,7 @@ class NodesStatus:
                             new_node[field] = details.get(field, '')
                             
                         self.resource_nodes[content['item_hash']] = new_node
-
+                    
                     # resource node to core channel node link
                     elif (post_action == 'link'
                           # address should have a ccn
