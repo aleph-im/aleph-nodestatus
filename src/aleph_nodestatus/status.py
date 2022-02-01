@@ -221,6 +221,23 @@ class NodesStatus:
                         resource_node['parent'] = existing_node
                         await self.update_node_stats(existing_node)
                         
+                    elif (post_action == 'unlink'
+                          and ref is not None
+                          and ref in self.resource_nodes
+                          and self.resource_nodes[ref]['parent'] is not None
+                          # the ccn owner can unlink
+                          and ((address in self.address_nodes
+                                and (self.resource_nodes[ref]['parent'] ==
+                                     existing_node)
+                                # so does the crn owner
+                                ) or
+                               self.resource_nodes[ref]['owner'] == address)):
+                        resource_node = self.resource_nodes[ref]
+                        node = self.nodes[resource_node['parent']]
+                        node['resource_nodes'].remove(ref)
+                        resource_node['parent'] = None
+                        await self.update_node_stats(node['hash'])
+
                     elif (post_action == "drop-node"
                           and address in self.address_nodes
                           and ref is not None
