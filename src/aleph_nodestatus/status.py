@@ -155,7 +155,7 @@ class NodesStatus:
                             'total_staked': 0,
                             'status': 'waiting',
                             'time': content['time'],
-                            'resource_nodes': {}
+                            'resource_nodes': []
                         }
                         
                         for field in EDITABLE_FIELDS:
