@@ -9,6 +9,7 @@ import asyncio
 NODE_AMT = settings.node_threshold * DECIMALS
 STAKING_AMT = settings.staking_threshold * DECIMALS
 ACTIVATION_AMT = settings.node_activation * DECIMALS
+MAX_LINKED = settings.node_max_linked
 
 EDITABLE_FIELDS = [
     'name',
