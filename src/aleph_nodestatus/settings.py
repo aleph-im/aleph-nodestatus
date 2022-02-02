@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     node_threshold: int = 199999
     node_activation: int = 500000
     
-    node_max_linked: int = 5
+    node_max_linked: int = 3
 
     node_post_type: str = "corechan-operation"
     # staker_post_type: str = "corechan-delegation"
