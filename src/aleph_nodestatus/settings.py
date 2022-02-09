@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     ethereum_batch_size: int = 200
     ethereum_block_width_big: int = 50000
     ethereum_block_width_small: int = 10000
+    
+    ethereum_sablier_contract: str = "0xCD18eAa163733Da39c232722cBC4E8940b1D8888"
+    ethereum_sablier_min_height: int = 13245838
 
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000

@@ -23,6 +23,7 @@ import click
 import math
 
 from aleph_nodestatus import __version__
+from aleph_nodestatus.sablier import sablier_monitoring_process
 from .ethereum import get_account, get_web3, transfer_tokens
 from .erc20 import process_contract_history, erc20_monitoring_process
 from .status import process
@@ -147,6 +148,18 @@ def monitor_erc20(verbose):
     setup_logging(verbose)
     LOGGER.debug("Starting erc20 balance monitor")
     asyncio.run(erc20_monitoring_process())
+    
+    
+@click.command()
+@click.option('-v', '--verbose', count=True)
+@click.version_option(version=__version__)
+def monitor_sablier(verbose):
+    """
+    ERC20BalancesMonitor: Pushes current token balances at each change.
+    """
+    setup_logging(verbose)
+    LOGGER.debug("Starting erc20 balance monitor")
+    asyncio.run(sablier_monitoring_process())
 
 
 def run():
