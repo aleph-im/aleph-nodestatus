@@ -127,6 +127,7 @@ async def update_balances(account, height, balances):
             'tags': ['SABLIER', settings.ethereum_sablier_contract,
                      settings.filter_tag],
             'height': height,
+            'main_height': height,  # ethereum height
             'platform': '{}_{}_SABLIER'.format(settings.token_symbol,
                                                settings.chain_name),
             'dapp': 'SABLIER',
