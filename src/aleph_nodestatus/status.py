@@ -1,4 +1,6 @@
 from collections import deque
+
+from aleph_nodestatus.monitored import process_balances_history
 from .erc20 import process_contract_history, DECIMALS
 from .messages import process_message_history, get_aleph_account, set_status
 from .settings import settings
@@ -39,6 +41,8 @@ class NodesStatus:
         self.last_checked_height = initial_height
         self.last_balance_height = initial_height
         self.last_message_height = initial_height
+        self.last_eth_balance_height = initial_height
+        self.last_others_balance_height = initial_height
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
@@ -66,6 +70,7 @@ class NodesStatus:
         for rnode_hash in node['resource_nodes']:
             # unlink resource nodes from this parent
             self.resource_nodes[rnode_hash]['parent'] = None
+            self.resource_nodes[rnode_hash]['status'] = "waiting"
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
         [await self.update_node_stats(nhash) for nhash in nodes_to_update]
@@ -140,6 +145,11 @@ class NodesStatus:
 
                 if height > self.last_balance_height:
                     self.last_balance_height = height
+                    
+                if platform == "ETH" and height > self.last_eth_balance_height:
+                    self.last_eth_balance_height = height
+                elif platform != "ETH" and height > self.last_others_balance_height:
+                    self.last_others_balance_height = height
 
             elif evt_type == 'staking-update':
                 message_content = content['content']
@@ -375,6 +385,8 @@ async def process():
         prepare_items('balance-update', process_contract_history(
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)),
+        prepare_items('balance-update', process_balances_history(
+            settings.ethereum_min_height)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
@@ -405,12 +417,22 @@ async def process():
                 prepare_items('balance-update',
                               process_contract_history(
                                   settings.ethereum_token_contract,
-                                  state_machine.last_balance_height+1,
+                                  state_machine.last_eth_balance_height+1,
                                   balances={addr: bal
                                             for addr, bal
-                                            in state_machine.balances.items()},
+                                            in state_machine.platform_balances.get('ETH', dict()).items()},
                                   last_seen=last_seen_txs)
-            ))
+                              ))
+        if not i % 60:
+            iterators.append(
+                prepare_items('balance-update',
+                              process_balances_history(
+                                  state_machine.last_others_balance_height+1,
+                                  request_count=1000,
+                                  # TODO: pass platform_balances here
+                                  request_sort='-1')
+                              ))
+            
         nodes = None
         async for height, nodes, resource_nodes in state_machine.process(iterators):
             pass
