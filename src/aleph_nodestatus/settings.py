@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
+    reward_resource_node_monthly: int = 550
     
     bonus_modifier: float = 1.25
     bonus_start: int = 12020360
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     node_activation: int = 500000
     
     node_max_linked: int = 3
+    node_max_paid: int = 3
 
     node_post_type: str = "corechan-operation"
     balances_post_type: str = "balances-update"
