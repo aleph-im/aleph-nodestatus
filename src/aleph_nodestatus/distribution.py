@@ -78,8 +78,9 @@ async def prepare_distribution(start_height, end_height):
     nodes = None
     # TODO: handle decay
     nodes_rewards = settings.reward_nodes_daily / settings.ethereum_blocks_per_day
+    resource_node_rewards = settings.reward_resource_node_monthly / 30 / settings.ethereum_blocks_per_day
 
-    def process_distribution(nodes, since, current):
+    def process_distribution(nodes, resource_nodes, since, current):
         # Ignore if we aren't in distribution period yet.
         # Handle calculation for previous period now.
         block_count = current - since
@@ -95,6 +96,7 @@ async def prepare_distribution(start_height, end_height):
         stakers_reward = (per_day / settings.ethereum_blocks_per_day) * block_count
 
         per_node = (nodes_rewards / len(active_nodes)) * block_count
+        per_resource_node = resource_node_rewards * block_count
         total_staked = sum([
             sum(node['stakers'].values())
             for node in active_nodes
@@ -113,6 +115,32 @@ async def prepare_distribution(start_height, end_height):
             this_node = per_node
             if node['has_bonus']:
                 this_node = per_bonus_node
+                
+            rnodes = node['resource_nodes']
+            paid_node_count = 0
+            for rnode_id in rnodes:
+                rnode = resource_nodes.get(rnode_id, None)
+                if rnode is None:
+                    continue
+                if rnode['status'] != 'linked':
+                    continue
+                
+                rnode_reward_address = rnode['owner']
+                try:
+                    rtaddress = web3.toChecksumAddress(rnode.get('reward', None))
+                    if rtaddress:
+                        rnode_reward_address = rtaddress
+                except Exception:
+                    LOGGER.debug("Bad reward address, defaulting to owner")
+                
+                rewards[rnode_reward_address] = rewards.get(rnode_reward_address, 0) + per_resource_node
+                
+                paid_node_count += 1
+                
+            if paid_node_count > settings.node_max_paid:
+                paid_node_count = settings.node_max_paid
+            
+            this_node = this_node * (0.7 + (0.1*paid_node_count))
                 
             try:
                 taddress = web3.toChecksumAddress(node.get('reward', None))
@@ -133,11 +161,11 @@ async def prepare_distribution(start_height, end_height):
         if height > end_height:
             break
         if height > reward_start:
-            process_distribution(nodes, max(last_height, reward_start), height)
+            process_distribution(nodes, resource_nodes, max(last_height, reward_start), height)
 
         last_height = height
 
-    process_distribution(nodes, last_height, end_height)
+    process_distribution(nodes, resource_nodes, last_height, end_height)
     LOGGER.info(f'Rewards from {reward_start} to {end_height}, total {sum(rewards.values())}')
     return reward_start, end_height, rewards
 
