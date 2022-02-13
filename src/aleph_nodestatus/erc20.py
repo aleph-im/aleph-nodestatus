@@ -6,7 +6,7 @@ from collections import deque
 from .settings import settings
 from .ethereum import get_web3, get_logs
 
-from aleph_client.asynchronous import create_aggregate
+from aleph_client.asynchronous import create_post
 from web3 import Web3
 from web3._utils.events import (
     construct_event_topic_set,
@@ -28,7 +28,7 @@ def get_contract(address, web3):
                              abi=get_contract_abi())
 
 
-async def process_contract_history(contract_address, start_height,
+async def process_contract_history(contract_address, start_height, platform="ETH",
                                    balances=None, last_seen=None):
     web3 = get_web3()
     contract = get_contract(contract_address, web3)
@@ -51,7 +51,7 @@ async def process_contract_history(contract_address, start_height,
         height = evt_data['blockNumber']
 
         if height != last_height:
-            yield (last_height, (balances, changed_addresses))
+            yield (last_height, (balances, platform, changed_addresses))
             changed_addresses = set()
 
             if last_seen is not None:
@@ -74,20 +74,25 @@ async def process_contract_history(contract_address, start_height,
         last_height = height
 
     if len(changed_addresses):
-        yield (last_height, (balances, changed_addresses))
+        yield (last_height, (balances, platform, changed_addresses))
 
 
 async def update_balances(account, height, balances):
-    return await create_aggregate(
-        account, '{}_{}'.format(settings.token_symbol, settings.chain_name),
-        {'height': height,
-         'token_contract': settings.ethereum_token_contract,
-         'token_symbol': settings.token_symbol,
-         'network_id': settings.ethereum_chain_id,
-         'chain': settings.chain_name,
-         'balances': {addr: value / DECIMALS
-                      for addr, value in balances.items()
-                      if value > 0}},
+    return await create_post(
+        account, {
+            'tags': ['ERC20', settings.ethereum_sablier_contract,
+                     settings.filter_tag],
+            'height': height,
+            'platform': '{}_{}'.format(settings.token_symbol,
+                                               settings.chain_name),
+            'token_contract': settings.ethereum_token_contract,
+            'token_symbol': settings.token_symbol,
+            'network_id': settings.ethereum_chain_id,
+            'chain': settings.chain_name,
+            'balances': {addr: value / DECIMALS
+                        for addr, value in balances.items()
+                        if value > 0}},
+        settings.balances_post_type,
         channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
 
@@ -101,7 +106,7 @@ async def erc20_monitoring_process():
             last_seen=last_seen_txs)
     balances = {}
     last_height = settings.ethereum_min_height
-    async for height, (balances, changed_items) in items:
+    async for height, (balances, platform, changed_items) in items:
         last_height = height
         balances = balances
     
@@ -109,7 +114,7 @@ async def erc20_monitoring_process():
     
     while True:
         changed_items = None
-        async for height, (balances, changed_items) in process_contract_history(
+        async for height, (balances, platform, changed_items) in process_contract_history(
                 settings.ethereum_token_contract, last_height+1,
                 balances=balances, last_seen=last_seen_txs):
             pass

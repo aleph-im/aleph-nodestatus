@@ -26,19 +26,25 @@ def get_aleph_address():
 UNCONFIRMED_MESSAGES = deque([], maxlen=500)
 
 
-async def process_message_history(tags, message_types, api_server,
-                                  min_height=0, request_count=100000,
-                                  request_sort='1', yield_unconfirmed=True):
+async def process_message_history(tags, content_types, api_server,
+                                  min_height=0, request_count=100000, 
+                                  message_type="POST", request_sort='1',
+                                  yield_unconfirmed=True, adresses=None):
     web3 = get_web3()
     last_block = web3.eth.blockNumber
+    params = {
+        'msgType': message_type,
+        'tags': ','.join(tags),
+        'contentTypes': ','.join(content_types),
+        'pagination': request_count,
+        'sort_order': request_sort
+    }
+    if adresses is not None:
+        params["addresses"] = ",".join(adresses)
+        
     async with aiohttp.ClientSession() as session:
-        async with session.get(f'{api_server}/api/v0/messages.json', params={
-                'msgType': 'POST',
-                'tags': ','.join(tags),
-                'contentTypes': ','.join(message_types),
-                'pagination': request_count,
-                'sort_order': request_sort
-        }) as resp:
+        async with session.get(f'{api_server}/api/v0/messages.json',
+                               params=params) as resp:
             items = await resp.json()
             messages = items['messages']
             if request_sort == '-1':

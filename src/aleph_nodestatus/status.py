@@ -35,6 +35,7 @@ class NodesStatus:
         self.address_nodes = {}
         self.address_staking = {}
         self.balances = {}
+        self.platform_balances = {}
         self.last_checked_height = initial_height
         self.last_balance_height = initial_height
         self.last_message_height = initial_height
@@ -99,14 +100,24 @@ class NodesStatus:
         if node_hash is None or len(self.address_staking[staker]) == 0:
             # if we have been asked to remove it all or there is no stake left
             self.address_staking.pop(staker)
+            
+    async def _recompute_platform_balances(self, addresses):
+        for addr in addresses:
+            balance = 0
+            for platform in self.platform_balances.keys():
+                balance += self.platform_balances[platform].get(addr, 0)
+            self.balances[addr] = balance
 
     async def process(self, iterators):
         async for height, (evt_type, content) in merge(*iterators):
             changed = True
             if evt_type == 'balance-update':
-                balances, changed_addresses = content
-                self.balances = {addr: bal
-                                 for addr, bal in balances.items()}
+                balances, platform, changed_addresses = content
+                self.platform_balances[platform] = {
+                    addr: bal
+                    for addr, bal in balances.items()}
+                await self._recompute_platform_balances(changed_addresses)
+                
                 for addr in changed_addresses:
                     if addr in self.address_nodes:
                         if self.balances.get(addr, 0) < NODE_AMT:

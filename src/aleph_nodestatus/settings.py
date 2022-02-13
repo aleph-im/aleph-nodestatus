@@ -1,4 +1,7 @@
 from pydantic import BaseSettings
+from typing import (
+   List
+)
 
 
 class Settings(BaseSettings):
@@ -27,6 +30,9 @@ class Settings(BaseSettings):
     
     ethereum_sablier_contract: str = "0xCD18eAa163733Da39c232722cBC4E8940b1D8888"
     ethereum_sablier_min_height: int = 13245838
+    
+    balances_platforms: List[str] = ["ALEPH_ETH_SABLIER", "ALEPH_SOL"]
+    balances_senders: List[str] = ["0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"]
 
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
@@ -43,6 +49,7 @@ class Settings(BaseSettings):
     node_max_linked: int = 3
 
     node_post_type: str = "corechan-operation"
+    balances_post_type: str = "balances-update"
     # staker_post_type: str = "corechan-delegation"
     filter_tag: str = "mainnet"
 
