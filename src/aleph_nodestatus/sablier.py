@@ -6,7 +6,7 @@ from collections import deque
 from .settings import settings
 from .ethereum import get_web3, get_logs
 
-from aleph_client.asynchronous import create_aggregate
+from aleph_client.asynchronous import create_aggregate, create_post
 from web3 import Web3
 from web3._utils.events import (
     construct_event_topic_set,
@@ -122,18 +122,23 @@ async def process_contract_history(contract_address, start_height,
         yield (last_height, (balances, streams, changed_addresses))
 
 async def update_balances(account, height, balances):
-    return await create_aggregate(
-        account, '{}_{}_SABLIER'.format(settings.token_symbol, settings.chain_name),
-        {'height': height,
-         'dapp': 'SABLIER',
-         'dapp_id': settings.ethereum_sablier_contract,
-         'token_contract': settings.ethereum_token_contract,
-         'token_symbol': settings.token_symbol,
-         'network_id': settings.ethereum_chain_id,
-         'chain': settings.chain_name,
-         'balances': {addr: value / DECIMALS
-                      for addr, value in balances.items()
-                      if value > 0}},
+    return await create_post(
+        account, {
+            'tags': ['SABLIER', settings.ethereum_sablier_contract,
+                     settings.filter_tag],
+            'height': height,
+            'platform': '{}_{}_SABLIER'.format(settings.token_symbol,
+                                               settings.chain_name),
+            'dapp': 'SABLIER',
+            'dapp_id': settings.ethereum_sablier_contract,
+            'token_contract': settings.ethereum_token_contract,
+            'token_symbol': settings.token_symbol,
+            'network_id': settings.ethereum_chain_id,
+            'chain': settings.chain_name,
+            'balances': {addr: value / DECIMALS
+                        for addr, value in balances.items()
+                        if value > 0}},
+        settings.balances_post_type,
         channel=settings.aleph_channel,
         api_server=settings.aleph_api_server)
 
