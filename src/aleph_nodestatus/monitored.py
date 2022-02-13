@@ -4,16 +4,22 @@ from .settings import settings
 from .erc20 import process_contract_history, DECIMALS
 
 async def process_balances_history(min_height, request_sort="1",
+                                   request_count=100000,
                                    platform_balances=None):
     async for height, message in process_message_history(
-        [settings.filter_tag], settings.balances_post_type,
-        settings.aleph_api_server, yield_unconfirmed=False,
+        [settings.filter_tag], [settings.balances_post_type],
+        settings.aleph_api_server, yield_unconfirmed=True,
         addresses=settings.balances_senders, min_height=min_height,
-        message_type="POST", request_sort=request_sort):
+        message_type="POST", request_sort=request_sort,
+        request_count=request_count):
         
         message_content = message["content"]
         post_content = message_content["content"]
         platform = post_content.get("platform", None)
+        
+        if post_content.get('main_height', None) is not None:
+            height = post_content['main_height']
+        
         if message_content["address"] not in settings.balances_senders:
             continue
         if message_content["type"] != settings.balances_post_type:
