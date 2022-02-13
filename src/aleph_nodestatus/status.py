@@ -237,6 +237,7 @@ class NodesStatus:
                         resource_node = self.resource_nodes[ref]
                         node['resource_nodes'].append(ref)
                         resource_node['parent'] = existing_node
+                        resource_node['status'] = "linked"
                         await self.update_node_stats(existing_node)
                         
                     elif (post_action == 'unlink'
@@ -254,6 +255,7 @@ class NodesStatus:
                         node = self.nodes[resource_node['parent']]
                         node['resource_nodes'].remove(ref)
                         resource_node['parent'] = None
+                        resource_node['status'] = "waiting"
                         await self.update_node_stats(node['hash'])
 
                     elif (post_action == "drop-node"
