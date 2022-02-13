@@ -29,7 +29,7 @@ UNCONFIRMED_MESSAGES = deque([], maxlen=500)
 async def process_message_history(tags, content_types, api_server,
                                   min_height=0, request_count=100000, 
                                   message_type="POST", request_sort='1',
-                                  yield_unconfirmed=True, adresses=None):
+                                  yield_unconfirmed=True, addresses=None):
     web3 = get_web3()
     last_block = web3.eth.blockNumber
     params = {
@@ -39,8 +39,8 @@ async def process_message_history(tags, content_types, api_server,
         'pagination': request_count,
         'sort_order': request_sort
     }
-    if adresses is not None:
-        params["addresses"] = ",".join(adresses)
+    if addresses is not None:
+        params["addresses"] = ",".join(addresses)
         
     async with aiohttp.ClientSession() as session:
         async with session.get(f'{api_server}/api/v0/messages.json',
