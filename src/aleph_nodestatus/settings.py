@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     balances_post_type: str = "balances-update"
     # staker_post_type: str = "corechan-delegation"
     filter_tag: str = "mainnet"
+    
+    platform_solana_endpoint: str = "https://spltoken.api.aleph.cloud/"
+    platform_solana_mint: str = "CsZ5LZkDS7h9TDKjrbL7VAwQZ9nsRu8vJLhRYfmGaN8K"
+    platform_solana_decimals: int = 6
 
     class Config:
         env_file = '.env'

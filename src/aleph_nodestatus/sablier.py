@@ -172,3 +172,4 @@ async def sablier_monitoring_process():
             await update_balances(account, height, balances)
         
         await asyncio.sleep(5)
+    

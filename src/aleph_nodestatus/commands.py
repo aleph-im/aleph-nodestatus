@@ -31,6 +31,7 @@ from .settings import settings
 from .distribution import (create_distribution_tx_post,
                            get_latest_successful_distribution,
                            prepare_distribution)
+from .solana import solana_monitoring_process
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
@@ -155,11 +156,22 @@ def monitor_erc20(verbose):
 @click.version_option(version=__version__)
 def monitor_sablier(verbose):
     """
-    ERC20BalancesMonitor: Pushes current token balances at each change.
+    SablierBalancesMonitor: Pushes current token balances at each change.
     """
     setup_logging(verbose)
     LOGGER.debug("Starting erc20 balance monitor")
     asyncio.run(sablier_monitoring_process())
+    
+@click.command()
+@click.option('-v', '--verbose', count=True)
+@click.version_option(version=__version__)
+def monitor_solana(verbose):
+    """
+    SolanaBalancesMonitor: Pushes current token balances at each change.
+    """
+    setup_logging(verbose)
+    LOGGER.debug("Starting solana balance monitor")
+    asyncio.run(solana_monitoring_process())
 
 
 def run():
