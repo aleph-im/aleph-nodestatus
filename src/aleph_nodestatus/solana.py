@@ -75,7 +75,9 @@ async def solana_monitoring_process():
                     changed_items.add(address)
 
             for address, amount in balances.items():
-                if amount != previous_balances.get(address, 0):
+                if (amount != previous_balances.get(address, 0)
+                        and address
+                        not in settings.platform_solana_ignored_addresses):
                     changed_items.add(address)
 
         if changed_items:

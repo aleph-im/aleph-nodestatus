@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     platform_solana_endpoint: str = "https://spltoken.api.aleph.cloud/"
     platform_solana_mint: str = "CsZ5LZkDS7h9TDKjrbL7VAwQZ9nsRu8vJLhRYfmGaN8K"
     platform_solana_decimals: int = 6
+    platform_solana_ignored_addresses: List[str] = [
+        "CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq",
+        "DVtR63sAnJPM9wdt1hYBqA5GTyFzjfcfdLTfsSzV85Ss",
+        "HKt6xFufxTBBs719WQPbro9t1DfDxffurxFhTPntMgoe",
+        "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+        "3EBEwydfyiVvFbXFYWENcZFrnb2ihCVauqcHzcCUNfwA",
+        "3HixSznhPFXA8ueB2sy9iVmVCZP7McRSR4wUuCVeHfh4",
+        "7MBLg6oV5phip11YBbJPuq7u38kdzSi9PM3BifKSpLaR",
+        "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B"
+    ]
 
     class Config:
         env_file = '.env'
