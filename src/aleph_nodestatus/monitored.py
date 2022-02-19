@@ -6,6 +6,7 @@ from .erc20 import process_contract_history, DECIMALS
 async def process_balances_history(min_height, request_sort="1",
                                    request_count=100000,
                                    platform_balances=None):
+    last_height = 0
     async for height, message in process_message_history(
         [settings.filter_tag], [settings.balances_post_type],
         settings.aleph_api_server, yield_unconfirmed=True,
@@ -18,7 +19,13 @@ async def process_balances_history(min_height, request_sort="1",
         platform = post_content.get("platform", None)
         
         if post_content.get('main_height', None) is not None:
-            height = post_content['main_height']
+            nheight = post_content['main_height']
+        else:
+            nheight = height
+            
+        if nheight <= last_height:
+            # fake iteration on height in case stuff gets mixed up
+            nheight = last_height + 1
         
         if message_content["address"] not in settings.balances_senders:
             continue
@@ -42,4 +49,5 @@ async def process_balances_history(min_height, request_sort="1",
         #         if platform_balances
             
         
-        yield (height, (balances, platform, changed_addresses))
+        yield (nheight, (balances, platform, changed_addresses))
+        last_height = nheight
