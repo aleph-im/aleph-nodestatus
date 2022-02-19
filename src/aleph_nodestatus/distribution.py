@@ -139,8 +139,10 @@ async def prepare_distribution(start_height, end_height):
                 
             if paid_node_count > settings.node_max_paid:
                 paid_node_count = settings.node_max_paid
+                
+            this_node_modifier = (0.7 + (0.1*paid_node_count))
             
-            this_node = this_node * (0.7 + (0.1*paid_node_count))
+            this_node = this_node * this_node_modifier
                 
             try:
                 taddress = web3.toChecksumAddress(node.get('reward', None))
@@ -151,7 +153,9 @@ async def prepare_distribution(start_height, end_height):
             rewards[reward_address] = rewards.get(reward_address, 0) + this_node
 
             for addr, value in node['stakers'].items():
-                rewards[addr] = rewards.get(addr, 0) + ((value / total_staked) * stakers_reward)
+                sreward = (((value / total_staked) * stakers_reward)
+                           * this_node_modifier)
+                rewards[addr] = rewards.get(addr, 0) + sreward
 
     last_height = reward_start
     async for height, nodes, resource_nodes in state_machine.process(iterators):
