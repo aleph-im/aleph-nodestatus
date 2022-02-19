@@ -6,6 +6,7 @@ from .messages import process_message_history, get_aleph_account, set_status
 from .settings import settings
 from .utils import merge
 import asyncio
+import random
 
 
 NODE_AMT = settings.node_threshold * DECIMALS
@@ -27,7 +28,7 @@ EDITABLE_FIELDS = [
 
 async def prepare_items(item_type, iterator):
     async for height, item in iterator:
-        yield (height, (item_type, item))
+        yield (height, random.random(), (item_type, item))
 
 
 class NodesStatus:
@@ -114,7 +115,7 @@ class NodesStatus:
             self.balances[addr] = balance
 
     async def process(self, iterators):
-        async for height, (evt_type, content) in merge(*iterators):
+        async for height, rnd, (evt_type, content) in merge(*iterators):
             changed = True
             if evt_type == 'balance-update':
                 balances, platform, changed_addresses = content
