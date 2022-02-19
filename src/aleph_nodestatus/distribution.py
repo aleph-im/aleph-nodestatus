@@ -1,13 +1,12 @@
 import math
-import asyncio
 from collections import deque
 from .status import NodesStatus, prepare_items
 from .erc20 import process_contract_history, DECIMALS
 from .ethereum import get_web3
-from .messages import process_message_history, get_aleph_account, set_status, get_aleph_address
+from .messages import process_message_history, get_aleph_account, get_aleph_address
+from .monitored import process_balances_history
 from .settings import settings
-from .utils import merge
-from aleph_client.asynchronous import create_aggregate, create_post, get_posts
+from aleph_client.asynchronous import create_post, get_posts
 
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -69,6 +68,8 @@ async def prepare_distribution(start_height, end_height):
         prepare_items('balance-update', process_contract_history(
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)),
+        prepare_items('balance-update', process_balances_history(
+            settings.ethereum_min_height)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
