@@ -48,14 +48,8 @@ def get_token_contract(web3):
 
 
 async def get_gas_price():
-    if settings.ethereum_chain_id == 1:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://www.gasnow.org/api/v3/gas/price?utm_source=alephim') as resp:
-                content = await resp.json()
-                return content['data']['standard']
-    else:
-        w3 = get_web3()
-        return w3.eth.generateGasPrice()
+    w3 = get_web3()
+    return w3.eth.generateGasPrice()
 
 
 @lru_cache(maxsize=2)
