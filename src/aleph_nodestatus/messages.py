@@ -52,7 +52,7 @@ async def get_message_result(message, yield_unconfirmed=True,
 
 
 async def process_message_history(tags, content_types, api_server,
-                                  min_height=0, request_count=10000, 
+                                  min_height=0, request_count=100000, 
                                   message_type="POST", request_sort='1',
                                   yield_unconfirmed=True, addresses=None,
                                   crawl_history=True):
