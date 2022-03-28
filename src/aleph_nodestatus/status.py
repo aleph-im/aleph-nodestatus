@@ -431,6 +431,7 @@ async def process():
                               process_balances_history(
                                   state_machine.last_others_balance_height+1,
                                   crawl_history=False,
+                                  request_count=100,
                                   # TODO: pass platform_balances here
                                   request_sort='-1')
                               ))

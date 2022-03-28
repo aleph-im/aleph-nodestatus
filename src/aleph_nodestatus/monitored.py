@@ -4,7 +4,7 @@ from .settings import settings
 from .erc20 import process_contract_history, DECIMALS
 
 async def process_balances_history(min_height, request_sort="1",
-                                   request_count=100,
+                                   request_count=1000,
                                    crawl_history=True,
                                    platform_balances=None):
     last_height = 0
