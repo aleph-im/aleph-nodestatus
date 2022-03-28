@@ -411,6 +411,7 @@ async def process():
                               settings.aleph_api_server,
                               min_height=state_machine.last_message_height+1,
                               request_count=1000,
+                              crawl_history=False,
                               request_sort='-1'))
         ]
         if not i % 10:
@@ -429,7 +430,7 @@ async def process():
                 prepare_items('balance-update',
                               process_balances_history(
                                   state_machine.last_others_balance_height+1,
-                                  request_count=1000,
+                                  crawl_history=False,
                                   # TODO: pass platform_balances here
                                   request_sort='-1')
                               ))

@@ -1,5 +1,6 @@
 import aiohttp
 from hexbytes import HexBytes
+import math
 from functools import lru_cache
 from collections import deque
 from .settings import settings
@@ -26,10 +27,35 @@ def get_aleph_address():
 UNCONFIRMED_MESSAGES = deque([], maxlen=500)
 
 
+async def get_message_result(message, yield_unconfirmed=True,
+                             last_block=0, min_height=0):
+    if message['item_hash'] in UNCONFIRMED_MESSAGES:
+        return None
+    
+    earliest = None
+    for conf in message.get('confirmations', []):
+        if conf['chain'] == 'ETH':
+            if earliest is None or conf['height'] < earliest:
+                earliest = conf['height']
+    # print(earliest, min_height)
+    if earliest is None and not yield_unconfirmed:
+        return None
+    
+    if earliest is None and yield_unconfirmed:
+        # let's assign the current block height... (ugly)
+        earliest = last_block
+        UNCONFIRMED_MESSAGES.append(message['item_hash'])
+        return earliest, message
+
+    elif earliest >= min_height:
+        return earliest, message
+
+
 async def process_message_history(tags, content_types, api_server,
-                                  min_height=0, request_count=100000, 
+                                  min_height=0, request_count=1000, 
                                   message_type="POST", request_sort='1',
-                                  yield_unconfirmed=True, addresses=None):
+                                  yield_unconfirmed=True, addresses=None,
+                                  crawl_history=True):
     web3 = get_web3()
     last_block = web3.eth.blockNumber
     params = {
@@ -42,35 +68,39 @@ async def process_message_history(tags, content_types, api_server,
     if addresses is not None:
         params["addresses"] = ",".join(addresses)
         
+
+    last_iteration_total = 0
+    last_per_page = 0
+        
     async with aiohttp.ClientSession() as session:
         async with session.get(f'{api_server}/api/v0/messages.json',
                                params=params) as resp:
             items = await resp.json()
             messages = items['messages']
-            if request_sort == '-1':
+            last_iteration_total = items['pagination_total']
+            last_per_page = items['pagination_per_page']
+            if request_sort == '-1' and not crawl_history:
                 messages = reversed(messages)
 
             for message in items['messages']:
-                if message['item_hash'] in UNCONFIRMED_MESSAGES:
-                    continue
+                result = await get_message_result(message,
+                                            yield_unconfirmed=yield_unconfirmed,
+                                            last_block=last_block,
+                                            min_height=min_height)
+                if result is not None:
+                    yield result
 
-                earliest = None
-                for conf in message.get('confirmations', []):
-                    if conf['chain'] == 'ETH':
-                        if earliest is None or conf['height'] < earliest:
-                            earliest = conf['height']
-                # print(earliest, min_height)
-                if earliest is None and not yield_unconfirmed:
-                    continue
-                
-                if earliest is None and yield_unconfirmed:
-                    # let's assign the current block height... (ugly)
-                    earliest = last_block
-                    UNCONFIRMED_MESSAGES.append(message['item_hash'])
-                    yield earliest, message
-
-                elif earliest >= min_height:
-                    yield earliest, message
+        if last_iteration_total > last_per_page:
+            for page in range(2, math.ceil(last_iteration_total/last_per_page)+1):
+                async with session.get(f'{api_server}/api/v0/messages.json',
+                                        params={**params, "page": page}) as resp:
+                    for message in items['messages']:
+                        result = await get_message_result(message,
+                                                    yield_unconfirmed=yield_unconfirmed,
+                                                    last_block=last_block,
+                                                    min_height=min_height)
+                        if result is not None:
+                            yield result
 
 
 async def set_status(account, nodes, resource_nodes):

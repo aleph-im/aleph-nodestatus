@@ -4,7 +4,8 @@ from .settings import settings
 from .erc20 import process_contract_history, DECIMALS
 
 async def process_balances_history(min_height, request_sort="1",
-                                   request_count=100000,
+                                   request_count=100,
+                                   crawl_history=True,
                                    platform_balances=None):
     last_height = 0
     async for height, message in process_message_history(
@@ -12,7 +13,8 @@ async def process_balances_history(min_height, request_sort="1",
         settings.aleph_api_server, yield_unconfirmed=True,
         addresses=settings.balances_senders, min_height=min_height,
         message_type="POST", request_sort=request_sort,
-        request_count=request_count):
+        request_count=request_count,
+        crawl_history=crawl_history):
         
         message_content = message["content"]
         post_content = message_content["content"]
