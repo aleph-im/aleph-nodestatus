@@ -90,7 +90,7 @@ async def process_message_history(tags, content_types, api_server,
                 if result is not None:
                     yield result
 
-        if last_iteration_total > last_per_page:
+        if (last_iteration_total > last_per_page) and crawl_history:
             for page in range(2, math.ceil(last_iteration_total/last_per_page)+1):
                 async with session.get(f'{api_server}/api/v0/messages.json',
                                         params={**params, "page": page}) as resp:
