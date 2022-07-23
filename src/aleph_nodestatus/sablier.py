@@ -164,11 +164,11 @@ async def sablier_monitoring_process():
     while True:
         changed_items = None
         async for height, (balances, streams, changed_items) in process_contract_history(
-                settings.ethereum_token_contract, last_height+1,
+                settings.ethereum_sablier_contract, last_height+1,
                 balances=balances, streams=streams, last_seen=last_seen_txs):
             pass
         
-        if changed_items:
+        if changed_items is not None:
             await update_balances(account, height, balances)
         
         await asyncio.sleep(5)
