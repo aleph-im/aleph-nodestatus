@@ -168,7 +168,7 @@ async def sablier_monitoring_process():
                 balances=balances, streams=streams, last_seen=last_seen_txs):
             pass
         
-        if changed_items is not None:
+        if changed_items:
             await update_balances(account, height, balances)
         
         await asyncio.sleep(5)
