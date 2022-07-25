@@ -22,6 +22,8 @@ EDITABLE_FIELDS = [
     'banner',
     'description',
     'reward',
+    'manager',
+    'authorized',
     'locked'
 ]
 
@@ -178,12 +180,14 @@ class NodesStatus:
                         new_node = {
                             'hash': content['item_hash'],
                             'owner': address,
+                            'manager': details.get('manager', address),
                             'reward': details.get('reward', address),
                             'locked': bool(details.get('locked', False)),
                             'stakers': {},
                             'total_staked': 0,
                             'status': 'waiting',
                             'time': content['time'],
+                            'authorized': [],
                             'resource_nodes': []
                         }
                         
@@ -212,9 +216,11 @@ class NodesStatus:
                             'hash': content['item_hash'],
                             'type': details['type'],
                             'owner': address,
+                            'manager': details.get('manager', address),
                             'reward': details.get('reward', address),
                             'locked': bool(details.get('locked', False)),
                             'status': 'waiting',
+                            'authorized': [],
                             'parent': None, # parent core node
                             'time': content['time']
                         }
@@ -286,7 +292,9 @@ class NodesStatus:
                             and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes
                             and address not in self.address_nodes
-                            and not self.nodes[ref]['locked']):
+                            and ((not self.nodes[ref]['locked'])
+                                 or (self.nodes[ref]['locked']
+                                     and address in self.nodes[ref]['authorized']))):
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
@@ -327,13 +335,17 @@ class NodesStatus:
                       and address in self.address_nodes
                       and ref is not None
                       and ref in self.nodes
-                      and ref == existing_node):
+                      and (self.nodes[ref]['owner'] == address
+                           or self.nodes[ref]['manager'] == address)):
                     node = self.nodes[ref]
                     details = post_content.get('details', {})
                     for field in EDITABLE_FIELDS:
-                        if field == 'reward':
+                        if field in ['reward', 'manager']:
                             node[field] = details.get(field,
                                                       node.get(field, address))
+                        elif field == 'authorized':
+                            node[field] = details.get(field,
+                                                      node.get(field, []))
                         elif field == 'locked':
                             node[field] = bool(details.get(field,
                                                         node.get(field, False)))
@@ -344,13 +356,17 @@ class NodesStatus:
                 elif (post_type == 'amend'
                       and ref is not None
                       and ref in self.resource_nodes
-                      and self.resource_nodes[ref]['owner'] == address):
+                      and (self.resource_nodes[ref]['owner'] == address
+                           or self.resource_nodes[ref]['manager'] == address)):
                     node = self.resource_nodes[ref]
                     details = post_content.get('details', {})
                     for field in EDITABLE_FIELDS:
-                        if field == 'reward':
+                        if field in ['reward', 'manager']:
                             node[field] = details.get(field,
                                                       node.get(field, address))
+                        elif field == 'authorized':
+                            node[field] = details.get(field,
+                                                      node.get(field, []))
                         elif field == 'locked':
                             node[field] = bool(details.get(field,
                                                         node.get(field, False)))
