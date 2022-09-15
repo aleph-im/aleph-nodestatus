@@ -308,7 +308,10 @@ class NodesStatus:
                             and ref is not None and ref in self.nodes
                             and address not in self.address_nodes
                             and ref not in existing_staking
-                            and not self.nodes[ref]['locked']):
+                            and ((not self.nodes[ref]['locked'])
+                                 or (self.nodes[ref]['locked']
+                                     and address in self.nodes[ref]['authorized'])
+                                 )):
                         if address not in self.address_staking:
                             self.address_staking[address] = list()
                             
