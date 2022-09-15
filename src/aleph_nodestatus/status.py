@@ -181,7 +181,6 @@ class NodesStatus:
                         new_node = {
                             'hash': content['item_hash'],
                             'owner': address,
-                            'manager': details.get('manager', address),
                             'reward': details.get('reward', address),
                             'locked': bool(details.get('locked', False)),
                             'stakers': {},
@@ -193,7 +192,7 @@ class NodesStatus:
                         }
                         
                         for field in EDITABLE_FIELDS:
-                            if field in ['reward', 'locked']:
+                            if field in ['reward', 'locked', 'authorized']:
                                 # special case already handled
                                 continue
                             
