@@ -335,10 +335,10 @@ class NodesStatus:
                         changed = False
                         
                 elif (post_type == 'amend'
-                      and address in self.address_nodes
                       and ref is not None
                       and ref in self.nodes
-                      and (self.nodes[ref]['owner'] == address
+                      and ((self.nodes[ref]['owner'] == address
+                            and address in self.address_nodes)
                            or self.nodes[ref]['manager'] == address)):
                     node = self.nodes[ref]
                     details = post_content.get('details', {})
