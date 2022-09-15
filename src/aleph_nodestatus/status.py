@@ -24,7 +24,8 @@ EDITABLE_FIELDS = [
     'reward',
     'manager',
     'authorized',
-    'locked'
+    'locked',
+    'registration_url'
 ]
 
 
