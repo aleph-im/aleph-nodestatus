@@ -24,7 +24,8 @@ EDITABLE_FIELDS = [
     'reward',
     'manager',
     'authorized',
-    'locked'
+    'locked',
+    'registration_url'
 ]
 
 
@@ -180,7 +181,6 @@ class NodesStatus:
                         new_node = {
                             'hash': content['item_hash'],
                             'owner': address,
-                            'manager': details.get('manager', address),
                             'reward': details.get('reward', address),
                             'locked': bool(details.get('locked', False)),
                             'stakers': {},
@@ -192,7 +192,7 @@ class NodesStatus:
                         }
                         
                         for field in EDITABLE_FIELDS:
-                            if field in ['reward', 'locked']:
+                            if field in ['reward', 'locked', 'authorized']:
                                 # special case already handled
                                 continue
                             
@@ -308,7 +308,10 @@ class NodesStatus:
                             and ref is not None and ref in self.nodes
                             and address not in self.address_nodes
                             and ref not in existing_staking
-                            and not self.nodes[ref]['locked']):
+                            and ((not self.nodes[ref]['locked'])
+                                 or (self.nodes[ref]['locked']
+                                     and address in self.nodes[ref]['authorized'])
+                                 )):
                         if address not in self.address_staking:
                             self.address_staking[address] = list()
                             
@@ -332,10 +335,10 @@ class NodesStatus:
                         changed = False
                         
                 elif (post_type == 'amend'
-                      and address in self.address_nodes
                       and ref is not None
                       and ref in self.nodes
-                      and (self.nodes[ref]['owner'] == address
+                      and ((self.nodes[ref]['owner'] == address
+                            and address in self.address_nodes)
                            or self.nodes[ref]['manager'] == address)):
                     node = self.nodes[ref]
                     details = post_content.get('details', {})
