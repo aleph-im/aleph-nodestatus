@@ -73,7 +73,7 @@ async def process_distribution(start_height, end_height, act=False,
     LOGGER.debug(f"Starting with ETH account {account.address}")
 
     if end_height == -1:
-        end_height = get_web3().eth.blockNumber
+        end_height = get_web3().eth.block_number
 
     if start_height == -1:
         last_end_height, dist = await get_latest_successful_distribution(

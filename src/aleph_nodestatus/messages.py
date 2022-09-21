@@ -57,7 +57,7 @@ async def process_message_history(tags, content_types, api_server,
                                   yield_unconfirmed=True, addresses=None,
                                   crawl_history=True):
     web3 = get_web3()
-    last_block = web3.eth.blockNumber
+    last_block = web3.eth.block_number
     params = {
         'msgType': message_type,
         'tags': ','.join(tags),

@@ -74,7 +74,8 @@ async def prepare_distribution(start_height, end_height):
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
             settings.aleph_api_server,
-            yield_unconfirmed=False))
+            yield_unconfirmed=False,
+            request_count=100000))
     ]
     nodes = None
     # TODO: handle decay

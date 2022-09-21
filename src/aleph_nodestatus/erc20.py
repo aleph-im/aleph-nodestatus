@@ -39,7 +39,7 @@ async def process_contract_history(contract_address, start_height, platform="ETH
             settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
         }
     last_height = start_height
-    end_height = web3.eth.blockNumber
+    end_height = web3.eth.block_number
 
     changed_addresses = set()
     

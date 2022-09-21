@@ -29,7 +29,7 @@ def get_web3():
         assert w3.isConnected()
         w3 = iw3
 
-    w3.eth.setGasPriceStrategy(rpc_gas_price_strategy)
+    w3.eth.set_gas_price_strategy(rpc_gas_price_strategy)
 
     return w3
 
@@ -49,7 +49,7 @@ def get_token_contract(web3):
 
 async def get_gas_price():
     w3 = get_web3()
-    return w3.eth.generateGasPrice()
+    return w3.eth.generate_gas_price()
 
 
 @lru_cache(maxsize=2)
@@ -75,7 +75,7 @@ async def transfer_tokens(targets, metadata=None):
     gas_price = await get_gas_price()
 
     if NONCE is None:
-        NONCE = w3.eth.getTransactionCount(account.address)
+        NONCE = w3.eth.get_transaction_count(account.address)
     tx_hash = None
 
     success = False
@@ -94,14 +94,14 @@ async def transfer_tokens(targets, metadata=None):
         #     'nonce': NONCE,
         #     })
         # print(gas)
-        tx = tx.buildTransaction({
+        tx = tx.build_transaction({
             'chainId': settings.ethereum_chain_id,
             'gas': 30000+(20000*len(targets)),
             'gasPrice': gas_price,
             'nonce': NONCE,
         })
-        signed_tx = account.signTransaction(tx)
-        tx_hash = w3.eth.sendRawTransaction(signed_tx.rawTransaction).hex()
+        signed_tx = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
         success = True
         NONCE += 1
         LOGGER.info(f"TX {tx_hash} created on ETH")
@@ -126,7 +126,7 @@ async def transfer_tokens(targets, metadata=None):
 
 
 async def get_logs_query(web3, contract, start_height, end_height, topics):
-    logs = web3.eth.getLogs({'address': contract.address,
+    logs = web3.eth.get_logs({'address': contract.address,
                              'fromBlock': start_height,
                              'toBlock': end_height,
                              'topics': topics})
@@ -147,7 +147,7 @@ async def get_logs(web3, contract, start_height, topics=None):
                 print(e.args)
                 return
 
-        last_block = web3.eth.blockNumber
+        last_block = web3.eth.block_number
 #         if (start_height < config.ethereum.start_height.value):
 #             start_height = config.ethereum.start_height.value
 

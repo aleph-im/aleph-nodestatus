@@ -82,7 +82,7 @@ async def solana_monitoring_process():
 
         if changed_items:
             print(changed_items)
-            await update_balances(account, web3.eth.blockNumber, balances)
+            await update_balances(account, web3.eth.block_number, balances)
             previous_balances = balances
         
         await asyncio.sleep(300)
