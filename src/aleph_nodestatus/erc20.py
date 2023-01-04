@@ -82,7 +82,7 @@ async def process_contract_history(contract_address, start_height, platform="ETH
 async def update_balances(account, height, balances):
     return await create_post(
         account, {
-            'tags': ['ERC20', settings.ethereum_sablier_contract,
+            'tags': ['ERC20', settings.ethereum_token_contract,
                      settings.filter_tag],
             'height': height,
             'main_height': height,  # ethereum height
