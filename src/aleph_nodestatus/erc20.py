@@ -83,6 +83,7 @@ async def update_balances(account, height, balances):
             'tags': ['ERC20', settings.ethereum_sablier_contract,
                      settings.filter_tag],
             'height': height,
+            'main_height': height,  # ethereum height
             'platform': '{}_{}'.format(settings.token_symbol,
                                                settings.chain_name),
             'token_contract': settings.ethereum_token_contract,

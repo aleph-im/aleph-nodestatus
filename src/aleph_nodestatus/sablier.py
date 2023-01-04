@@ -49,7 +49,7 @@ async def process_contract_history(contract_address, start_height,
         streams = {}
         
     last_height = start_height
-    end_height = web3.eth.blockNumber
+    end_height = web3.eth.block_number
 
     changed_addresses = set()
     
