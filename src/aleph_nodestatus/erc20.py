@@ -14,6 +14,8 @@ from web3._utils.events import (
 from web3.middleware import geth_poa_middleware, local_filter_middleware
 from web3.contract import get_event_data
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
+import logging
+LOGGER = logging.getLogger(__name__)
 
 DECIMALS = 10**settings.ethereum_decimals
 
@@ -102,6 +104,7 @@ async def erc20_monitoring_process():
     from .messages import get_aleph_account
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()
+    LOGGER.info("processing history")
     items = process_contract_history(
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)
@@ -110,6 +113,7 @@ async def erc20_monitoring_process():
     async for height, (balances, platform, changed_items) in items:
         last_height = height
         balances = balances
+    LOGGER.info("pushing current state")
     
     await update_balances(account, height, balances)
     
@@ -121,6 +125,7 @@ async def erc20_monitoring_process():
             pass
         
         if changed_items:
+            LOGGER.info("New data available for addresses %s, posting" % changed_items)
             await update_balances(account, height, balances)
         
         await asyncio.sleep(5)
