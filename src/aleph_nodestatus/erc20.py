@@ -127,5 +127,6 @@ async def erc20_monitoring_process():
         if changed_items:
             LOGGER.info("New data available for addresses %s, posting" % changed_items)
             await update_balances(account, height, balances)
+            last_height = height
         
         await asyncio.sleep(5)

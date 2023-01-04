@@ -170,6 +170,7 @@ async def sablier_monitoring_process():
         
         if changed_items:
             await update_balances(account, height, balances)
+            last_height = height
         
         await asyncio.sleep(5)
     
