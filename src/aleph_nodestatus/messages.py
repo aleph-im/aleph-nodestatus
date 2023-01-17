@@ -94,6 +94,7 @@ async def process_message_history(tags, content_types, api_server,
             for page in range(2, math.ceil(last_iteration_total/last_per_page)+1):
                 async with session.get(f'{api_server}/api/v0/messages.json',
                                         params={**params, "page": page}) as resp:
+                    items = await resp.json()
                     for message in items['messages']:
                         result = await get_message_result(message,
                                                     yield_unconfirmed=yield_unconfirmed,
