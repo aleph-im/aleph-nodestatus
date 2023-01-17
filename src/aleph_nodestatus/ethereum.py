@@ -56,7 +56,10 @@ async def get_gas_price():
 def get_account():
     if settings.ethereum_pkey:
         pri_key = HexBytes(settings.ethereum_pkey)
-        account = Account.privateKeyToAccount(pri_key)
+        try:
+            account = Account.privateKeyToAccount(pri_key)
+        except AttributeError:
+            account = Account.from_key(pri_key)
         return account
     else:
         return None
