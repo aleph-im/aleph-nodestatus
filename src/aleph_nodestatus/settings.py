@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     balances_platforms: List[str] = ["ALEPH_ETH_SABLIER", "ALEPH_SOL"]
     balances_senders: List[str] = ["0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"]
 
+    scores_senders: List[str] = ["0x4D52380D3191274a04846c89c069E6C3F2Ed94e4"]
+    scores_post_type: str = "aleph-scoring-scores"
+
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
