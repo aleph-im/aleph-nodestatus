@@ -50,11 +50,11 @@ class NodesStatus:
 
     async def update_node_stats(self, node_hash):
         node_info = self.nodes[node_hash]
-                  
+
         node_info['stakers'] = {addr: int(
                                         self.balances.get(addr, 0) /
                                         len(self.address_staking.get(addr, [])
-                                        )) 
+                                        ))
                                 for addr in node_info['stakers'].keys()}
         node_info['total_staked'] = sum(node_info['stakers'].values())
         if node_info['total_staked'] >= (ACTIVATION_AMT-(1*DECIMALS)):
@@ -78,7 +78,7 @@ class NodesStatus:
         self.address_nodes.pop(node['owner'])
         del self.nodes[node_hash]
         [await self.update_node_stats(nhash) for nhash in nodes_to_update]
-        
+
     async def remove_resource_node(self, node_hash):
         node = self.resource_nodes[node_hash]
         if node['parent'] is not None:
@@ -92,12 +92,12 @@ class NodesStatus:
         """
         # Let's copy it so we can iterate after modification
         node_hashes = self.address_staking[staker].copy()
-        
+
         if node_hash is not None:
             # Remove specific stake so the total is ok (used in
             # update_node_stats)
             self.address_staking[staker].remove(node_hash)
-            
+
         for nhash in node_hashes:
             if node_hash is None or nhash == node_hash:
                 # if we should remove that stake
@@ -109,7 +109,7 @@ class NodesStatus:
         if node_hash is None or len(self.address_staking[staker]) == 0:
             # if we have been asked to remove it all or there is no stake left
             self.address_staking.pop(staker)
-            
+
     async def _recompute_platform_balances(self, addresses):
         for addr in addresses:
             balance = 0
@@ -126,7 +126,7 @@ class NodesStatus:
                     addr: bal
                     for addr, bal in balances.items()}
                 await self._recompute_platform_balances(changed_addresses)
-                
+
                 for addr in changed_addresses:
                     if addr in self.address_nodes:
                         if self.balances.get(addr, 0) < NODE_AMT:
@@ -149,11 +149,44 @@ class NodesStatus:
 
                 if height > self.last_balance_height:
                     self.last_balance_height = height
-                    
+
                 if platform == "ETH" and height > self.last_eth_balance_height:
                     self.last_eth_balance_height = height
                 elif platform != "ETH" and height > self.last_others_balance_height:
                     self.last_others_balance_height = height
+
+            elif evt_type == 'score-update':
+                message_content = content['content']
+                post_type = message_content['type']
+                post_content = message_content['content']
+                address = message_content['address']
+
+                if post_type == settings.scores_post_type:
+                    for ccn_score in post_content['scores']['ccn']:
+                        node_id = ccn_score['node_id']
+                        score = ccn_score['total_score']
+                        performance = ccn_score['performance']
+                        decentralization = ccn_score['decentralization']
+                        if node_id in self.nodes:
+                            node = self.nodes[node_id]
+                            node['score'] = score
+                            node['performance'] = performance
+                            node['decentralization'] = decentralization
+                            node['score_updated'] = True
+
+                    for crn_score in post_content['scores']['crn']:
+                        node_id = crn_score['node_id']
+                        score = crn_score['total_score']
+                        performance = crn_score['performance']
+                        decentralization = crn_score['decentralization']
+                        if node_id in self.resource_nodes:
+                            node = self.resource_nodes[node_id]
+                            node['score'] = score
+                            node['performance'] = performance
+                            node['decentralization'] = decentralization
+                            node['score_updated'] = True
+
+
 
             elif evt_type == 'staking-update':
                 message_content = content['content']
@@ -188,27 +221,30 @@ class NodesStatus:
                             'status': 'waiting',
                             'time': content['time'],
                             'authorized': [],
-                            'resource_nodes': []
+                            'resource_nodes': [],
+                            'score': 0,
+                            'decentralization': 0,
+                            'performance': 0
                         }
-                        
+
                         for field in EDITABLE_FIELDS:
                             if field in ['reward', 'locked', 'authorized']:
                                 # special case already handled
                                 continue
-                            
+
                             new_node[field] = details.get(field, '')
-                            
+
                         if height < settings.bonus_start:
                             new_node['has_bonus'] = True
                         else:
                             new_node['has_bonus'] = False
-                            
+
                         self.address_nodes[address] = content['item_hash']
                         self.nodes[content['item_hash']] = new_node
                         if address in self.address_staking:
                             # remove any existing stake
                             await self.remove_stake(address)
-                            
+
                     elif (post_action == "create-resource-node"
                           and 'type' in post_content.get('details', {})):
                         details = post_content.get('details', {})
@@ -222,18 +258,21 @@ class NodesStatus:
                             'status': 'waiting',
                             'authorized': [],
                             'parent': None, # parent core node
-                            'time': content['time']
+                            'time': content['time'],
+                            'score': 0,
+                            'decentralization': 0,
+                            'performance': 0
                         }
-                        
+
                         for field in EDITABLE_FIELDS:
                             if field in ['reward']:
                                 # special case already handled
                                 continue
-                            
+
                             new_node[field] = details.get(field, '')
-                            
+
                         self.resource_nodes[content['item_hash']] = new_node
-                    
+
                     # resource node to core channel node link
                     elif (post_action == 'link'
                           # address should have a ccn
@@ -249,14 +288,14 @@ class NodesStatus:
                           and self.resource_nodes[ref]['parent'] is None
                           # nor be locked
                           and not self.resource_nodes[ref]['locked']):
-                        
+
                         node = self.nodes[existing_node]
                         resource_node = self.resource_nodes[ref]
                         node['resource_nodes'].append(ref)
                         resource_node['parent'] = existing_node
                         resource_node['status'] = "linked"
                         await self.update_node_stats(existing_node)
-                        
+
                     elif (post_action == 'unlink'
                           and ref is not None
                           and ref in self.resource_nodes
@@ -302,7 +341,7 @@ class NodesStatus:
                             self.balances[address]
                         self.address_staking[address] = [ref, ]
                         await self.update_node_stats(ref)
-                        
+
                     elif (post_action == "stake-split"
                             and self.balances.get(address, 0) >= STAKING_AMT
                             and ref is not None and ref in self.nodes
@@ -314,12 +353,12 @@ class NodesStatus:
                                  )):
                         if address not in self.address_staking:
                             self.address_staking[address] = list()
-                            
+
                         self.address_staking[address].append(ref)
                         self.nodes[ref]['stakers'][address] =\
                             int(self.balances[address] /
                                 len(self.address_staking[address]))
-                            
+
                         for node_ref in self.address_staking[address]:
                             await self.update_node_stats(node_ref)
 
@@ -327,13 +366,13 @@ class NodesStatus:
                           and address in self.address_staking
                           and ref is not None
                           and ref in existing_staking):
-                        
+
                         await self.remove_stake(address, ref)
 
                     else:
                         print("This message wasn't registered (invalid)")
                         changed = False
-                        
+
                 elif (post_type == 'amend'
                       and ref is not None
                       and ref in self.nodes
@@ -355,7 +394,7 @@ class NodesStatus:
                         else:
                             node[field] = details.get(field,
                                                       node.get(field, ''))
-                        
+
                 elif (post_type == 'amend'
                       and ref is not None
                       and ref in self.resource_nodes
@@ -376,11 +415,11 @@ class NodesStatus:
                         else:
                             node[field] = details.get(field,
                                                       node.get(field, ''))
-                    
+
                 else:
                     print("This message wasn't registered (invalid)")
                     changed = False
-                        
+
                 if height > self.last_message_height:
                     self.last_message_height = height
 
@@ -389,14 +428,14 @@ class NodesStatus:
 
             if height > self.last_checked_height:
                 self.last_checked_height = height
-            
+
         # yield(self.last_checked_height, self.nodes)
 
 
 async def process():
     state_machine = NodesStatus()
     account = get_aleph_account()
-    
+
     # Let's keep the last 100 seen TXs aside so we don't count a transfer twice
     # in case of a reorg
     last_seen_txs = deque([], maxlen=100)
@@ -410,12 +449,19 @@ async def process():
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
-            settings.aleph_api_server))
+            settings.aleph_api_server)),
+        prepare_items('score-update', process_message_history(
+            [settings.filter_tag],
+            [settings.scores_post_type],
+            message_type="POST",
+            addresses=settings.scores_senders,
+            api_server=settings.aleph_api_server,
+            request_count=50))
     ]
     nodes = None
     async for height, nodes, resource_nodes in state_machine.process(iterators):
         pass
-    
+
     print("should set status")
     await set_status(account, nodes, resource_nodes)
 
@@ -454,7 +500,21 @@ async def process():
                                   # TODO: pass platform_balances here
                                   request_sort='-1')
                               ))
-            
+        if not i % 3600:
+            iterators.append(
+                prepare_items('score-update',
+                              process_message_history(
+                                  [settings.filter_tag],
+                                  [settings.scores_post_type],
+                                  message_type="POST",
+                                  addresses=settings.scores_senders,
+                                  api_server=settings.aleph_api_server,
+                                  min_height=state_machine.last_score_height+1,
+                                  request_count=50,
+                                  crawl_history=False,
+                                  request_sort='-1'))
+                              )
+
         nodes = None
         async for height, nodes, resource_nodes in state_machine.process(iterators):
             pass
@@ -464,4 +524,3 @@ async def process():
             print("should set status")
 
         await asyncio.sleep(1)
-        

@@ -12,6 +12,22 @@ import logging
 LOGGER = logging.getLogger(__name__)
 
 
+def compute_score_multiplier(score: float) -> float:
+    """
+    Compute the score multiplier
+    """
+    if score < 0.2:
+        # The score is zero below 20%
+        return 0
+    elif score >= 0.8:
+        # The score is 1 above 80%
+        return 1
+    else:
+        # The score is normalized between 20% and 80%
+        assert 0.2 <= score <= 0.8
+        return (score - 0.2) / 0.6
+
+
 async def create_distribution_tx_post(distribution):
     print(f"Preparing pending TX post {distribution}")
     post = await create_post(
@@ -75,7 +91,14 @@ async def prepare_distribution(start_height, end_height):
             [settings.node_post_type, 'amend'],
             settings.aleph_api_server,
             yield_unconfirmed=False,
-            request_count=100000))
+            request_count=100000)),
+        prepare_items('score-update', process_message_history(
+            [settings.filter_tag],
+            [settings.scores_post_type],
+            message_type="POST",
+            addresses=settings.scores_senders,
+            api_server=settings.aleph_api_server,
+            request_count=50))
     ]
     nodes = None
     # TODO: handle decay
@@ -134,16 +157,28 @@ async def prepare_distribution(start_height, end_height):
                         rnode_reward_address = rtaddress
                 except Exception:
                     LOGGER.debug("Bad reward address, defaulting to owner")
-                
+
+                crn_multiplier = compute_score_multiplier(rnode['score'])
+                crn_max_rewards = (500 + rnode['decentralization'] * 2500)
+
+                per_resource_node = crn_max_rewards * crn_multiplier
+
                 rewards[rnode_reward_address] = rewards.get(rnode_reward_address, 0) + per_resource_node
                 
-                paid_node_count += 1
+                if crn_multiplier > 0:
+                    paid_node_count += 1
                 
             if paid_node_count > settings.node_max_paid:
                 paid_node_count = settings.node_max_paid
-                
-            this_node_modifier = (0.7 + (0.1*paid_node_count))
-            
+
+            score_multiplier = compute_score_multiplier(node['score'])
+            assert 0 <= score_multiplier <= 1, "Invalid value of the score multiplier"
+
+            linkage = (0.7 + (0.1 * paid_node_count))
+            assert 0.7 <= linkage <= 1, "Invalid value of the linkage"
+
+            this_node_modifier = linkage * score_multiplier
+
             this_node = this_node * this_node_modifier
                 
             try:
