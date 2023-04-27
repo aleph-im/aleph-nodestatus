@@ -450,15 +450,14 @@ async def process():
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
-            settings.aleph_api_server,
-            request_count=5000)),
+            settings.aleph_api_server)),
         prepare_items('score-update', process_message_history(
             [settings.filter_tag],
             [settings.scores_post_type],
             message_type="POST",
             addresses=settings.scores_senders,
             api_server=settings.aleph_api_server,
-            request_count=100))
+            request_count=50))
     ]
     nodes = None
     async for height, nodes, resource_nodes in state_machine.process(iterators):

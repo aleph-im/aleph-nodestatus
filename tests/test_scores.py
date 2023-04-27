@@ -50,3 +50,4 @@ async def test_prepare_items_process_scores_history():
         print(item)
 
     assert False
+

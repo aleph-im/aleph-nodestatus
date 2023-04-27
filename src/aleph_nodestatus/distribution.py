@@ -85,14 +85,13 @@ async def prepare_distribution(start_height, end_height):
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)),
         prepare_items('balance-update', process_balances_history(
-            settings.ethereum_min_height,
-            request_count=500)),
+            settings.ethereum_min_height)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
             settings.aleph_api_server,
             yield_unconfirmed=False,
-            request_count=5000)),
+            request_count=100000)),
         prepare_items('score-update', process_message_history(
             [settings.filter_tag],
             [settings.scores_post_type],
@@ -176,12 +175,13 @@ async def prepare_distribution(start_height, end_height):
             assert 0 <= score_multiplier <= 1, "Invalid value of the score multiplier"
 
             linkage = (0.7 + (0.1 * paid_node_count))
+
             assert 0.7 <= linkage <= 1, "Invalid value of the linkage"
 
             this_node_modifier = linkage * score_multiplier
 
             this_node = this_node * this_node_modifier
-                
+            
             try:
                 taddress = web3.toChecksumAddress(node.get('reward', None))
                 if taddress:
@@ -211,4 +211,3 @@ async def prepare_distribution(start_height, end_height):
     LOGGER.info(f'Rewards from {reward_start} to {end_height}, total {sum(rewards.values())}')
     return reward_start, end_height, rewards
 
-    
