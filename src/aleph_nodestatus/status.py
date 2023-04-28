@@ -155,6 +155,109 @@ class NodesStatus:
                 elif platform != "ETH" and height > self.last_others_balance_height:
                     self.last_others_balance_height = height
 
+            elif evt_type == 'score-update':
+                message_content = content['content']
+                post_type = message_content['type']
+                post_content = message_content['content']
+                address = message_content['address']
+
+                
+
+                """ Exemple post_content:
+
+"content":{
+    "tags":[
+        "mainnet"
+    ],
+    "period":{
+        "to_date":"2023-04-28T11:00:04.674654",
+        "from_date":"2023-04-27T11:00:04.674654"
+    },
+    "scores":{
+        "ccn":[
+            {
+            "node_id":"04dde78cb6329015cbc1ffc6db1f16c000b13c736b4b6df3329aa9b85cfb3543",
+            "version":0,
+            "performance":0.6985680180918374,
+            "total_score":0,
+            "measurements":{
+            "total_nodes":73,
+            "node_version_other":0,
+            "node_version_latest":0,
+            "node_version_missing":0,
+            "node_version_obsolete":58,
+            "node_version_outdated":0,
+            "base_latency_score_p25":0.9477471113204956,
+            "base_latency_score_p95":0.36715608835220337,
+            "node_version_prerelease":0,
+            "nodes_with_identical_asn":33,
+            "metrics_latency_score_p25":0.9760611534118653,
+            "metrics_latency_score_p95":0.43176407814025874,
+            "aggregate_latency_score_p25":0.9828459024429321,
+            "aggregate_latency_score_p95":0.8063062429428101,
+            "eth_height_remaining_score_p25":0,
+            "eth_height_remaining_score_p95":0,
+            "file_download_latency_score_p25":0.9745053052902222,
+            "file_download_latency_score_p95":0.8220905363559723
+            },
+            "decentralization":0.3002439482079189
+            },],
+        "crn":[
+            {
+            "node_id":"00bdad0d1a113f9efda53fe54c334fea45bc6aeb2b6d4bc008fcaab03f89433b",
+            "version":1,
+            "performance":0.9335530328626697,
+            "total_score":0.9662054816976924,
+            "measurements":{
+            "total_nodes":236,
+            "node_version_other":0,
+            "node_version_latest":58,
+            "node_version_missing":0,
+            "node_version_obsolete":0,
+            "node_version_outdated":0,
+            "base_latency_score_p25":0.9744776487350464,
+            "base_latency_score_p95":0.9073173999786377,
+            "node_version_prerelease":0,
+            "nodes_with_identical_asn":138,
+            "full_check_latency_score_p25":0.8825560808181763,
+            "full_check_latency_score_p95":0.8634036779403687,
+            "diagnostic_vm_latency_score_p25":0.9733802795410156,
+            "diagnostic_vm_latency_score_p95":0.9700444221496582
+            },
+            "decentralization":0.17243608158575122
+            },],
+        },
+        "version":"1.1"
+    }
+"""
+
+                if post_type == settings.scores_post_type:
+                    for ccn_score in post_content['scores']['ccn']:
+                        node_id = ccn_score['node_id']
+                        score = ccn_score['total_score']
+                        performance = ccn_score['performance']
+                        decentralization = ccn_score['decentralization']
+                        if node_id in self.nodes:
+                            node = self.nodes[node_id]
+                            node['score'] = score
+                            node['performance'] = performance
+                            node['decentralization'] = decentralization
+                            node['score_updated'] = True
+                    
+                    for crn_score in post_content['scores']['crn']:
+                        node_id = crn_score['node_id']
+                        score = crn_score['total_score']
+                        performance = crn_score['performance']
+                        decentralization = crn_score['decentralization']
+                        if node_id in self.resource_nodes:
+                            node = self.resource_nodes[node_id]
+                            node['score'] = score
+                            node['performance'] = performance
+                            node['decentralization'] = decentralization
+                            node['score_updated'] = True
+
+
+
             elif evt_type == 'staking-update':
                 message_content = content['content']
                 post_type = message_content['type']
@@ -188,7 +291,10 @@ class NodesStatus:
                             'status': 'waiting',
                             'time': content['time'],
                             'authorized': [],
-                            'resource_nodes': []
+                            'resource_nodes': [],
+                            'score': 0,
+                            'decentralization': 0,
+                            'performance': 0
                         }
                         
                         for field in EDITABLE_FIELDS:
@@ -222,7 +328,10 @@ class NodesStatus:
                             'status': 'waiting',
                             'authorized': [],
                             'parent': None, # parent core node
-                            'time': content['time']
+                            'time': content['time'],
+                            'score': 0,
+                            'decentralization': 0,
+                            'performance': 0
                         }
                         
                         for field in EDITABLE_FIELDS:
@@ -410,7 +519,14 @@ async def process():
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
-            settings.aleph_api_server))
+            settings.aleph_api_server)),
+        prepare_items('score-update', process_message_history(
+            [settings.filter_tag],
+            [settings.scores_post_type],
+            message_type="POST",
+            addresses=settings.scores_senders,
+            api_server=settings.aleph_api_server,
+            request_count=50))
     ]
     nodes = None
     async for height, nodes, resource_nodes in state_machine.process(iterators):
@@ -454,6 +570,20 @@ async def process():
                                   # TODO: pass platform_balances here
                                   request_sort='-1')
                               ))
+        if not i % 3600:
+            iterators.append(
+                prepare_items('score-update',
+                              process_message_history(
+                                  [settings.filter_tag],
+                                  [settings.scores_post_type],
+                                  message_type="POST",
+                                  addresses=settings.scores_senders,
+                                  api_server=settings.aleph_api_server,
+                                  min_height=state_machine.last_score_height+1,
+                                  request_count=50,
+                                  crawl_history=False,
+                                  request_sort='-1'))
+                              )
             
         nodes = None
         async for height, nodes, resource_nodes in state_machine.process(iterators):

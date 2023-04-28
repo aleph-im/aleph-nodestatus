@@ -92,9 +92,13 @@ async def prepare_distribution(start_height, end_height):
             settings.aleph_api_server,
             yield_unconfirmed=False,
             request_count=100000)),
-        prepare_items('score-update', process_scores_history(
-            settings=settings,
-        ))
+        prepare_items('score-update', process_message_history(
+            [settings.filter_tag],
+            [settings.scores_post_type],
+            message_type="POST",
+            addresses=settings.scores_senders,
+            api_server=settings.aleph_api_server,
+            request_count=50))
     ]
     nodes = None
     # TODO: handle decay
@@ -154,23 +158,23 @@ async def prepare_distribution(start_height, end_height):
                 except Exception:
                     LOGGER.debug("Bad reward address, defaulting to owner")
 
-                crn_multiplier = compute_score_multiplier(crn_total_score)
-                decentralization_score = crn_decentralization
-                crn_max_rewards = (500 + decentralization_score * 2500)
+                crn_multiplier = compute_score_multiplier(rnode['score'])
+                crn_max_rewards = (500 + rnode['decentralization'] * 2500)
 
                 per_resource_node = crn_max_rewards * crn_multiplier
 
                 rewards[rnode_reward_address] = rewards.get(rnode_reward_address, 0) + per_resource_node
                 
-                paid_node_count += 1
+                if crn_multiplier > 0:
+                    paid_node_count += 1
                 
             if paid_node_count > settings.node_max_paid:
                 paid_node_count = settings.node_max_paid
 
-            score_multiplier = compute_score_multiplier(this_node_total_score)
+            score_multiplier = compute_score_multiplier(node['score'])
             assert 0 <= score_multiplier <= 1, "Invalid value of the score multiplier"
 
-            linkage = (0.7 + (0.1*paid_node_count))
+            linkage = (0.7 + (0.1 * paid_node_count))
             assert 0.7 <= linkage <= 1, "Invalid value of the linkage"
 
             this_node_modifier = linkage * score_multiplier
