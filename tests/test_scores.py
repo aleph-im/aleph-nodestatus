@@ -5,6 +5,7 @@ import pytest
 from aleph_nodestatus.distribution import compute_score_multiplier
 from aleph_nodestatus.scores import process_scores_history
 from aleph_nodestatus.settings import settings
+from aleph_nodestatus.status import prepare_items
 
 
 def test_compute_score_multiplier():
@@ -23,3 +24,29 @@ def test_compute_score_multiplier():
     assert t(0.8) == 1
     assert t(0.9) == 1
     assert t(1.0) == 1
+
+
+@pytest.mark.asyncio
+async def test_process_scores_history():
+
+    value = process_scores_history(settings)
+
+    messages = []
+    async for message in value:
+        sys.stdout.write('.')
+        sys.stdout.flush()
+        messages.append(message)
+
+    print(len(messages))
+
+
+@pytest.mark.asyncio
+async def test_prepare_items_process_scores_history():
+    result = prepare_items('score-update', process_scores_history(
+        settings=settings,
+    ))
+    print(result)
+    async for item in result:
+        print(item)
+
+    assert False

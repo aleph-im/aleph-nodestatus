@@ -91,7 +91,10 @@ async def prepare_distribution(start_height, end_height):
             [settings.node_post_type, 'amend'],
             settings.aleph_api_server,
             yield_unconfirmed=False,
-            request_count=100000))
+            request_count=100000)),
+        prepare_items('score-update', process_scores_history(
+            settings=settings,
+        ))
     ]
     nodes = None
     # TODO: handle decay
