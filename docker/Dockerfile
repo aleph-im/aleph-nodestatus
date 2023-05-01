@@ -5,4 +5,3 @@ ADD ../ /aleph-nodestatus
 WORKDIR /aleph-nodestatus
 RUN python -m pip install -r requirements.txt
 RUN python setup.py install
-RUN /etc/init.d/cron start

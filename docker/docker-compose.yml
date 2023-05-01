@@ -9,4 +9,4 @@ services:
     volumes:
       - ../:/aleph-nodestatus
       - ../logs:/logs
-    command: /bin/bash -c "echo \"*/10 * * * * nodestatus-distribute -v >> /logs/nodestatus.log\" | crontab - && /bin/sh"
+    command: /bin/bash -c "service cron start && echo \"*/10 * * * * nodestatus-distribute -v >> /logs/nodestatus.log\" | crontab - && /bin/sh"
