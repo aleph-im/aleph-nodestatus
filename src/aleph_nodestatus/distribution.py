@@ -85,13 +85,14 @@ async def prepare_distribution(start_height, end_height):
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)),
         prepare_items('balance-update', process_balances_history(
-            settings.ethereum_min_height)),
+            settings.ethereum_min_height,
+            request_count=500)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
             settings.aleph_api_server,
             yield_unconfirmed=False,
-            request_count=100000)),
+            request_count=5000)),
         prepare_items('score-update', process_message_history(
             [settings.filter_tag],
             [settings.scores_post_type],
