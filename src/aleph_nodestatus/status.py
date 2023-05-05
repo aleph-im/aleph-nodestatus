@@ -445,18 +445,20 @@ async def process():
             settings.ethereum_token_contract, settings.ethereum_min_height,
             last_seen=last_seen_txs)),
         prepare_items('balance-update', process_balances_history(
-            settings.ethereum_min_height)),
+            settings.ethereum_min_height,
+            request_count=1000)),
         prepare_items('staking-update', process_message_history(
             [settings.filter_tag],
             [settings.node_post_type, 'amend'],
-            settings.aleph_api_server)),
+            settings.aleph_api_server,
+            request_count=5000)),
         prepare_items('score-update', process_message_history(
             [settings.filter_tag],
             [settings.scores_post_type],
             message_type="POST",
             addresses=settings.scores_senders,
             api_server=settings.aleph_api_server,
-            request_count=50))
+            request_count=100))
     ]
     nodes = None
     async for height, nodes, resource_nodes in state_machine.process(iterators):
