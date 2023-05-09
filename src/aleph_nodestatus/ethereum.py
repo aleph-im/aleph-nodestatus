@@ -1,16 +1,18 @@
-import web3
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
 import json
+import logging
 import os
+from functools import lru_cache
 from pathlib import Path
+
+import aiohttp
+import web3
 from eth_account import Account
 from hexbytes import HexBytes
-from functools import lru_cache
 from requests import ReadTimeout
-import aiohttp
+from web3.gas_strategies.rpc import rpc_gas_price_strategy
+
 from .settings import settings
 
-import logging
 LOGGER = logging.getLogger(__name__)
 
 DECIMALS = 10**18
@@ -22,10 +24,10 @@ NONCE = None
 def get_web3():
     w3 = None
     if settings.ethereum_api_server:
-        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(
-            settings.ethereum_api_server))
+        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(settings.ethereum_api_server))
     else:
         from web3.auto.infura import w3 as iw3
+
         assert w3.isConnected()
         w3 = iw3
 
@@ -36,14 +38,17 @@ def get_web3():
 
 @lru_cache(maxsize=2)
 def get_token_contract_abi():
-    return json.load(open(os.path.join(Path(__file__).resolve().parent,
-                                       'abi/ALEPHERC20.json')))
+    return json.load(
+        open(os.path.join(Path(__file__).resolve().parent, "abi/ALEPHERC20.json"))
+    )
 
 
 @lru_cache(maxsize=2)
 def get_token_contract(web3):
-    tokens = web3.eth.contract(address=web3.toChecksumAddress(
-        settings.ethereum_token_contract), abi=get_token_contract_abi())
+    tokens = web3.eth.contract(
+        address=web3.toChecksumAddress(settings.ethereum_token_contract),
+        abi=get_token_contract_abi(),
+    )
     return tokens
 
 
@@ -84,25 +89,28 @@ async def transfer_tokens(targets, metadata=None):
     success = False
 
     try:
-        balance = contract.functions.balanceOf(account.address).call()/DECIMALS
-        if (total >= balance):
+        balance = contract.functions.balanceOf(account.address).call() / DECIMALS
+        if total >= balance:
             raise ValueError(f"Balance not enough ({total}/{balance})")
 
         tx = contract.functions.batchTransfer(
             [w3.toChecksumAddress(addr) for addr in targets.keys()],
-            [int(amount*DECIMALS) for amount in targets.values()])
+            [int(amount * DECIMALS) for amount in targets.values()],
+        )
         # gas = tx.estimateGas({
         #     'chainId': 1,
         #     'gasPrice': gas_price,
         #     'nonce': NONCE,
         #     })
         # print(gas)
-        tx = tx.build_transaction({
-            'chainId': settings.ethereum_chain_id,
-            'gas': 30000+(20000*len(targets)),
-            'gasPrice': gas_price,
-            'nonce': NONCE,
-        })
+        tx = tx.build_transaction(
+            {
+                "chainId": settings.ethereum_chain_id,
+                "gas": 30000 + (20000 * len(targets)),
+                "gasPrice": gas_price,
+                "nonce": NONCE,
+            }
+        )
         signed_tx = account.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
         success = True
@@ -112,55 +120,60 @@ async def transfer_tokens(targets, metadata=None):
     except:
         LOGGER.exception("Error packing ethereum TX")
 
-    if 'targets' not in metadata:
-        metadata['targets'] = list()
-    metadata['targets'].append({
-        'success': success,
-        'status': success and 'pending' or 'failed',
-        'tx': tx_hash,
-        'chain': 'ETH',
-        'sender': account.address,
-        'targets': targets,
-        'total': total,
-        'contract_total': str(int(total*DECIMALS))
-    })
+    if "targets" not in metadata:
+        metadata["targets"] = list()
+    metadata["targets"].append(
+        {
+            "success": success,
+            "status": success and "pending" or "failed",
+            "tx": tx_hash,
+            "chain": "ETH",
+            "sender": account.address,
+            "targets": targets,
+            "total": total,
+            "contract_total": str(int(total * DECIMALS)),
+        }
+    )
 
     return metadata
 
 
 async def get_logs_query(web3, contract, start_height, end_height, topics):
-    logs = web3.eth.get_logs({'address': contract.address,
-                             'fromBlock': start_height,
-                             'toBlock': end_height,
-                             'topics': topics})
+    logs = web3.eth.get_logs(
+        {
+            "address": contract.address,
+            "fromBlock": start_height,
+            "toBlock": end_height,
+            "topics": topics,
+        }
+    )
     for log in logs:
         yield log
-        
+
 
 async def get_logs(web3, contract, start_height, topics=None):
     try:
-        logs = get_logs_query(web3, contract,
-                              start_height+1, 'latest', topics=topics)
+        logs = get_logs_query(web3, contract, start_height + 1, "latest", topics=topics)
         async for log in logs:
             yield log
     except (ValueError, ReadTimeout) as e:
         # we got an error, let's try the pagination aware version.
         if isinstance(e, ValueError):
-            if e.args[0]['code'] not in [-32000, -32005]:
+            if e.args[0]["code"] not in [-32000, -32005]:
                 print(e.args)
                 return
 
         last_block = web3.eth.block_number
-#         if (start_height < config.ethereum.start_height.value):
-#             start_height = config.ethereum.start_height.value
+        #         if (start_height < config.ethereum.start_height.value):
+        #             start_height = config.ethereum.start_height.value
 
         end_height = start_height + settings.ethereum_block_width_big
 
         while True:
             try:
-                logs = get_logs_query(web3, contract,
-                                      start_height, end_height,
-                                      topics=topics)
+                logs = get_logs_query(
+                    web3, contract, start_height, end_height, topics=topics
+                )
                 async for log in logs:
                     yield log
 
@@ -172,7 +185,7 @@ async def get_logs(web3, contract, start_height, topics=None):
                     break
 
             except ValueError as e:
-                if e.args[0]['code'] == -32005:
+                if e.args[0]["code"] == -32005:
                     end_height = start_height + settings.ethereum_block_width_small
                 else:
                     raise

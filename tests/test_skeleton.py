@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import pytest
+
 from aleph_nodestatus.skeleton import fib
 
 __author__ = "Jonathan Schemoul"
