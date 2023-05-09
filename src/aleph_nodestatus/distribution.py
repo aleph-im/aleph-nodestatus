@@ -1,14 +1,16 @@
+import logging
 import math
 from collections import deque
-from .status import NodesStatus, prepare_items
-from .erc20 import process_contract_history, DECIMALS
-from .ethereum import get_web3
-from .messages import process_message_history, get_aleph_account, get_aleph_address
-from .monitored import process_balances_history
-from .settings import settings
+
 from aleph_client.asynchronous import create_post, get_posts
 
-import logging
+from .erc20 import DECIMALS, process_contract_history
+from .ethereum import get_web3
+from .messages import get_aleph_account, get_aleph_address, process_message_history
+from .monitored import process_balances_history
+from .settings import settings
+from .status import NodesStatus, prepare_items
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -33,9 +35,10 @@ async def create_distribution_tx_post(distribution):
     post = await create_post(
         get_aleph_account(),
         distribution,
-        post_type='staking-rewards-distribution',
+        post_type="staking-rewards-distribution",
         channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server)
+        api_server=settings.aleph_api_server,
+    )
     return post
 
 
@@ -45,30 +48,32 @@ async def get_latest_successful_distribution(sender=None):
     posts = await get_posts(
         types=["staking-rewards-distribution"],
         addresses=[sender],
-        api_server=settings.aleph_api_server)
+        api_server=settings.aleph_api_server,
+    )
 
     current_post = None
     current_end_height = 0
-    for post in posts['posts']:
+    for post in posts["posts"]:
         successful = False
-        if post['content']['status'] != 'distribution':
+        if post["content"]["status"] != "distribution":
             pass
 
-        for target in post['content'].get('targets', []):
-            if target['success']:
+        for target in post["content"].get("targets", []):
+            if target["success"]:
                 successful = True
                 break
-        
+
         if successful:
-            if post['content']['end_height'] >= current_end_height:
+            if post["content"]["end_height"] >= current_end_height:
                 current_post = post
-                current_end_height = post['content']['end_height']
+                current_end_height = post["content"]["end_height"]
                 continue
-    
+
     if current_post is not None:
-        return current_end_height, current_post['content']
+        return current_end_height, current_post["content"]
     else:
         return 0, None
+
 
 async def prepare_distribution(start_height, end_height):
     state_machine = NodesStatus()
@@ -81,120 +86,144 @@ async def prepare_distribution(start_height, end_height):
     last_seen_txs = deque([], maxlen=100)
 
     iterators = [
-        prepare_items('balance-update', process_contract_history(
-            settings.ethereum_token_contract, settings.ethereum_min_height,
-            last_seen=last_seen_txs)),
-        prepare_items('balance-update', process_balances_history(
-            settings.ethereum_min_height)),
-        prepare_items('staking-update', process_message_history(
-            [settings.filter_tag],
-            [settings.node_post_type, 'amend'],
-            settings.aleph_api_server,
-            yield_unconfirmed=False,
-            request_count=100000)),
-        prepare_items('score-update', process_message_history(
-            [settings.filter_tag],
-            [settings.scores_post_type],
-            message_type="POST",
-            addresses=settings.scores_senders,
-            api_server=settings.aleph_api_server,
-            request_count=50))
+        prepare_items(
+            "balance-update",
+            process_contract_history(
+                settings.ethereum_token_contract,
+                settings.ethereum_min_height,
+                last_seen=last_seen_txs,
+            ),
+        ),
+        prepare_items(
+            "balance-update", process_balances_history(settings.ethereum_min_height)
+        ),
+        prepare_items(
+            "staking-update",
+            process_message_history(
+                [settings.filter_tag],
+                [settings.node_post_type, "amend"],
+                settings.aleph_api_server,
+                yield_unconfirmed=False,
+                request_count=100000,
+            ),
+        ),
+        prepare_items(
+            "score-update",
+            process_message_history(
+                [settings.filter_tag],
+                [settings.scores_post_type],
+                message_type="POST",
+                addresses=settings.scores_senders,
+                api_server=settings.aleph_api_server,
+                request_count=50,
+            ),
+        ),
     ]
     nodes = None
     # TODO: handle decay
     nodes_rewards = settings.reward_nodes_daily / settings.ethereum_blocks_per_day
+
     def compute_resource_node_rewards(decentralization_factor):
-        return (settings.reward_resource_node_monthly_base
-                + (settings.reward_resource_node_monthly_variable
-                   * decentralization_factor)) / 30 / settings.ethereum_blocks_per_day
+        return (
+            (
+                settings.reward_resource_node_monthly_base
+                + (
+                    settings.reward_resource_node_monthly_variable
+                    * decentralization_factor
+                )
+            )
+            / 30
+            / settings.ethereum_blocks_per_day
+        )
 
     def process_distribution(nodes, resource_nodes, since, current):
         # Ignore if we aren't in distribution period yet.
         # Handle calculation for previous period now.
         block_count = current - since
         LOGGER.debug(f"Calculating for block {current}, {block_count} blocks")
-        active_nodes = [node for node
-                        in nodes.values()
-                        if node['status'] == 'active']
+        active_nodes = [node for node in nodes.values() if node["status"] == "active"]
         if not active_nodes:
             return
 
         # TODO: handle decay
-        per_day = ((math.log10(len(active_nodes))+1)/3) * settings.reward_stakers_daily_base
+        per_day = (
+            (math.log10(len(active_nodes)) + 1) / 3
+        ) * settings.reward_stakers_daily_base
         stakers_reward = (per_day / settings.ethereum_blocks_per_day) * block_count
 
         per_node = (nodes_rewards / len(active_nodes)) * block_count
         # per_resource_node = resource_node_rewards * block_count
-        total_staked = sum([
-            sum(node['stakers'].values())
-            for node in active_nodes
-        ])
+        total_staked = sum([sum(node["stakers"].values()) for node in active_nodes])
         per_bonus_node = per_node
         if current > settings.bonus_start:
-            modifier = (
-                settings.bonus_modifier
-                - ((current-settings.bonus_start) * settings.bonus_decay)
+            modifier = settings.bonus_modifier - (
+                (current - settings.bonus_start) * settings.bonus_decay
             )
             if modifier > 1:
                 per_bonus_node = per_node * modifier
-                
+
         for node in active_nodes:
-            reward_address = node['owner']
+            reward_address = node["owner"]
             this_node = per_node
-            if node['has_bonus']:
+            if node["has_bonus"]:
                 this_node = per_bonus_node
-                
-            rnodes = node['resource_nodes']
+
+            rnodes = node["resource_nodes"]
             paid_node_count = 0
             for rnode_id in rnodes:
                 rnode = resource_nodes.get(rnode_id, None)
                 if rnode is None:
                     continue
-                if rnode['status'] != 'linked':
+                if rnode["status"] != "linked":
                     continue
-                
-                rnode_reward_address = rnode['owner']
+
+                rnode_reward_address = rnode["owner"]
                 try:
-                    rtaddress = web3.toChecksumAddress(rnode.get('reward', None))
+                    rtaddress = web3.toChecksumAddress(rnode.get("reward", None))
                     if rtaddress:
                         rnode_reward_address = rtaddress
                 except Exception:
                     LOGGER.debug("Bad reward address, defaulting to owner")
 
-                crn_multiplier = compute_score_multiplier(rnode['score'])
+                crn_multiplier = compute_score_multiplier(rnode["score"])
 
-                this_resource_node = compute_resource_node_rewards(rnode['decentralization']) * block_count * crn_multiplier
+                this_resource_node = (
+                    compute_resource_node_rewards(rnode["decentralization"])
+                    * block_count
+                    * crn_multiplier
+                )
 
-                rewards[rnode_reward_address] = rewards.get(rnode_reward_address, 0) + this_resource_node
-                
+                rewards[rnode_reward_address] = (
+                    rewards.get(rnode_reward_address, 0) + this_resource_node
+                )
+
                 if crn_multiplier > 0:
                     paid_node_count += 1
-                
+
             if paid_node_count > settings.node_max_paid:
                 paid_node_count = settings.node_max_paid
 
-            score_multiplier = compute_score_multiplier(node['score'])
+            score_multiplier = compute_score_multiplier(node["score"])
             assert 0 <= score_multiplier <= 1, "Invalid value of the score multiplier"
 
-            linkage = (0.7 + (0.1 * paid_node_count))
+            linkage = 0.7 + (0.1 * paid_node_count)
 
             assert 0.7 <= linkage <= 1, "Invalid value of the linkage"
 
             this_node_modifier = linkage * score_multiplier
 
             this_node = this_node * this_node_modifier
-            
+
             try:
-                taddress = web3.toChecksumAddress(node.get('reward', None))
+                taddress = web3.toChecksumAddress(node.get("reward", None))
                 if taddress:
                     reward_address = taddress
             except Exception:
                 LOGGER.debug("Bad reward address, defaulting to owner")
             rewards[reward_address] = rewards.get(reward_address, 0) + this_node
 
-            for addr, value in node['stakers'].items():
-                sreward = (((value / total_staked) * stakers_reward)
-                           * this_node_modifier)
+            for addr, value in node["stakers"].items():
+                sreward = ((value / total_staked) * stakers_reward) * this_node_modifier
                 rewards[addr] = rewards.get(addr, 0) + sreward
 
     last_height = reward_start
@@ -205,11 +234,14 @@ async def prepare_distribution(start_height, end_height):
         if height > end_height:
             break
         if height > reward_start:
-            process_distribution(nodes, resource_nodes, max(last_height, reward_start), height)
+            process_distribution(
+                nodes, resource_nodes, max(last_height, reward_start), height
+            )
 
         last_height = height
 
     process_distribution(nodes, resource_nodes, last_height, end_height)
-    LOGGER.info(f'Rewards from {reward_start} to {end_height}, total {sum(rewards.values())}')
+    LOGGER.info(
+        f"Rewards from {reward_start} to {end_height}, total {sum(rewards.values())}"
+    )
     return reward_start, end_height, rewards
-

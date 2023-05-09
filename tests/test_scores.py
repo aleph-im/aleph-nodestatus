@@ -13,7 +13,7 @@ def test_compute_score_multiplier():
     assert t(0) == 0
     assert t(1) == 1
 
-    assert t(0.) == 0
+    assert t(0.0) == 0
     assert t(0.1) == 0
     assert t(0.2) == 0
     assert t(0.3) == 0.16666666666666663
@@ -28,12 +28,11 @@ def test_compute_score_multiplier():
 
 @pytest.mark.asyncio
 async def test_process_scores_history():
-
     value = process_scores_history(settings)
 
     messages = []
     async for message in value:
-        sys.stdout.write('.')
+        sys.stdout.write(".")
         sys.stdout.flush()
         messages.append(message)
 
@@ -42,12 +41,14 @@ async def test_process_scores_history():
 
 @pytest.mark.asyncio
 async def test_prepare_items_process_scores_history():
-    result = prepare_items('score-update', process_scores_history(
-        settings=settings,
-    ))
+    result = prepare_items(
+        "score-update",
+        process_scores_history(
+            settings=settings,
+        ),
+    )
     print(result)
     async for item in result:
         print(item)
 
     assert False
-

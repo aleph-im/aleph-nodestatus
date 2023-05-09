@@ -3,7 +3,8 @@ https://github.com/joshp123/heapq_async/blob/master/heapq_async.py
 """
 import logging
 from datetime import datetime
-from heapq import heapify, heappop, heapreplace, merge as stdlib_merge
+from heapq import heapify, heappop, heapreplace
+from heapq import merge as stdlib_merge
 
 from web3 import Web3
 
@@ -28,9 +29,7 @@ async def merge(*iterables, key=None, reverse=False):
         for line in stdlib_merge(*iterables, key, reverse):
             yield line
     except TypeError:
-        log.debug(
-            "Couldn't fall back to naive implementation. Using async version."
-        )
+        log.debug("Couldn't fall back to naive implementation. Using async version.")
 
     h = []
     h_append = h.append

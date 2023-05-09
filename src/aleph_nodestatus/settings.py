@@ -1,7 +1,6 @@
+from typing import List
+
 from pydantic import BaseSettings
-from typing import (
-   List
-)
 
 
 class Settings(BaseSettings):
@@ -27,10 +26,10 @@ class Settings(BaseSettings):
     ethereum_batch_size: int = 200
     ethereum_block_width_big: int = 50000
     ethereum_block_width_small: int = 10000
-    
+
     ethereum_sablier_contract: str = "0xCD18eAa163733Da39c232722cBC4E8940b1D8888"
     ethereum_sablier_min_height: int = 13245838
-    
+
     balances_platforms: List[str] = ["ALEPH_ETH_SABLIER", "ALEPH_SOL"]
     balances_senders: List[str] = ["0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"]
 
@@ -43,15 +42,15 @@ class Settings(BaseSettings):
     reward_resource_node_monthly: int = 550
     reward_resource_node_monthly_base: int = 500
     reward_resource_node_monthly_variable: int = 2000
-    
+
     bonus_modifier: float = 1.25
     bonus_start: int = 12020360
     bonus_decay: float = 0.0000001
-    
+
     staking_threshold: int = 9999
     node_threshold: int = 199999
     node_activation: int = 500000
-    
+
     node_max_linked: int = 3
     node_max_paid: int = 3
 
@@ -59,7 +58,7 @@ class Settings(BaseSettings):
     balances_post_type: str = "balances-update"
     # staker_post_type: str = "corechan-delegation"
     filter_tag: str = "mainnet"
-    
+
     platform_solana_endpoint: str = "https://spltoken.api.aleph.cloud/"
     platform_solana_mint: str = "CsZ5LZkDS7h9TDKjrbL7VAwQZ9nsRu8vJLhRYfmGaN8K"
     platform_solana_decimals: int = 6
@@ -71,11 +70,11 @@ class Settings(BaseSettings):
         "3EBEwydfyiVvFbXFYWENcZFrnb2ihCVauqcHzcCUNfwA",
         "3HixSznhPFXA8ueB2sy9iVmVCZP7McRSR4wUuCVeHfh4",
         "7MBLg6oV5phip11YBbJPuq7u38kdzSi9PM3BifKSpLaR",
-        "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B"
+        "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B",
     ]
 
     class Config:
-        env_file = '.env'
+        env_file = ".env"
 
 
 settings = Settings()
