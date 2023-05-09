@@ -500,6 +500,7 @@ async def process():
                 [settings.filter_tag],
                 [settings.node_post_type, "amend"],
                 settings.aleph_api_server,
+                request_count=5000,
             ),
         ),
         prepare_items(
@@ -510,7 +511,7 @@ async def process():
                 message_type="POST",
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
-                request_count=50,
+                request_count=100,
             ),
         ),
     ]
