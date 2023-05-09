@@ -16,28 +16,33 @@ Note: This skeleton file can be safely removed if not needed!
 """
 
 import argparse
-import sys
-import logging
 import asyncio
-import click
+import logging
 import math
+import sys
+
+import click
 
 from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
+
+from .distribution import (
+    create_distribution_tx_post,
+    get_latest_successful_distribution,
+    prepare_distribution,
+)
+from .erc20 import erc20_monitoring_process, process_contract_history
 from .ethereum import get_account, get_web3, transfer_tokens
-from .erc20 import process_contract_history, erc20_monitoring_process
-from .status import process
 from .settings import settings
-from .distribution import (create_distribution_tx_post,
-                           get_latest_successful_distribution,
-                           prepare_distribution)
 from .solana import solana_monitoring_process
+from .status import process
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
 __license__ = "mit"
 
 LOGGER = logging.getLogger(__name__)
+
 
 def setup_logging(verbose):
     """Setup basic logging
@@ -47,13 +52,13 @@ def setup_logging(verbose):
     """
     loglevel = [logging.WARNING, logging.INFO, logging.DEBUG][verbose]
     logformat = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s"
-    logging.basicConfig(level=loglevel, stream=sys.stdout,
-                        format=logformat, datefmt="%Y-%m-%d %H:%M:%S")
-
+    logging.basicConfig(
+        level=loglevel, stream=sys.stdout, format=logformat, datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
 
 @click.command()
-@click.option('-v', '--verbose', count=True)
+@click.option("-v", "--verbose", count=True)
 @click.version_option(version=__version__)
 def main(verbose):
     """
@@ -66,9 +71,7 @@ def main(verbose):
     asyncio.run(process())
 
 
-async def process_distribution(start_height, end_height, act=False,
-                               reward_sender=None):
-            
+async def process_distribution(start_height, end_height, act=False, reward_sender=None):
     account = get_account()
     LOGGER.debug(f"Starting with ETH account {account.address}")
 
@@ -76,40 +79,40 @@ async def process_distribution(start_height, end_height, act=False,
         end_height = get_web3().eth.block_number
 
     if start_height == -1:
-        last_end_height, dist = await get_latest_successful_distribution(
-            reward_sender)
+        last_end_height, dist = await get_latest_successful_distribution(reward_sender)
 
         if last_end_height and dist:
             start_height = last_end_height + 1
-        
+
         else:
             start_height = 0
 
     reward_start, end_height, rewards = await prepare_distribution(
-        start_height, end_height)
+        start_height, end_height
+    )
 
     distribution = dict(
         incentive="corechannel",
         status="calculation",
         start_height=reward_start,
         end_height=end_height,
-        rewards=rewards
+        rewards=rewards,
     )
-    distribution['tags'] = ['calculation', settings.filter_tag]
+    distribution["tags"] = ["calculation", settings.filter_tag]
 
     if act:
         # distribution['status'] = ''
         print("Doing distribution")
         print(distribution)
-        distribution['status'] = 'distribution'
-        distribution['tags'] = ['distribution', settings.filter_tag]
+        distribution["status"] = "distribution"
+        distribution["tags"] = ["distribution", settings.filter_tag]
 
         max_items = settings.ethereum_batch_size
 
         distribution_list = list(rewards.items())
 
         for i in range(math.ceil(len(distribution_list) / max_items)):
-            step_items = distribution_list[max_items*i:max_items*(i+1)]
+            step_items = distribution_list[max_items * i : max_items * (i + 1)]
             print(f"doing batch {i} of {len(step_items)} items")
             await transfer_tokens(dict(step_items), metadata=distribution)
 
@@ -117,30 +120,34 @@ async def process_distribution(start_height, end_height, act=False,
 
 
 @click.command()
-@click.option('-v', '--verbose', count=True)
-@click.option('-a', '--act', help='Do actual batch transfer', is_flag=True)
-@click.option('-s', '--start-height:',
-              'start_height', help='Starting height', default=-1)
-@click.option('-e', '--end-height',
-              'end_height', help='Ending height', default=-1)
-@click.option('--reward-sender',
-              'reward_sender',
-              help='Reward emitting addresss (to see last distributions)',
-              default=None)
-def distribute(verbose, act=False, start_height=-1, end_height=-1,
-               reward_sender=None):
+@click.option("-v", "--verbose", count=True)
+@click.option("-a", "--act", help="Do actual batch transfer", is_flag=True)
+@click.option(
+    "-s", "--start-height:", "start_height", help="Starting height", default=-1
+)
+@click.option("-e", "--end-height", "end_height", help="Ending height", default=-1)
+@click.option(
+    "--reward-sender",
+    "reward_sender",
+    help="Reward emitting addresss (to see last distributions)",
+    default=None,
+)
+def distribute(verbose, act=False, start_height=-1, end_height=-1, reward_sender=None):
     """
     Staking distribution script.
     """
     setup_logging(verbose)
     print(verbose, act, start_height, end_height)
-    
-    asyncio.run(process_distribution(start_height, end_height, act=act,
-                                     reward_sender=reward_sender))
-    
+
+    asyncio.run(
+        process_distribution(
+            start_height, end_height, act=act, reward_sender=reward_sender
+        )
+    )
+
 
 @click.command()
-@click.option('-v', '--verbose', count=True)
+@click.option("-v", "--verbose", count=True)
 @click.version_option(version=__version__)
 def monitor_erc20(verbose):
     """
@@ -149,10 +156,10 @@ def monitor_erc20(verbose):
     setup_logging(verbose)
     LOGGER.debug("Starting erc20 balance monitor")
     asyncio.run(erc20_monitoring_process())
-    
-    
+
+
 @click.command()
-@click.option('-v', '--verbose', count=True)
+@click.option("-v", "--verbose", count=True)
 @click.version_option(version=__version__)
 def monitor_sablier(verbose):
     """
@@ -161,9 +168,10 @@ def monitor_sablier(verbose):
     setup_logging(verbose)
     LOGGER.debug("Starting erc20 balance monitor")
     asyncio.run(sablier_monitoring_process())
-    
+
+
 @click.command()
-@click.option('-v', '--verbose', count=True)
+@click.option("-v", "--verbose", count=True)
 @click.version_option(version=__version__)
 def monitor_solana(verbose):
     """
@@ -175,8 +183,7 @@ def monitor_solana(verbose):
 
 
 def run():
-    """Entry point for console_scripts
-    """
+    """Entry point for console_scripts"""
     main(sys.argv[1:])
 
 

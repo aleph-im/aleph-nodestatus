@@ -2,7 +2,13 @@
 https://github.com/joshp123/heapq_async/blob/master/heapq_async.py
 """
 import logging
-from heapq import heapify, heappop, heapreplace, merge as stdlib_merge
+from datetime import datetime
+from heapq import heapify, heappop, heapreplace
+from heapq import merge as stdlib_merge
+
+from web3 import Web3
+
+from .settings import settings
 
 log = logging.getLogger(__name__)
 
@@ -23,9 +29,7 @@ async def merge(*iterables, key=None, reverse=False):
         for line in stdlib_merge(*iterables, key, reverse):
             yield line
     except TypeError:
-        log.debug(
-            "Couldn't fall back to naive implementation. Using async version."
-        )
+        log.debug("Couldn't fall back to naive implementation. Using async version.")
 
     h = []
     h_append = h.append
@@ -86,3 +90,33 @@ async def merge(*iterables, key=None, reverse=False):
         yield value
         async for item in next.__self__:
             yield item
+
+
+async def fetch_last_ethereum_block_before(target_datetime: datetime):
+    # Connect to an Ethereum node using Web3
+    w3 = Web3(Web3.HTTPProvider(settings.ethereum_api_server))
+
+    # Get the latest block number
+    latest_block_number = w3.eth.block_number
+
+    # Set the initial block number and timestamp for the search range
+    start_block_number = 0
+    end_block_number = latest_block_number
+    end_block_timestamp = w3.eth.get_block(latest_block_number).timestamp
+
+    # Perform bisection search to find the last block before the target date
+    while start_block_number <= end_block_number:
+        mid_block_number = (start_block_number + end_block_number) // 2
+        mid_block_timestamp = w3.eth.get_block(mid_block_number).timestamp
+
+        if mid_block_timestamp > target_datetime.timestamp():
+            end_block_number = mid_block_number - 1
+            end_block_timestamp = mid_block_timestamp
+        else:
+            start_block_number = mid_block_number + 1
+            end_block_timestamp = w3.eth.get_block(end_block_number).timestamp
+
+    last_block_before_target_date = w3.eth.get_block(end_block_number)
+
+    print(f"Last block before {target_datetime}: {last_block_before_target_date}")
+    print(last_block_before_target_date.number)
