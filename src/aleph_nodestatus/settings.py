@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ethereum_min_height: int = 10939070
     ethereum_decimals: int = 18
     ethereum_swap_fee: int = 10
-    ethereum_blocks_per_day: int = 6500
+    ethereum_blocks_per_day: int = 7050
     ethereum_batch_size: int = 200
     ethereum_block_width_big: int = 50000
     ethereum_block_width_small: int = 10000
