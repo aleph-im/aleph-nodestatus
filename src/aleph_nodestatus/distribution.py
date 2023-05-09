@@ -95,7 +95,11 @@ async def prepare_distribution(start_height, end_height):
             ),
         ),
         prepare_items(
-            "balance-update", process_balances_history(settings.ethereum_min_height)
+            "balance-update",
+            process_balances_history(
+                settings.ethereum_min_height,
+                request_count=500,
+            )
         ),
         prepare_items(
             "staking-update",
@@ -104,7 +108,7 @@ async def prepare_distribution(start_height, end_height):
                 [settings.node_post_type, "amend"],
                 settings.aleph_api_server,
                 yield_unconfirmed=False,
-                request_count=100000,
+                request_count=5000,
             ),
         ),
         prepare_items(
@@ -115,7 +119,7 @@ async def prepare_distribution(start_height, end_height):
                 message_type="POST",
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
-                request_count=50,
+                request_count=1000,
             ),
         ),
     ]
