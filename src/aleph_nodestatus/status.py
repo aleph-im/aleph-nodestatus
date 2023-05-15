@@ -1,6 +1,7 @@
 import asyncio
 import random
 from collections import deque
+from urllib.parse import urlparse
 
 from aleph_nodestatus.monitored import process_balances_history
 
@@ -116,6 +117,21 @@ class NodesStatus:
             for platform in self.platform_balances.keys():
                 balance += self.platform_balances[platform].get(addr, 0)
             self.balances[addr] = balance
+    
+    async def _prepare_crn_url(self, node, address=None):
+        """ Verify that this URL doesn't exist for another resource node, and return the URL to use """
+        if address is None:
+            address = node["address"]
+            
+        node_hostname = urlparse(node["address"]).hostname
+        for crn in self.resource_nodes.values():
+            # let's extract the hostname of the address
+            if crn['hash'] != node['hash']:
+                crn_hostname = urlparse(node["address"]).hostname
+                if node_hostname == crn_hostname:
+                    return ''
+                
+        return node["address"]
 
     async def process(self, iterators):
         async for height, rnd, (evt_type, content) in merge(*iterators):
@@ -278,6 +294,10 @@ class NodesStatus:
                                 continue
 
                             new_node[field] = details.get(field, "")
+
+                            if field == "address":
+                                # we need to check that the URL is valid
+                                new_node[field] = await self._prepare_crn_url(new_node)
 
                         self.resource_nodes[content["item_hash"]] = new_node
 
@@ -454,6 +474,9 @@ class NodesStatus:
                             node[field] = bool(
                                 details.get(field, node.get(field, False))
                             )
+                        elif field == "address":
+                            # we need to check that the URL is valid
+                            node[field] = await self._prepare_crn_url(node, address=details.get(field, node.get(field, "")))
                         else:
                             node[field] = details.get(field, node.get(field, ""))
 
