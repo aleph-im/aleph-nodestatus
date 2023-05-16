@@ -123,7 +123,7 @@ class NodesStatus:
         if address is None:
             address = node["address"]
             
-        node_hostname = urlparse(node["address"]).hostname
+        node_hostname = urlparse(address).hostname
         for crn in self.resource_nodes.values():
             # let's extract the hostname of the address
             if crn['hash'] != node['hash']:
