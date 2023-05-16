@@ -131,7 +131,8 @@ class NodesStatus:
                 if node_hostname == crn_hostname:
                     return ''
                 
-        return node["address"]
+        return address
+
 
     async def process(self, iterators):
         async for height, rnd, (evt_type, content) in merge(*iterators):
