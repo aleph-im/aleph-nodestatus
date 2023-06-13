@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     reward_stakers_daily_base: int = 15000
     reward_resource_node_monthly: int = 550
     reward_resource_node_monthly_base: int = 500
-    reward_resource_node_monthly_variable: int = 2000
+    reward_resource_node_monthly_variable: int = 2500
 
     bonus_modifier: float = 1.25
     bonus_start: int = 12020360
