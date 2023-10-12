@@ -79,7 +79,10 @@ async def process_contract_history(
         yield (last_height, (balances, platform, changed_addresses))
 
 
-async def update_balances(account, height, balances):
+async def update_balances(account, height, balances, changed_addresses = None):
+    if changed_addresses is None:
+        changed_addresses = list(balances.keys())
+
     return await create_post(
         account,
         {
@@ -92,7 +95,8 @@ async def update_balances(account, height, balances):
             "network_id": settings.ethereum_chain_id,
             "chain": settings.chain_name,
             "balances": {
-                addr: value / DECIMALS for addr, value in balances.items() if value > 0
+                # we only send the balances that are > 0.00001 or are in the changed_addresses list
+                addr: value / DECIMALS for addr, value in balances.items() if (value > 0.00001 or addr in changed_addresses)
             },
         },
         settings.balances_post_type,
@@ -137,7 +141,7 @@ async def erc20_monitoring_process():
 
         if changed_items:
             LOGGER.info("New data available for addresses %s, posting" % changed_items)
-            await update_balances(account, height, balances)
+            await update_balances(account, height, balances, changed_addresses=changed_items)
             last_height = height
 
         await asyncio.sleep(5)
