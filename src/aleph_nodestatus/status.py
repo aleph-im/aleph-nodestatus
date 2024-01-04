@@ -23,6 +23,7 @@ EDITABLE_FIELDS = [
     "banner",
     "description",
     "reward",
+    "stream_reward",
     "manager",
     "authorized",
     "locked",
