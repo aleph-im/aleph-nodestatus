@@ -196,6 +196,12 @@ class NodesStatus:
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
+                            if score < 0.01 and node["inactive_since"] is None:
+                                # we should update the inactive_since only if it's null
+                                node["inactive_since"] = height
+                            else:
+                                node["inactive_since"] = None
+
                     for crn_score in post_content["scores"]["crn"]:
                         node_id = crn_score["node_id"]
                         score = crn_score["total_score"]
@@ -207,6 +213,12 @@ class NodesStatus:
                             node["performance"] = performance
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
+
+                            if score < 0.01 and node["inactive_since"] is None:
+                                # we should update the inactive_since only if it's null
+                                node["inactive_since"] = height
+                            else:
+                                node["inactive_since"] = None
 
             elif evt_type == "staking-update":
                 message_content = content["content"]
@@ -249,6 +261,7 @@ class NodesStatus:
                             "score": 0,
                             "decentralization": 0,
                             "performance": 0,
+                            "inactive_since": None
                         }
 
                         for field in EDITABLE_FIELDS:
@@ -288,6 +301,7 @@ class NodesStatus:
                             "score": 0,
                             "decentralization": 0,
                             "performance": 0,
+                            "inactive_since": None
                         }
 
                         for field in EDITABLE_FIELDS:
