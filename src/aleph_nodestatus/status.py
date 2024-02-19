@@ -47,6 +47,7 @@ class NodesStatus:
         self.last_checked_height = initial_height
         self.last_balance_height = initial_height
         self.last_message_height = initial_height
+        self.last_score_height = initial_height
         self.last_eth_balance_height = initial_height
         self.last_others_balance_height = initial_height
 
@@ -219,6 +220,9 @@ class NodesStatus:
                                 node["inactive_since"] = height
                             else:
                                 node["inactive_since"] = None
+                
+                    if height > self.last_score_height:
+                        self.last_score_height = height
 
             elif evt_type == "staking-update":
                 message_content = content["content"]
