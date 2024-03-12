@@ -135,7 +135,6 @@ class NodesStatus:
                 
         return address
 
-
     async def process(self, iterators):
         async for height, rnd, (evt_type, content) in merge(*iterators):
             changed = True
@@ -173,6 +172,8 @@ class NodesStatus:
                 if height > self.last_balance_height:
                     self.last_balance_height = height
 
+                # TODO: Are these actually the platform tags? It seems they should be "ALEPH_ETH" given the messages
+                # https://api1.aleph.im/api/v1/posts.json?types=balances-update&pagination=1
                 if platform == "ETH" and height > self.last_eth_balance_height:
                     self.last_eth_balance_height = height
                 elif platform != "ETH" and height > self.last_others_balance_height:
