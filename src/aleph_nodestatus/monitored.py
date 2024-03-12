@@ -1,6 +1,5 @@
-from ctypes import addressof
-
-from .erc20 import DECIMALS, process_contract_history
+from .erc20 import DECIMALS as ETH_DECIMALS
+from .solana import DECIMALS as SOL_DECIMALS
 from .messages import process_message_history
 from .settings import settings
 
@@ -42,12 +41,19 @@ async def process_balances_history(
             continue
         if message_content["type"] != settings.balances_post_type:
             continue
-        if platform not in settings.balances_platforms:
+
+        decimals: int
+        if platform in [settings.ethereum_platform, settings.ethereum_sablier_platform]:
+            decimals = ETH_DECIMALS
+        elif platform == settings.solana_platform:
+            decimals = SOL_DECIMALS
+        else:
             # unexpected platform
             continue
 
+        # TODO: Is this really required here? We already multiply the decimals when doing the actual transfers
         balances = {
-            address: amount * DECIMALS  # convert to ERC-20 decimals
+            address: amount * decimals  # convert to ERC-20 decimals
             for address, amount in post_content["balances"].items()
         }
 
