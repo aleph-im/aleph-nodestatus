@@ -3,8 +3,8 @@ from collections import deque
 from functools import lru_cache
 
 import aiohttp
-from aleph_client.asynchronous import create_aggregate
-from aleph_client.chains.ethereum import ETHAccount
+from aleph.sdk.client import AuthenticatedAlephHttpClient
+from aleph.sdk.chains.ethereum import ETHAccount
 from hexbytes import HexBytes
 
 from .erc20 import DECIMALS
@@ -134,10 +134,12 @@ async def set_status(account, nodes, resource_nodes):
         }
         for node in nodes.values()
     ]
-    await create_aggregate(
-        account,
-        "corechannel",
-        {"nodes": nodes, "resource_nodes": list(resource_nodes.values())},
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+    async with AuthenticatedAlephHttpClient(
+        settings.aleph_api_server, account
+    ) as client:
+        return await client.create_aggregate(
+            "corechannel",
+            {"nodes": nodes, "resource_nodes": list(resource_nodes.values())},
+            channel=settings.aleph_channel,
+        )
+

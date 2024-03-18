@@ -2,9 +2,10 @@ import logging
 import math
 from collections import deque
 
-from aleph_client.asynchronous import create_post, get_posts
+from aleph.sdk.client import AuthenticatedAlephHttpClient
+from aleph.sdk.query.filters import PostFilter
 
-from .erc20 import DECIMALS, process_contract_history
+from .erc20 import process_contract_history
 from .ethereum import get_web3
 from .messages import get_aleph_account, get_aleph_address, process_message_history
 from .monitored import process_balances_history
@@ -32,24 +33,28 @@ def compute_score_multiplier(score: float) -> float:
 
 async def create_distribution_tx_post(distribution):
     print(f"Preparing pending TX post {distribution}")
-    post = await create_post(
-        get_aleph_account(),
-        distribution,
-        post_type="staking-rewards-distribution",
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
-    return post
+    async with AuthenticatedAlephHttpClient(
+        get_aleph_account(), settings.aleph_api_server
+    ) as client:
+        return await client.create_post(
+            distribution,
+            settings.distribution_post_type,
+            channel=settings.aleph_channel,
+        )
 
 
 async def get_latest_successful_distribution(sender=None):
     if sender is None:
         sender = get_aleph_address()
-    posts = await get_posts(
-        types=["staking-rewards-distribution"],
-        addresses=[sender],
-        api_server=settings.aleph_api_server,
-    )
+    async with AuthenticatedAlephHttpClient(
+        sender, settings.aleph_api_server
+    ) as client:
+        posts = await client.get_posts(
+            post_filter=PostFilter(
+                types=["staking-rewards-distribution"],
+                addresses=[sender],
+            )
+        )
 
     current_post = None
     current_end_height = 0

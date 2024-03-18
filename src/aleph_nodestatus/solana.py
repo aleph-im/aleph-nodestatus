@@ -5,7 +5,7 @@ import logging
 from functools import lru_cache
 
 import aiohttp
-from aleph_client.asynchronous import create_post
+from aleph.sdk.client import AuthenticatedAlephHttpClient
 
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.core import TransactionExpiredBlockheightExceededError
@@ -153,23 +153,24 @@ async def transfer_tokens(targets, metadata=None):
 
 
 async def update_balances(account, main_height, balances):
-    return await create_post(
-        account,
-        {
-            "tags": ["SOL", "SPL", settings.solana_mint, settings.filter_tag],
-            "main_height": main_height,
-            "platform": "{}_{}".format(settings.token_symbol, "SOL"),
-            "token_contract": settings.solana_mint,
-            "token_symbol": settings.token_symbol,
-            "chain": "SOL",
-            "balances": {
-                addr: value / DECIMALS for addr, value in balances.items() if value > 0
+    async with AuthenticatedAlephHttpClient(
+        settings.aleph_api_server, account
+    ) as client:
+        return await client.create_post(
+            {
+                "tags": ["SOL", "SPL", settings.solana_mint, settings.filter_tag],
+                "main_height": main_height,
+                "platform": "{}_{}".format(settings.token_symbol, "SOL"),
+                "token_contract": settings.solana_mint,
+                "token_symbol": settings.token_symbol,
+                "chain": "SOL",
+                "balances": {
+                    addr: value / DECIMALS for addr, value in balances.items() if value > 0
+                },
             },
-        },
-        settings.balances_post_type,
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+            settings.balances_post_type,
+            channel=settings.aleph_channel,
+        )
 
 
 async def query_balances(endpoint, mint):

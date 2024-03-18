@@ -4,12 +4,8 @@ import os
 from collections import deque
 from pathlib import Path
 
-from aleph_client.asynchronous import create_aggregate, create_post
-from web3 import Web3
-from web3._utils.events import construct_event_topic_set
-from web3.contract import get_event_data
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
-from web3.middleware import geth_poa_middleware, local_filter_middleware
+from aleph.sdk.client import AuthenticatedAlephHttpClient
+from web3._utils.events import construct_event_topic_set, get_event_data
 
 from .ethereum import get_logs, get_web3
 from .settings import settings
@@ -126,33 +122,34 @@ async def process_contract_history(
 
 
 async def update_balances(account, height, balances):
-    return await create_post(
-        account,
-        {
-            "tags": [
-                "SABLIER",
-                settings.ethereum_sablier_contract,
-                settings.filter_tag,
-            ],
-            "height": height,
-            "main_height": height,  # ethereum height
-            "platform": "{}_{}_SABLIER".format(
-                settings.token_symbol, settings.chain_name
-            ),
-            "dapp": "SABLIER",
-            "dapp_id": settings.ethereum_sablier_contract,
-            "token_contract": settings.ethereum_token_contract,
-            "token_symbol": settings.token_symbol,
-            "network_id": settings.ethereum_chain_id,
-            "chain": settings.chain_name,
-            "balances": {
-                addr: value / DECIMALS for addr, value in balances.items() if value > 0
+    async with AuthenticatedAlephHttpClient(
+        account, settings.aleph_api_server
+    ) as client:
+        return await client.create_post(
+            {
+                "tags": [
+                    "SABLIER",
+                    settings.ethereum_sablier_contract,
+                    settings.filter_tag,
+                ],
+                "height": height,
+                "main_height": height,  # ethereum height
+                "platform": "{}_{}_SABLIER".format(
+                    settings.token_symbol, settings.chain_name
+                ),
+                "dapp": "SABLIER",
+                "dapp_id": settings.ethereum_sablier_contract,
+                "token_contract": settings.ethereum_token_contract,
+                "token_symbol": settings.token_symbol,
+                "network_id": settings.ethereum_chain_id,
+                "chain": settings.chain_name,
+                "balances": {
+                    addr: value / DECIMALS for addr, value in balances.items() if value > 0
+                },
             },
-        },
-        settings.balances_post_type,
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+            settings.balances_post_type,
+            channel=settings.aleph_channel,
+        )
 
 
 async def sablier_monitoring_process():
