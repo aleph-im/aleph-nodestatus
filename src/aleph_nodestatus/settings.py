@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ethereum_min_height: int = 10939070
     ethereum_decimals: int = 18
     ethereum_swap_fee: int = 10
-    ethereum_blocks_per_day: int = 7050
+    ethereum_blocks_per_day: int = 7130
     ethereum_batch_size: int = 200
     ethereum_block_width_big: int = 50000
     ethereum_block_width_small: int = 10000
@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     reward_nodes_daily: int = 15000
     reward_stakers_daily_base: int = 15000
     reward_resource_node_monthly: int = 550
-    reward_resource_node_monthly_base: int = 500
-    reward_resource_node_monthly_variable: int = 2500
+    reward_resource_node_monthly_base: int = 250
+    reward_resource_node_monthly_variable: int = 1250
 
     bonus_modifier: float = 1.25
     bonus_start: int = 12020360
@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     node_threshold: int = 199999
     node_activation: int = 500000
 
-    node_max_linked: int = 3
-    node_max_paid: int = 3
+    node_max_linked: int = 8
+    node_max_paid: int = 5
 
     node_post_type: str = "corechan-operation"
     balances_post_type: str = "balances-update"
