@@ -136,7 +136,7 @@ async def prepare_distribution(start_height, end_height):
                     * decentralization_factor
                 )
             )
-            / 30
+            / (365/12)
             / settings.ethereum_blocks_per_day
         )
 
