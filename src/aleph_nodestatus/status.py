@@ -535,7 +535,7 @@ async def process():
         ),
         prepare_items(
             "balance-update",
-            process_balances_history(settings.ethereum_min_height, request_count=1000),
+            process_balances_history(settings.ethereum_min_height, request_count=500),
         ),
         prepare_items(
             "staking-update",
@@ -543,7 +543,7 @@ async def process():
                 [settings.filter_tag],
                 [settings.node_post_type, "amend"],
                 settings.aleph_api_server,
-                request_count=5000,
+                request_count=1000,
             ),
         ),
         prepare_items(
@@ -554,7 +554,7 @@ async def process():
                 message_type="POST",
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
-                request_count=100,
+                request_count=50,
             ),
         ),
     ]
