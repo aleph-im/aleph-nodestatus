@@ -178,7 +178,7 @@ async def prepare_distribution(start_height, end_height):
                 rnode = resource_nodes.get(rnode_id, None)
                 if rnode is None:
                     continue
-                if rnode["status"] != "linked":
+                if rnode["status"] != "linked": # how could this happen?
                     continue
 
                 rnode_reward_address = rnode["owner"]
@@ -191,18 +191,21 @@ async def prepare_distribution(start_height, end_height):
 
                 crn_multiplier = compute_score_multiplier(rnode["score"])
 
+                assert 0 <= crn_multiplier <= 1, "Invalid value of the score multiplier"
+
                 this_resource_node = (
                     compute_resource_node_rewards(rnode["decentralization"])
                     * block_count
                     * crn_multiplier
                 )
 
-                rewards[rnode_reward_address] = (
-                    rewards.get(rnode_reward_address, 0) + this_resource_node
-                )
-
                 if crn_multiplier > 0:
                     paid_node_count += 1
+                
+                if paid_node_count <= settings.node_max_paid: # we only pay the first N nodes
+                    rewards[rnode_reward_address] = (
+                        rewards.get(rnode_reward_address, 0) + this_resource_node
+                    )
 
             if paid_node_count > settings.node_max_paid:
                 paid_node_count = settings.node_max_paid
@@ -211,6 +214,9 @@ async def prepare_distribution(start_height, end_height):
             assert 0 <= score_multiplier <= 1, "Invalid value of the score multiplier"
 
             linkage = 0.7 + (0.1 * paid_node_count)
+
+            if linkage > 1: # Cap the linkage at 1
+                linkage = 1
 
             assert 0.7 <= linkage <= 1, "Invalid value of the linkage"
 
