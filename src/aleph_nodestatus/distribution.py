@@ -145,7 +145,7 @@ async def prepare_distribution(start_height, end_height):
         # Handle calculation for previous period now.
         block_count = current - since
         LOGGER.debug(f"Calculating for block {current}, {block_count} blocks")
-        active_nodes = [node for node in nodes.values() if node["status"] == "active"]
+        active_nodes = [node for node in nodes.values() if node["status"] == "active" and node["score"] >= 0.2]
         if not active_nodes:
             return
 
