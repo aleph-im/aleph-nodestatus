@@ -45,8 +45,12 @@ def get_token_contract_abi():
 
 @lru_cache(maxsize=2)
 def get_token_contract(web3):
+
+    address_validator = getattr(web3, "toChecksumAddress",
+                                getattr(web3, "to_checksum_address", None))
+
     tokens = web3.eth.contract(
-        address=web3.toChecksumAddress(settings.ethereum_token_contract),
+        address=address_validator(settings.ethereum_token_contract),
         abi=get_token_contract_abi(),
     )
     return tokens
@@ -73,6 +77,8 @@ def get_account():
 async def transfer_tokens(targets, metadata=None):
     global NONCE
     w3 = get_web3()
+    address_validator = getattr(w3, "toChecksumAddress",
+                                getattr(w3, "to_checksum_address", None))
     contract = get_token_contract(w3)
     account = get_account()
 
@@ -94,7 +100,7 @@ async def transfer_tokens(targets, metadata=None):
             raise ValueError(f"Balance not enough ({total}/{balance})")
 
         tx = contract.functions.batchTransfer(
-            [w3.toChecksumAddress(addr) for addr in targets.keys()],
+            [address_validator(addr) for addr in targets.keys()],
             [int(amount * DECIMALS) for amount in targets.values()],
         )
         # gas = tx.estimateGas({
