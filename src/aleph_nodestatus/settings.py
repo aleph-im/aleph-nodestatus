@@ -73,6 +73,8 @@ class Settings(BaseSettings):
         "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B",
     ]
 
+    crn_inactivity_threshold_days: int = 90
+
     class Config:
         env_file = ".env"
 
