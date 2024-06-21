@@ -197,9 +197,10 @@ class NodesStatus:
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
-                            if score < 0.01 and node["inactive_since"] is None:
-                                # we should update the inactive_since only if it's null
-                                node["inactive_since"] = height
+                            if score < 0.01:
+                                if node["inactive_since"] is None:
+                                    # we should update the inactive_since only if it's null
+                                    node["inactive_since"] = height
                             else:
                                 node["inactive_since"] = None
 
@@ -215,9 +216,15 @@ class NodesStatus:
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
-                            if score < 0.01 and node["inactive_since"] is None:
-                                # we should update the inactive_since only if it's null
-                                node["inactive_since"] = height
+                            if score < 0.01:
+                                if node["inactive_since"] is None:
+                                    # we should update the inactive_since only if it's null
+                                    node["inactive_since"] = height
+                                
+                                if ((node["inactive_since"] > (settings['crn_inactivity_threshold_days'] * settings['ethereum_blocks_per_day']))
+                                    and node["parent"] is None):
+                                        # we should remove the node
+                                    await self.remove_resource_node(node_id)
                             else:
                                 node["inactive_since"] = None
                 
