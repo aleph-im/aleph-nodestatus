@@ -65,6 +65,9 @@ async def process_contract_history(
         last_height = height
 
     async for claimer, balance in getVoucherNFTBalances():
+        if claimer in balances:
+            balance = balance + balances[claimer]
+
         balances[claimer] = balance
         changed_addresses.add(claimer)
 

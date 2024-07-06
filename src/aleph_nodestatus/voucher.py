@@ -17,8 +17,7 @@ def get_metadata(metadata_id):
         return None
 
 
-async def getVoucherNFTBalances():
-
+async def getVoucherNFTBalances(start_height=None):
     # Connect to the network
     web3 = get_web3()
 
@@ -26,9 +25,12 @@ async def getVoucherNFTBalances():
     abi = get_token_contract_abi(settings.voucher_abi_name)
     contract = get_contract(settings.voucher_contract_address, web3, abi)
 
+    if start_height is None:
+        start_height = settings.voucher_ethereum_min_height
+
     # Get the events
     mint_events = contract.events.Mint().getLogs(
-        fromBlock=settings.voucher_ethereum_min_height
+        fromBlock=start_height
     )
 
     for mint in mint_events:
