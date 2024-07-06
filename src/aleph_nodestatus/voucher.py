@@ -19,7 +19,7 @@ def get_metadata(metadata_id):
 
 async def getVoucherNFTBalances(start_height=None):
     # Connect to the network
-    web3 = get_web3()
+    web3 = get_web3(settings.avax_api_server)
 
     # Get the contract
     abi = get_token_contract_abi(settings.voucher_abi_name)

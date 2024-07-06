@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     voucher_contract_address: str = "0x3e00d39C2da56f516a2B93d1EA99B9648467A308"
     voucher_abi_name: str = "VoucherNFT"
     voucher_api_server: str = "https://claim.twentysix.cloud"
+    avax_api_server: str = None
 
     class Config:
         env_file = ".env"
