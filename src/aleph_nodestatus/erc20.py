@@ -1,40 +1,29 @@
 import asyncio
-import json
 import logging
-import os
 from collections import deque
-from pathlib import Path
 
 from aleph_client.asynchronous import create_post
-from web3 import Web3
 from web3._utils.events import construct_event_topic_set
 from web3.contract import get_event_data
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
 from web3.middleware import geth_poa_middleware, local_filter_middleware
 
+from .erc20_utils import get_contract, get_token_contract_abi
 from .ethereum import get_logs, get_web3
 from .settings import settings
+from .voucher import getVoucherNFTBalances
 
 LOGGER = logging.getLogger(__name__)
 
 DECIMALS = 10**settings.ethereum_decimals
 
 
-def get_contract_abi():
-    return json.load(
-        open(os.path.join(Path(__file__).resolve().parent, "abi/ALEPHERC20.json"))
-    )
-
-
-def get_contract(address, web3):
-    return web3.eth.contract(address, abi=get_contract_abi())
-
-
 async def process_contract_history(
     contract_address, start_height, platform="ETH", balances=None, last_seen=None
 ):
     web3 = get_web3()
-    contract = get_contract(contract_address, web3)
+    abi = get_token_contract_abi("ALEPHERC20")
+    contract = get_contract(contract_address, web3, abi)
     abi = contract.events.Transfer._get_event_abi()
     topic = construct_event_topic_set(abi, web3.codec)
     if balances is None:
@@ -74,6 +63,10 @@ async def process_contract_history(
         changed_addresses.add(args["_from"])
         changed_addresses.add(args["_to"])
         last_height = height
+
+    async for claimer, balance in getVoucherNFTBalances():
+        balances[claimer] = balance
+        changed_addresses.add(claimer)
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))

@@ -1,6 +1,4 @@
-from ctypes import addressof
-
-from .erc20 import DECIMALS, process_contract_history
+from .erc20 import DECIMALS
 from .messages import process_message_history
 from .settings import settings
 

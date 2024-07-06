@@ -1,0 +1,45 @@
+from functools import lru_cache
+
+import requests
+
+from .erc20_utils import get_contract, get_token_contract_abi
+from .ethereum import get_web3
+from .settings import settings
+
+
+@lru_cache(maxsize=30)
+def get_metadata(metadata_id):
+    url = f"{settings.voucher_api_server}/sbt/metadata/{metadata_id}.json"
+    try:
+        response = requests.get(url)
+        return response.json()
+    except requests.exceptions.JSONDecodeError:
+        return None
+
+
+async def getVoucherNFTBalances():
+
+    # Connect to the network
+    web3 = get_web3()
+
+    # Get the contract
+    abi = get_token_contract_abi(settings.voucher_abi_name)
+    contract = get_contract(settings.voucher_contract_address, web3, abi)
+
+    # Get the events
+    mint_events = contract.events.Mint().getLogs(
+        fromBlock=settings.voucher_ethereum_min_height
+    )
+
+    for mint in mint_events:
+        claimer = mint["args"]["claimer"]
+        #token_id = mint["args"]["tokenId"]
+        metadata_id = mint["args"]["metadataId"]
+        metadata = get_metadata(metadata_id)
+        balance = 0
+        if metadata:
+            for k in metadata["attributes"]:
+                if "$ALEPH" in k["trait_type"]:
+                    balance = k["value"]
+
+        yield (claimer, balance)
