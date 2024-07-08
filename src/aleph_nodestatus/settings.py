@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import List
 
 from pydantic import BaseSettings
@@ -84,6 +86,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        secrets_dir = Path(os.path.abspath(".secrets"))
 
 
 settings = Settings()
