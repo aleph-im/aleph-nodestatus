@@ -6,6 +6,7 @@ from .erc20_utils import get_contract, get_token_contract_abi
 from .ethereum import get_web3
 from .settings import settings
 
+DECIMALS = 10**18
 
 @lru_cache(maxsize=30)
 def get_metadata(metadata_id):
@@ -42,6 +43,6 @@ async def getVoucherNFTBalances(start_height=None):
         if metadata:
             for k in metadata["attributes"]:
                 if "$ALEPH" in k["trait_type"]:
-                    balance = k["value"]
+                    balance = k["value"] * DECIMALS
 
-        yield (claimer, balance)
+        yield (claimer, balance, mint["blockNumber"])

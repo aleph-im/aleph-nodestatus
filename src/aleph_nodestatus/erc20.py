@@ -37,39 +37,45 @@ async def process_contract_history(
 
     to_append = list()
 
-    async for i in get_logs(web3, contract, start_height, topics=topic):
-        evt_data = get_event_data(web3.codec, abi, i)
-        args = evt_data["args"]
-        height = evt_data["blockNumber"]
+    if settings.chain_name != "AVAX":
+        async for i in get_logs(web3, contract, start_height, topics=topic):
+            evt_data = get_event_data(web3.codec, abi, i)
+            args = evt_data["args"]
+            height = evt_data["blockNumber"]
 
-        if height != last_height:
-            yield (last_height, (balances, platform, changed_addresses))
-            changed_addresses = set()
+            if height != last_height:
+                yield (last_height, (balances, platform, changed_addresses))
+                changed_addresses = set()
+
+                if last_seen is not None:
+                    last_seen.extend(to_append)
+
+                to_append = list()
 
             if last_seen is not None:
-                last_seen.extend(to_append)
+                tx_hash = evt_data.transactionHash.hex()
+                if tx_hash in last_seen:
+                    continue
+                else:
+                    to_append.append(tx_hash)
 
-            to_append = list()
+            balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
+            balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
+            changed_addresses.add(args["_from"])
+            changed_addresses.add(args["_to"])
+            last_height = height
 
-        if last_seen is not None:
-            tx_hash = evt_data.transactionHash.hex()
-            if tx_hash in last_seen:
-                continue
-            else:
-                to_append.append(tx_hash)
+    if settings.chain_name == "AVAX":
+        last_height = start_height
+        async for claimer, balance, block_number in getVoucherNFTBalances(last_height):
+            LOGGER.info(f"found NFT Voucher balance for {claimer} : {balance}")
+            if claimer in changed_addresses:
+                LOGGER.info(f"Add existing balance for {claimer} : {balances[claimer]}")
+                balance = balance + balances[claimer]
 
-        balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
-        balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
-        changed_addresses.add(args["_from"])
-        changed_addresses.add(args["_to"])
-        last_height = height
-
-    async for claimer, balance in getVoucherNFTBalances():
-        if claimer in balances:
-            balance = balance + balances[claimer]
-
-        balances[claimer] = balance
-        changed_addresses.add(claimer)
+            balances[claimer] = balance
+            changed_addresses.add(claimer)
+            last_height = block_number
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))
@@ -114,12 +120,14 @@ async def erc20_monitoring_process():
     )
     balances = {}
     last_height = settings.ethereum_min_height
+    height = None
     async for height, (balances, platform, changed_items) in items:
         last_height = height
         balances = balances
     LOGGER.info("pushing current state")
 
-    await update_balances(account, height, balances)
+    if height:
+        await update_balances(account, height, balances)
 
     while True:
         changed_items = None
