@@ -20,11 +20,13 @@ DECIMALS = 10**18
 NONCE = None
 
 
-@lru_cache(maxsize=2)
-def get_web3():
+@lru_cache(maxsize=10)
+def get_web3(api_server=None):
     w3 = None
+    if api_server is None:
+        api_server = settings.ethereum_api_server
     if settings.ethereum_api_server:
-        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(settings.ethereum_api_server))
+        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(api_server))
     else:
         from web3.auto.infura import w3 as iw3
 

@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import List
 
 from pydantic import BaseSettings
@@ -75,8 +77,16 @@ class Settings(BaseSettings):
 
     crn_inactivity_threshold_days: int = 90
 
+    # Twentysix voucher settings (sepolia)
+    voucher_ethereum_min_height: int = 6252157
+    voucher_contract_address: str = "0x3e00d39C2da56f516a2B93d1EA99B9648467A308"
+    voucher_abi_name: str = "VoucherNFT"
+    voucher_api_server: str = "https://claim.twentysix.cloud"
+    avax_api_server: str = None
+
     class Config:
         env_file = ".env"
+        secrets_dir = Path(os.path.abspath(".secrets"))
 
 
 settings = Settings()
