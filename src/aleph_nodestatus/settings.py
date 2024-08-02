@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     node_post_type: str = "corechan-operation"
     balances_post_type: str = "balances-update"
+    vouchers_post_type: str = "vouchers-update"
     # staker_post_type: str = "corechan-delegation"
     filter_tag: str = "mainnet"
 
@@ -77,9 +78,13 @@ class Settings(BaseSettings):
 
     crn_inactivity_threshold_days: int = 90
 
-    # Twentysix voucher settings (sepolia)
-    voucher_ethereum_min_height: int = 6252157
-    voucher_contract_address: str = "0x3e00d39C2da56f516a2B93d1EA99B9648467A308"
+    # Twentysix voucher settings
+    enable_process_vouchers: bool = True
+    voucher_chain_name: str = "AVAX"
+    voucher_chain_id: int = 43114
+    voucher_avax_min_height: int = 48434223 # contract deployment
+    voucher_contract_address: str = "0xe10E363B704540c963b8606d27D1DDF00c96F979"
+    voucher_token_symbol: str = "TRY26"
     voucher_abi_name: str = "VoucherNFT"
     voucher_api_server: str = "https://claim.twentysix.cloud"
     avax_api_server: str = None

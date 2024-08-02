@@ -5,13 +5,15 @@ from collections import deque
 from aleph_client.asynchronous import create_post
 from web3._utils.events import construct_event_topic_set
 from web3.contract import get_event_data
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
-from web3.middleware import geth_poa_middleware, local_filter_middleware
 
 from .erc20_utils import get_contract, get_token_contract_abi
 from .ethereum import get_logs, get_web3
 from .settings import settings
-from .voucher import getVoucherNFTBalances
+from .voucher import VoucherSettings, getVoucherNFTUpdates
+
+# from web3.gas_strategies.rpc import rpc_gas_price_strategy
+# from web3.middleware import geth_poa_middleware, local_filter_middleware
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -19,7 +21,12 @@ DECIMALS = 10**settings.ethereum_decimals
 
 
 async def process_contract_history(
-    contract_address, start_height, platform="ETH", balances=None, last_seen=None
+    contract_address,
+    start_height,
+    platform="ETH",
+    balances=None,
+    last_seen=None,
+    process_vouchers=False,
 ):
     web3 = get_web3()
     abi = get_token_contract_abi("ALEPHERC20")
@@ -31,57 +38,52 @@ async def process_contract_history(
             settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
         }
     last_height = start_height
-    end_height = web3.eth.block_number
-
     changed_addresses = set()
-
     to_append = list()
 
-    if settings.chain_name != "AVAX":
-        async for i in get_logs(web3, contract, start_height, topics=topic):
-            evt_data = get_event_data(web3.codec, abi, i)
-            args = evt_data["args"]
-            height = evt_data["blockNumber"]
+    async for i in get_logs(web3, contract, start_height, topics=topic):
+        evt_data = get_event_data(web3.codec, abi, i)
+        args = evt_data["args"]
+        height = evt_data["blockNumber"]
 
-            if height != last_height:
-                yield (last_height, (balances, platform, changed_addresses))
-                changed_addresses = set()
-
-                if last_seen is not None:
-                    last_seen.extend(to_append)
-
-                to_append = list()
+        if height != last_height:
+            yield (last_height, (balances, platform, changed_addresses))
+            changed_addresses = set()
 
             if last_seen is not None:
-                tx_hash = evt_data.transactionHash.hex()
-                if tx_hash in last_seen:
-                    continue
-                else:
-                    to_append.append(tx_hash)
+                last_seen.extend(to_append)
 
-            balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
-            balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
-            changed_addresses.add(args["_from"])
-            changed_addresses.add(args["_to"])
-            last_height = height
+            to_append = list()
 
-    if settings.chain_name == "AVAX":
-        last_height = start_height
-        async for claimer, balance, block_number in getVoucherNFTBalances(last_height):
-            LOGGER.info(f"found NFT Voucher balance for {claimer} : {balance}")
-            if claimer in changed_addresses:
-                LOGGER.info(f"Add existing balance for {claimer} : {balances[claimer]}")
-                balance = balance + balances[claimer]
+        if last_seen is not None:
+            tx_hash = evt_data.transactionHash.hex()
+            if tx_hash in last_seen:
+                continue
+            else:
+                to_append.append(tx_hash)
 
-            balances[claimer] = balance
-            changed_addresses.add(claimer)
-            last_height = block_number
+        balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
+        balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
+        changed_addresses.add(args["_from"])
+        changed_addresses.add(args["_to"])
+        last_height = height
+
+    voucher_settings = VoucherSettings()
+    if process_vouchers and voucher_settings.active:
+        try:
+            async for claimer, virtual_balance_change in getVoucherNFTUpdates():
+                if virtual_balance_change != 0:
+                    balances[claimer] = virtual_balance_change + (balances[claimer] if claimer in balances else 0)
+                    changed_addresses.add(claimer)
+        except Exception as e:
+            voucher_settings.active = False
+            LOGGER.error(f"Stopped processing vouchers, error: {e}")
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))
 
 
-async def update_balances(account, height, balances, changed_addresses = None):
+async def update_balances(account, height, balances, changed_addresses=None):
     if changed_addresses is None:
         changed_addresses = list(balances.keys())
 
@@ -110,13 +112,16 @@ async def update_balances(account, height, balances, changed_addresses = None):
 async def erc20_monitoring_process():
     from .messages import get_aleph_account
 
+    process_vouchers = settings.enable_process_vouchers
+    LOGGER.info(f"Process vouchers: {process_vouchers}")
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()
-    LOGGER.info("processing history")
+    LOGGER.info("Processing history")
     items = process_contract_history(
         settings.ethereum_token_contract,
         settings.ethereum_min_height,
         last_seen=last_seen_txs,
+        process_vouchers=process_vouchers,
     )
     balances = {}
     last_height = settings.ethereum_min_height
@@ -124,7 +129,7 @@ async def erc20_monitoring_process():
     async for height, (balances, platform, changed_items) in items:
         last_height = height
         balances = balances
-    LOGGER.info("pushing current state")
+    LOGGER.info("Pushing current state")
 
     if height:
         await update_balances(account, height, balances)
@@ -140,12 +145,15 @@ async def erc20_monitoring_process():
             last_height + 1,
             balances=balances,
             last_seen=last_seen_txs,
+            process_vouchers=process_vouchers,
         ):
             pass
 
         if changed_items:
             LOGGER.info("New data available for addresses %s, posting" % changed_items)
-            await update_balances(account, height, balances, changed_addresses=changed_items)
+            await update_balances(
+                account, height, balances, changed_addresses=changed_items
+            )
             last_height = height
 
         await asyncio.sleep(5)

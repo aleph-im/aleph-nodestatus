@@ -7,10 +7,10 @@ from aleph_client.asynchronous import create_aggregate
 from aleph_client.chains.ethereum import ETHAccount
 from hexbytes import HexBytes
 
-from .erc20 import DECIMALS
 from .ethereum import get_web3
 from .settings import settings
 
+DECIMALS = 10**settings.ethereum_decimals
 
 @lru_cache(maxsize=2)
 def get_aleph_account():
