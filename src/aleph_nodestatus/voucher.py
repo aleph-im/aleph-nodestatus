@@ -84,7 +84,7 @@ async def getVoucherNFTUpdates():
             fromBlock=start_height
     )
     for mint in mint_events:
-        token_id = mint["args"]["tokenId"]
+        token_id = str(mint["args"]["tokenId"])
         claimer = mint["args"]["claimer"]
         metadata_id = str(mint["args"]["metadataId"])
         voucher_settings.vouchers[token_id] = dict(
