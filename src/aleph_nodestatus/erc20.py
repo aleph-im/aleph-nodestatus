@@ -69,7 +69,7 @@ async def process_contract_history(
             changed_addresses.add(args["_to"])
             last_height = height
 
-    if settings.chain_name == "AVAX":
+    else:
         voucher_settings = VoucherSettings()
         if process_vouchers and voucher_settings.active:
             try:
