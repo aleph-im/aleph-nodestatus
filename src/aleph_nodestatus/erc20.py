@@ -41,43 +41,45 @@ async def process_contract_history(
     changed_addresses = set()
     to_append = list()
 
-    async for i in get_logs(web3, contract, start_height, topics=topic):
-        evt_data = get_event_data(web3.codec, abi, i)
-        args = evt_data["args"]
-        height = evt_data["blockNumber"]
+    if settings.chain_name != "AVAX":
+        async for i in get_logs(web3, contract, start_height, topics=topic):
+            evt_data = get_event_data(web3.codec, abi, i)
+            args = evt_data["args"]
+            height = evt_data["blockNumber"]
 
-        if height != last_height:
-            yield (last_height, (balances, platform, changed_addresses))
-            changed_addresses = set()
+            if height != last_height:
+                yield (last_height, (balances, platform, changed_addresses))
+                changed_addresses = set()
+
+                if last_seen is not None:
+                    last_seen.extend(to_append)
+
+                to_append = list()
 
             if last_seen is not None:
-                last_seen.extend(to_append)
+                tx_hash = evt_data.transactionHash.hex()
+                if tx_hash in last_seen:
+                    continue
+                else:
+                    to_append.append(tx_hash)
 
-            to_append = list()
+            balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
+            balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
+            changed_addresses.add(args["_from"])
+            changed_addresses.add(args["_to"])
+            last_height = height
 
-        if last_seen is not None:
-            tx_hash = evt_data.transactionHash.hex()
-            if tx_hash in last_seen:
-                continue
-            else:
-                to_append.append(tx_hash)
-
-        balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
-        balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
-        changed_addresses.add(args["_from"])
-        changed_addresses.add(args["_to"])
-        last_height = height
-
-    voucher_settings = VoucherSettings()
-    if process_vouchers and voucher_settings.active:
-        try:
-            async for claimer, virtual_balance_change in getVoucherNFTUpdates():
-                if virtual_balance_change != 0:
-                    balances[claimer] = virtual_balance_change + (balances[claimer] if claimer in balances else 0)
-                    changed_addresses.add(claimer)
-        except Exception as e:
-            voucher_settings.active = False
-            LOGGER.error(f"Stopped processing vouchers, error: {e}")
+    if settings.chain_name == "AVAX":
+        voucher_settings = VoucherSettings()
+        if process_vouchers and voucher_settings.active:
+            try:
+                async for claimer, virtual_balance_change in getVoucherNFTUpdates():
+                    if virtual_balance_change != 0:
+                        balances[claimer] = virtual_balance_change + (balances[claimer] if claimer in balances else 0)
+                        changed_addresses.add(claimer)
+            except Exception as e:
+                voucher_settings.active = False
+                LOGGER.error(f"Stopped processing vouchers, error: {e}")
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))
