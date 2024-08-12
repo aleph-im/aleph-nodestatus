@@ -35,7 +35,7 @@ class VoucherSettings:
                 settings.voucher_contract_address, self.web3, self.abi
             )
             self._active = True
-            self._next_height = settings.voucher_avax_min_height
+            self._last_height = settings.voucher_avax_min_height
 
     @property
     def active(self):
@@ -46,20 +46,20 @@ class VoucherSettings:
         self._active = value
 
     @property
-    def next_height(self):
-        return self._next_height
+    def last_height(self):
+        return self._last_height
 
-    @next_height.setter
-    def next_height(self, value):
-        self._next_height = value
+    @last_height.setter
+    def last_height(self, value):
+        self._last_height = value
 
 async def getVoucherNFTUpdates():
     voucher_settings = VoucherSettings()
     now = time.time()
-    start_height = voucher_settings.next_height
+    start_height = voucher_settings.last_height + 1
     current_height = voucher_settings.web3.eth.block_number
 
-    if start_height == settings.voucher_avax_min_height:
+    if voucher_settings.last_height == settings.voucher_avax_min_height:
         last_commit = await fetch_last_commit_nft_balances(voucher_settings)
         if last_commit:
             voucher_settings.balances = last_commit['virtual_balances']
@@ -83,7 +83,9 @@ async def getVoucherNFTUpdates():
     mint_events = voucher_settings.contract.events.Mint().getLogs(
             fromBlock=start_height
     )
+    height = 0
     for mint in mint_events:
+        height = mint["blockNumber"]
         token_id = str(mint["args"]["tokenId"])
         claimer = mint["args"]["claimer"]
         metadata_id = str(mint["args"]["metadataId"])
@@ -98,7 +100,7 @@ async def getVoucherNFTUpdates():
         if virtual_balance_change > 0:
             yield (claimer, virtual_balance_change * DECIMALS)
 
-    voucher_settings.next_height = current_height + 1
+    voucher_settings.last_height = max(start_height, height, current_height)
     if len(mint_events) + len(metadata_events) > 0:
         await update_nft_balances(voucher_settings)
 
@@ -178,7 +180,7 @@ async def update_nft_balances(voucher_settings):
         "tags": ["ERC721", settings.voucher_contract_address, "voucher"],
         "chain": settings.voucher_chain_name,
         "chain_id": settings.voucher_chain_id,
-        "chain_height": voucher_settings.next_height - 1,
+        "chain_height": voucher_settings.last_height,
         "platform": f"{settings.voucher_token_symbol}_{settings.voucher_chain_name}",
         "token_symbol": settings.voucher_token_symbol,
         "token_contract": settings.voucher_contract_address,

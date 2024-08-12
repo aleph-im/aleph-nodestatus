@@ -28,20 +28,19 @@ async def process_contract_history(
     last_seen=None,
     process_vouchers=False,
 ):
-    web3 = get_web3()
-    abi = get_token_contract_abi("ALEPHERC20")
-    contract = get_contract(contract_address, web3, abi)
-    abi = contract.events.Transfer._get_event_abi()
-    topic = construct_event_topic_set(abi, web3.codec)
-    if balances is None:
-        balances = {
+    balances = {
             settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
-        }
+        } if balances is None and settings.chain_name != "AVAX" else {}
     last_height = start_height
     changed_addresses = set()
     to_append = list()
 
     if settings.chain_name != "AVAX":
+        web3 = get_web3()
+        abi = get_token_contract_abi("ALEPHERC20")
+        contract = get_contract(contract_address, web3, abi)
+        abi = contract.events.Transfer._get_event_abi()
+        topic = construct_event_topic_set(abi, web3.codec)
         async for i in get_logs(web3, contract, start_height, topics=topic):
             evt_data = get_event_data(web3.codec, abi, i)
             args = evt_data["args"]
@@ -71,15 +70,19 @@ async def process_contract_history(
 
     else:
         voucher_settings = VoucherSettings()
-        if process_vouchers and voucher_settings.active:
+        if process_vouchers: #and voucher_settings.active:
             try:
                 async for claimer, virtual_balance_change in getVoucherNFTUpdates():
                     if virtual_balance_change != 0:
                         balances[claimer] = virtual_balance_change + (balances[claimer] if claimer in balances else 0)
                         changed_addresses.add(claimer)
             except Exception as e:
-                voucher_settings.active = False
-                LOGGER.error(f"Stopped processing vouchers, error: {e}")
+                #voucher_settings.active = False
+                #LOGGER.error(f"Stopped processing vouchers, error: {e}")
+                LOGGER.error(f"Error while processing vouchers: {e}")
+                LOGGER.error(f"Wait 1min and try again...")
+                await asyncio.sleep(60)
+            last_height = voucher_settings.last_height
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))
@@ -126,7 +129,7 @@ async def erc20_monitoring_process():
         process_vouchers=process_vouchers,
     )
     balances = {}
-    last_height = settings.ethereum_min_height
+    last_height = settings.ethereum_min_height if settings.chain_name != "AVAX" else VoucherSettings().last_height
     height = None
     async for height, (balances, platform, changed_items) in items:
         last_height = height
