@@ -28,9 +28,10 @@ async def process_contract_history(
     last_seen=None,
     process_vouchers=False,
 ):
-    balances = {
+    if balances is None:
+        balances = {
             settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
-        } if balances is None and settings.chain_name != "AVAX" else {}
+        } if settings.chain_name != "AVAX" else {}
     last_height = start_height
     changed_addresses = set()
     to_append = list()
