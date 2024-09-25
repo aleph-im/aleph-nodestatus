@@ -60,7 +60,7 @@ query ($bc: String!) {
                     continue
                 if h["account"] not in seen_accounts:
                     seen_accounts.add(h["account"])
-                    values[h["account"]] = values.get("account", 0) + int(h["balance"])
+                    values[h["account"]] = values.get("account", 0) + int(h["balanceNum"])
             return values
             # return {h['owner']: int(h['balance']) for h in holders}
 
