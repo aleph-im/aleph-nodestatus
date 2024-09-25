@@ -71,16 +71,14 @@ async def indexer_monitoring_process():
     web3 = get_web3()
     account = get_aleph_account()
 
-    previous_balances = dict
+    previous_balances = {
+        chain_identifier: None for chain_identifier in settings.platform_indexer_chains.values()
+    }
 
     while True:
-        previous_balances = {
-            chain_identifier: None for chain_identifier in settings.platform_indexer_chains.values()
-        }
         changed_items = {
             chain_identifier: set() for chain_identifier in settings.platform_indexer_chains.values()
         }
-        print(changed_items)
 
         for chain_name, chain_identifier in settings.platform_indexer_chains.items():
             balances = await query_balances(
@@ -91,18 +89,18 @@ async def indexer_monitoring_process():
             else:
                 for address in previous_balances[chain_identifier].keys():
                     if address not in balances.keys():
-                         changed_items[chain_identifier].add(address)
+                        changed_items[chain_identifier].add(address)
 
                 for address, amount in balances.items():
                     if (
-                        amount != previous_balances[chain_identifier].get(address, 0)
+                        abs(amount - previous_balances[chain_identifier].get(address, 0)) > 1
                         and address not in settings.platform_indexer_ignored_addresses
                     ):
-                         changed_items[chain_identifier].add(address)
+                        changed_items[chain_identifier].add(address)
 
-            if changed_items[chain_identifier]:
+            if len(changed_items[chain_identifier]):
                 print("SENDING BALANCES FOR {}".format(chain_identifier))
-                await update_balances(account, web3.eth.block_number, chain_name, chain_identifier, balances)
+                # await update_balances(account, web3.eth.block_number, chain_name, chain_identifier, balances)
                 previous_balances[chain_identifier] = balances
 
-        await asyncio.sleep(300)
+        await asyncio.sleep(30)
