@@ -122,6 +122,7 @@ async def erc20_monitoring_process():
     )
     balances = {}
     last_height = settings.ethereum_min_height
+    height = last_height
     async for height, (balances, platform, changed_items) in items:
         last_height = height
         balances = balances
