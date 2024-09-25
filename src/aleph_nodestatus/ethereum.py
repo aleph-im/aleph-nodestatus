@@ -191,7 +191,7 @@ async def get_logs(web3, contract, start_height, topics=None):
                     break
 
             except ValueError as e:
-                if e.args[0]["code"] == -32005:
+                if -33000 < e.args[0]["code"] <= -32000:
                     end_height = start_height + settings.ethereum_block_width_small
                 else:
                     raise
