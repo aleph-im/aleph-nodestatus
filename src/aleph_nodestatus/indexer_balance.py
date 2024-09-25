@@ -100,7 +100,7 @@ async def indexer_monitoring_process():
 
             if len(changed_items[chain_identifier]):
                 print("SENDING BALANCES FOR {}".format(chain_identifier))
-                # await update_balances(account, web3.eth.block_number, chain_name, chain_identifier, balances)
+                await update_balances(account, web3.eth.block_number, chain_name, chain_identifier, balances)
                 previous_balances[chain_identifier] = balances
 
         await asyncio.sleep(30)
