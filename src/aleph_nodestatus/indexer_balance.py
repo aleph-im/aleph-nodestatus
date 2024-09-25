@@ -60,7 +60,7 @@ query ($bc: String!) {
                     continue
                 if h["account"] not in seen_accounts:
                     seen_accounts.add(h["account"])
-                    values[h["account"]] = values.get("account", 0) + int(h["balanceNum"])
+                    values[h["account"]] = values.get("account", 0) + h["balanceNum"]
             return values
             # return {h['owner']: int(h['balance']) for h in holders}
 
@@ -103,4 +103,4 @@ async def indexer_monitoring_process():
                 await update_balances(account, web3.eth.block_number, chain_name, chain_identifier, balances)
                 previous_balances[chain_identifier] = balances
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
