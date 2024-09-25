@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 
 from pydantic import BaseSettings
 
@@ -72,6 +72,14 @@ class Settings(BaseSettings):
         "7MBLg6oV5phip11YBbJPuq7u38kdzSi9PM3BifKSpLaR",
         "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B",
     ]
+    
+    platform_indexer_endpoint = "https://test-avax-base.api.aleph.cloud/"
+    # dict: solana = SOL, base = BASE, avalanche = AVAX
+    platform_indexer_chains = Dict[str, str] = {
+        "solana": "SOL",
+        "base": "BASE",
+        "avalanche": "AVAX",
+    }
 
     crn_inactivity_threshold_days: int = 90
 
