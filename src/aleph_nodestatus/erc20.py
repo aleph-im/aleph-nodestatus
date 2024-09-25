@@ -8,7 +8,11 @@ from pathlib import Path
 from aleph_client.asynchronous import create_post
 from web3 import Web3
 from web3._utils.events import construct_event_topic_set
-from web3.contract import get_event_data
+try:
+    from web3.contract import get_event_data
+except ImportError:
+    from web3._utils.events import get_event_data
+    
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
 from web3.middleware import geth_poa_middleware, local_filter_middleware
 
@@ -123,7 +127,7 @@ async def erc20_monitoring_process():
         balances = balances
     LOGGER.info("pushing current state")
 
-    await update_balances(account, height, balances)
+    await update_balances(account, last_height, balances)
 
     while True:
         changed_items = None

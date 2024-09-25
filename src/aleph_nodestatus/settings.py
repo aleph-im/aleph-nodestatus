@@ -75,11 +75,13 @@ class Settings(BaseSettings):
     
     platform_indexer_endpoint = "https://test-avax-base.api.aleph.cloud/"
     # dict: solana = SOL, base = BASE, avalanche = AVAX
-    platform_indexer_chains = Dict[str, str] = {
-        "solana": "SOL",
+    platform_indexer_chains: Dict[str, str] = {
+        # "solana": "SOL",
         "base": "BASE",
         "avalanche": "AVAX",
     }
+    platform_indexer_ignored_addresses: List[str] = [
+    ]
 
     crn_inactivity_threshold_days: int = 90
 
