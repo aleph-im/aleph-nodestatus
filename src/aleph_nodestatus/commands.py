@@ -35,6 +35,7 @@ from .erc20 import erc20_monitoring_process, process_contract_history
 from .ethereum import get_account, get_web3, transfer_tokens
 from .settings import settings
 from .solana import solana_monitoring_process
+from .indexer_balance import indexer_monitoring_process
 from .status import process
 
 __author__ = "Jonathan Schemoul"
@@ -180,6 +181,18 @@ def monitor_solana(verbose):
     setup_logging(verbose)
     LOGGER.debug("Starting solana balance monitor")
     asyncio.run(solana_monitoring_process())
+
+
+@click.command()
+@click.option("-v", "--verbose", count=True)
+@click.version_option(version=__version__)
+def monitor_indexer(verbose):
+    """
+    IndexerBalancesMonitor: Pushes current token balances at each change on all indexed chains.
+    """
+    setup_logging(verbose)
+    LOGGER.debug("Starting indexer balance monitor")
+    asyncio.run(indexer_monitoring_process())
 
 
 def run():
