@@ -222,7 +222,7 @@ class NodesStatus:
                                     node["inactive_since"] = height
                                 
                                 if (height > settings.crn_inactivity_cutoff_height and
-                                    (node["inactive_since"] > (settings.crn_inactivity_threshold_days * settings.ethereum_blocks_per_day))
+                                    ((height - node["inactive_since"]) > (settings.crn_inactivity_threshold_days * settings.ethereum_blocks_per_day))
                                     and node["parent"] is None):
                                         # we should remove the node
                                     await self.remove_resource_node(node_id)
