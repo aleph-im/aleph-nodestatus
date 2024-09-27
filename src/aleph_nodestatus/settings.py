@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     ]
 
     crn_inactivity_threshold_days: int = 90
+    crn_inactivity_cutoff_height: int = 20840959
 
     class Config:
         env_file = ".env"
