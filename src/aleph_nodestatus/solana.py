@@ -1,7 +1,6 @@
 import asyncio
 
 import aiohttp
-from aleph_client.asynchronous import create_post
 
 from .ethereum import get_logs, get_web3
 from .settings import settings

@@ -524,7 +524,7 @@ class NodesStatus:
         # yield(self.last_checked_height, self.nodes)
 
 
-async def process():
+async def process(dbs):
     state_machine = NodesStatus()
     account = get_aleph_account()
 
@@ -539,11 +539,15 @@ async def process():
                 settings.ethereum_token_contract,
                 settings.ethereum_min_height,
                 last_seen=last_seen_txs,
+                db=dbs["erc20"],
+                fetch_from_db=True
             ),
         ),
         prepare_items(
             "balance-update",
-            process_balances_history(settings.ethereum_min_height, request_count=500),
+            process_balances_history(
+                settings.ethereum_min_height, request_count=500,
+                db=dbs["messages"],),
         ),
         prepare_items(
             "staking-update",
@@ -552,6 +556,7 @@ async def process():
                 [settings.node_post_type, "amend"],
                 settings.aleph_api_server,
                 request_count=1000,
+                db=dbs["messages"],
             ),
         ),
         prepare_items(
@@ -563,6 +568,7 @@ async def process():
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
                 request_count=100,
+                db=dbs["messages"],
             ),
         ),
     ]
@@ -587,6 +593,7 @@ async def process():
                     request_count=1000,
                     crawl_history=False,
                     request_sort="-1",
+                    db=dbs["messages"],
                 ),
             )
         ]
@@ -604,6 +611,8 @@ async def process():
                             ).items()
                         },
                         last_seen=last_seen_txs,
+                        db=dbs["erc20"],
+                        fetch_from_db=False
                     ),
                 )
             )
@@ -617,6 +626,7 @@ async def process():
                         request_count=100,
                         # TODO: pass platform_balances here
                         request_sort="-1",
+                        db=dbs["messages"],
                     ),
                 )
             )
@@ -634,6 +644,7 @@ async def process():
                         request_count=50,
                         crawl_history=False,
                         request_sort="-1",
+                        db=dbs["messages"],
                     ),
                 )
             )

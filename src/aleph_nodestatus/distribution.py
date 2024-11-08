@@ -2,7 +2,8 @@ import logging
 import math
 from collections import deque
 
-from aleph_client.asynchronous import create_post, get_posts
+from aleph.sdk.client import AuthenticatedAlephHttpClient
+from aleph.sdk.query.filters import PostFilter
 
 from .erc20 import DECIMALS, process_contract_history
 from .ethereum import get_web3
@@ -32,50 +33,52 @@ def compute_score_multiplier(score: float) -> float:
 
 async def create_distribution_tx_post(distribution):
     print(f"Preparing pending TX post {distribution}")
-    post = await create_post(
-        get_aleph_account(),
-        distribution,
-        post_type="staking-rewards-distribution",
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+    async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=settings.aleph_api_server) as client:
+        post = await client.create_post(
+            distribution,
+            post_type="staking-rewards-distribution",
+            channel=settings.aleph_channel
+        )
     return post
 
 
 async def get_latest_successful_distribution(sender=None):
     if sender is None:
         sender = get_aleph_address()
-    posts = await get_posts(
-        types=["staking-rewards-distribution"],
-        addresses=[sender],
-        api_server=settings.aleph_api_server,
-    )
-
+        
+    async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=settings.aleph_api_server) as client:
+        posts = await client.get_posts(
+            post_filter=PostFilter(
+                types=["staking-rewards-distribution"],
+                addresses=[sender]
+            )
+        )
+        
     current_post = None
     current_end_height = 0
-    for post in posts["posts"]:
+    for post in posts.posts:
         successful = False
-        if post["content"]["status"] != "distribution":
+        if post.content["status"] != "distribution":
             pass
 
-        for target in post["content"].get("targets", []):
+        for target in post.content.get("targets", []):
             if target["success"]:
                 successful = True
                 break
 
         if successful:
-            if post["content"]["end_height"] >= current_end_height:
+            if post.content["end_height"] >= current_end_height:
                 current_post = post
-                current_end_height = post["content"]["end_height"]
+                current_end_height = post.content["end_height"]
                 continue
 
     if current_post is not None:
-        return current_end_height, current_post["content"]
+        return current_end_height, current_post.content
     else:
         return 0, None
 
 
-async def prepare_distribution(start_height, end_height):
+async def prepare_distribution(dbs, start_height, end_height):
     state_machine = NodesStatus()
     account = get_aleph_account()
     reward_start = max(settings.reward_start_height, start_height)
@@ -92,6 +95,8 @@ async def prepare_distribution(start_height, end_height):
                 settings.ethereum_token_contract,
                 settings.ethereum_min_height,
                 last_seen=last_seen_txs,
+                db=dbs["erc20"],
+                fetch_from_db=True
             ),
         ),
         prepare_items(
@@ -99,6 +104,7 @@ async def prepare_distribution(start_height, end_height):
             process_balances_history(
                 settings.ethereum_min_height,
                 request_count=500,
+                db=dbs["messages"],
             )
         ),
         prepare_items(
@@ -109,6 +115,7 @@ async def prepare_distribution(start_height, end_height):
                 settings.aleph_api_server,
                 yield_unconfirmed=False,
                 request_count=5000,
+                db=dbs["messages"],
             ),
         ),
         prepare_items(
@@ -120,6 +127,7 @@ async def prepare_distribution(start_height, end_height):
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
                 request_count=1000,
+                db=dbs["messages"],
             ),
         ),
     ]
