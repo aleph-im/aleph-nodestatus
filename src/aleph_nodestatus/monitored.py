@@ -11,6 +11,7 @@ async def process_balances_history(
     request_count=10000,
     crawl_history=True,
     platform_balances=None,
+    db=None
 ):
     last_height = 0
     async for height, message in process_message_history(
@@ -24,6 +25,7 @@ async def process_balances_history(
         request_sort=request_sort,
         request_count=request_count,
         crawl_history=crawl_history,
+        db=db
     ):
         message_content = message["content"]
         post_content = message_content["content"]

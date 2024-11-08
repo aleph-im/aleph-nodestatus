@@ -10,6 +10,7 @@ from eth_account import Account
 from hexbytes import HexBytes
 from requests import ReadTimeout
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
+from aleph.sdk.chains.ethereum import ETHAccount
 
 from .settings import settings
 
@@ -19,6 +20,21 @@ DECIMALS = 10**18
 
 NONCE = None
 
+
+def get_aleph_account():
+    account = ETHAccount(settings.ethereum_pkey)
+    return account
+
+def get_eth_account():
+    if settings.ethereum_pkey:
+        pri_key = HexBytes(settings.ethereum_pkey)
+        try:
+            account = Account.privateKeyToAccount(pri_key)
+        except AttributeError:
+            account = Account.from_key(pri_key)
+        return account
+    else:
+        return None
 
 @lru_cache(maxsize=2)
 def get_web3():
@@ -30,8 +46,6 @@ def get_web3():
 
         assert w3.isConnected()
         w3 = iw3
-
-    w3.eth.set_gas_price_strategy(rpc_gas_price_strategy)
 
     return w3
 
@@ -54,6 +68,13 @@ def get_token_contract(web3):
         abi=get_token_contract_abi(),
     )
     return tokens
+
+def get_gas_info(web3):
+    latest_block = web3.eth.get_block("latest")
+    base_fee_per_gas = latest_block.baseFeePerGas   # Base fee in the latest block (in wei)
+    max_priority_fee_per_gas = web3.to_wei(1, 'gwei') # Priority fee to include the transaction in the block
+    max_fee_per_gas = (5 * base_fee_per_gas) + max_priority_fee_per_gas # Maximum amount you’re willing to pay 
+    return max_fee_per_gas, max_priority_fee_per_gas
 
 
 async def get_gas_price():
@@ -145,7 +166,12 @@ async def transfer_tokens(targets, metadata=None):
 
 
 async def get_logs_query(web3, contract, start_height, end_height, topics):
-    logs = web3.eth.get_logs(
+    try:
+        w3_get_logs = web3.eth.getLogs
+    except AttributeError:
+        w3_get_logs = web3.eth.get_logs
+
+    logs = w3_get_logs(
         {
             "address": contract.address,
             "fromBlock": start_height,
@@ -164,12 +190,15 @@ async def get_logs(web3, contract, start_height, topics=None):
             yield log
     except (ValueError, ReadTimeout) as e:
         # we got an error, let's try the pagination aware version.
-        if isinstance(e, ValueError):
-            if e.args[0]["code"] not in [-32000, -32005]:
-                print(e.args)
-                return
+        if (getattr(e, 'args')
+                and len(e.args)
+                and not (-33000 < e.args[0]['code'] <= -32000)):
+            return
 
-        last_block = web3.eth.block_number
+        try:
+            last_block = web3.eth.blockNumber
+        except AttributeError:
+            last_block = web3.eth.block_number
         #         if (start_height < config.ethereum.start_height.value):
         #             start_height = config.ethereum.start_height.value
 
@@ -195,3 +224,11 @@ async def get_logs(web3, contract, start_height, topics=None):
                     end_height = start_height + settings.ethereum_block_width_small
                 else:
                     raise
+
+async def lookup_timestamp(web3, block_number, block_timestamps=None):
+    if block_timestamps is not None and block_number in block_timestamps:
+        return block_timestamps[block_number]
+    block = web3.eth.get_block(block_number)
+    if block_timestamps is not None:
+        block_timestamps[block_number] = block.timestamp
+    return block.timestamp

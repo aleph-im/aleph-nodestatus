@@ -4,8 +4,9 @@ import logging
 import os
 from collections import deque
 from pathlib import Path
+import json
 
-from aleph_client.asynchronous import create_post
+from aleph.sdk.client import AuthenticatedAlephHttpClient
 from web3 import Web3
 from web3._utils.events import construct_event_topic_set
 try:
@@ -16,7 +17,7 @@ except ImportError:
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
 from web3.middleware import geth_poa_middleware, local_filter_middleware
 
-from .ethereum import get_logs, get_web3
+from .ethereum import get_logs, get_web3, get_aleph_account
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def get_contract(address, web3):
 
 
 async def process_contract_history(
-    contract_address, start_height, platform="ETH", balances=None, last_seen=None
+    contract_address, start_height, platform="ETH", balances=None, last_seen=None, db=None, fetch_from_db=True
 ):
     web3 = get_web3()
     contract = get_contract(contract_address, web3)
@@ -45,18 +46,64 @@ async def process_contract_history(
         balances = {
             settings.ethereum_deployer: settings.ethereum_total_supply * DECIMALS
         }
+    
     last_height = start_height
-    end_height = web3.eth.block_number
 
     changed_addresses = set()
 
     to_append = list()
+        
+    async def handle_event(height, args):
+        nonlocal changed_addresses
+        nonlocal last_height
+
+        balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
+        balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
+        changed_addresses.add(args["_from"])
+        changed_addresses.add(args["_to"])
+        last_height = height
+        
+    if db is not None and fetch_from_db:
+        last_key = await db.get_last_available_key(prefix=contract_address)
+        if last_key:
+            start_height = int(last_key.split("_")[0])
+            last_height = start_height
+        
+            async for key, values in db.retrieve_entries(prefix=contract_address):
+                if values["height"] != last_height and last_height != start_height:
+                    yield (last_height, (balances, platform, changed_addresses))
+                    changed_addresses = set()
+
+                    if last_seen is not None:
+                        last_seen.extend(to_append)
+
+                    to_append = list()
+
+                if last_seen is not None:
+                    tx_hash = values["tx_hash"]
+                    if tx_hash in last_seen:
+                        continue
+                    else:
+                        to_append.append(tx_hash)
+                    
+                await handle_event(values["height"], values["args"])
+        
+    end_height = web3.eth.block_number
+    
+    start_height = last_height
+    
 
     async for i in get_logs(web3, contract, start_height, topics=topic):
         evt_data = get_event_data(web3.codec, abi, i)
+        event = evt_data["event"]
         args = evt_data["args"]
         height = evt_data["blockNumber"]
-
+        tx_hash = evt_data["transactionHash"].hex()
+        tx_index = evt_data["transactionIndex"]
+        log_index = evt_data["logIndex"]
+        key = "{}_{}_{}".format(height, tx_index, log_index)
+        # print(json.dumps({'event': event, 'args': dict(args), 'height': height, 'key': key}))
+        
         if height != last_height:
             yield (last_height, (balances, platform, changed_addresses))
             changed_addresses = set()
@@ -73,11 +120,18 @@ async def process_contract_history(
             else:
                 to_append.append(tx_hash)
 
-        balances[args["_from"]] = balances.get(args["_from"], 0) - args["_value"]
-        balances[args["_to"]] = balances.get(args["_to"], 0) + args["_value"]
-        changed_addresses.add(args["_from"])
-        changed_addresses.add(args["_to"])
-        last_height = height
+        await handle_event(height, args)
+        
+        if db is not None:
+            await db.store_entry(key,
+                                 {'event': event,
+                                  'args': dict(args),
+                                  'height': height,
+                                  'key': key,
+                                  'tx_hash': tx_hash
+                                  }, prefix=contract_address)
+
+        
 
     if len(changed_addresses):
         yield (last_height, (balances, platform, changed_addresses))
@@ -86,39 +140,39 @@ async def process_contract_history(
 async def update_balances(account, height, balances, changed_addresses = None):
     if changed_addresses is None:
         changed_addresses = list(balances.keys())
-
-    return await create_post(
-        account,
-        {
-            "tags": ["ERC20", settings.ethereum_token_contract, settings.filter_tag],
-            "height": height,
-            "main_height": height,  # ethereum height
-            "platform": "{}_{}".format(settings.token_symbol, settings.chain_name),
-            "token_contract": settings.ethereum_token_contract,
-            "token_symbol": settings.token_symbol,
-            "network_id": settings.ethereum_chain_id,
-            "chain": settings.chain_name,
-            "balances": {
-                # we only send the balances that are > 0.00001 or are in the changed_addresses list
-                addr: value / DECIMALS for addr, value in balances.items() if (value > 0.00001 or addr in changed_addresses)
+        
+    async with AuthenticatedAlephHttpClient(account, api_server=settings.aleph_api_server) as client:
+        return await client.create_post(
+            {
+                "tags": ["ERC20", settings.ethereum_token_contract, settings.filter_tag],
+                "height": height,
+                "main_height": height,  # ethereum height
+                "platform": "{}_{}".format(settings.token_symbol, settings.chain_name),
+                "token_contract": settings.ethereum_token_contract,
+                "token_symbol": settings.token_symbol,
+                "network_id": settings.ethereum_chain_id,
+                "chain": settings.chain_name,
+                "balances": {
+                    # we only send the balances that are > 0.00001 or are in the changed_addresses list
+                    addr: value / DECIMALS for addr, value in balances.items() if (value > 0.00001 or addr in changed_addresses)
+                },
             },
-        },
-        settings.balances_post_type,
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+            settings.balances_post_type,
+            channel=settings.aleph_channel
+        )
 
 
-async def erc20_monitoring_process():
-    from .messages import get_aleph_account
-
+async def erc20_monitoring_process(dbs):
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()
+    print(account.get_address())
     LOGGER.info("processing history")
+    # get with DB to get last history
     items = process_contract_history(
         settings.ethereum_token_contract,
         settings.ethereum_min_height,
         last_seen=last_seen_txs,
+        db=dbs['erc20']
     )
     balances = {}
     last_height = settings.ethereum_min_height
@@ -141,6 +195,8 @@ async def erc20_monitoring_process():
             last_height + 1,
             balances=balances,
             last_seen=last_seen_txs,
+            db=dbs['erc20'],
+            fetch_from_db=False
         ):
             pass
 

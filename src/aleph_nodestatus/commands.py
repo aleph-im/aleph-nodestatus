@@ -32,11 +32,14 @@ from .distribution import (
     prepare_distribution,
 )
 from .erc20 import erc20_monitoring_process, process_contract_history
-from .ethereum import get_account, get_web3, transfer_tokens
+from .ethereum import get_account, get_web3, transfer_tokens, get_eth_account
 from .settings import settings
 from .solana import solana_monitoring_process
 from .indexer_balance import indexer_monitoring_process
 from .status import process
+
+from .storage import get_dbs, close_dbs
+
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
@@ -67,13 +70,15 @@ def main(verbose):
     """
     setup_logging(verbose)
     LOGGER.debug("Starting nodestatus")
-    account = get_account()
+    account = get_eth_account()
+    dbs = get_dbs()
     LOGGER.debug(f"Starting with ETH account {account.address}")
-    asyncio.run(process())
+    asyncio.run(process(dbs))
 
 
 async def process_distribution(start_height, end_height, act=False, reward_sender=None):
-    account = get_account()
+    account = get_eth_account()
+    dbs = get_dbs()
     LOGGER.debug(f"Starting with ETH account {account.address}")
 
     if end_height == -1:
@@ -89,7 +94,7 @@ async def process_distribution(start_height, end_height, act=False, reward_sende
             start_height = 0
 
     reward_start, end_height, rewards = await prepare_distribution(
-        start_height, end_height
+        dbs, start_height, end_height
     )
 
     distribution = dict(
@@ -154,9 +159,10 @@ def monitor_erc20(verbose):
     """
     ERC20BalancesMonitor: Pushes current token balances at each change.
     """
+    dbs = get_dbs()
     setup_logging(verbose)
     LOGGER.debug("Starting erc20 balance monitor")
-    asyncio.run(erc20_monitoring_process())
+    asyncio.run(erc20_monitoring_process(dbs))
 
 
 @click.command()
