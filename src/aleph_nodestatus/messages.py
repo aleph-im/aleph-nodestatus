@@ -37,12 +37,16 @@ async def get_message_result(
         if conf["chain"] == "ETH":
             if earliest is None or conf["height"] < earliest:
                 earliest = conf["height"]
+                
+    # key = f"{earliest}_{int(message['time'])}_{message['item_hash']}"
+    key = f"{int(message['time'])}_{earliest}_{message['item_hash']}"
     
-    if (message["item_hash"] in UNCONFIRMED_MESSAGES and earliest >= min_height):
-        # we store it in the db
-        if db is not None:
-            await db.store_entry(key, {"height": earliest, "message": message}, prefix=db_prefix)
-        UNCONFIRMED_MESSAGES.remove(message["item_hash"])
+    if message["item_hash"] in UNCONFIRMED_MESSAGES:
+        if earliest is not None:
+            # we store it in the db
+            if db is not None:
+                await db.store_entry(key, {"height": earliest, "message": message}, prefix=db_prefix)
+            UNCONFIRMED_MESSAGES.remove(message["item_hash"])
         return None
                 
     if message["item_hash"] in last_seen:
@@ -63,7 +67,6 @@ async def get_message_result(
         last_seen.append(message["item_hash"])
         
         if db is not None:
-            key = f"{earliest}_{int(message['time'])}_{message['item_hash']}"
             await db.store_entry(key, {"height": earliest, "message": message}, prefix=db_prefix)
         return earliest, message
 
@@ -93,10 +96,10 @@ async def process_message_history(
     prefix = f"{message_type}_{','.join(tags)}_{','.join(content_types)}"
     
     # we ensure we don't process a tx twice
-    last_seen = deque([], maxlen=1000)
+    last_seen = deque([], maxlen=4000)
     
     fetch_from_db = db is not None
-    if not crawl_history or request_sort == "-1":
+    if (not crawl_history) or request_sort == "-1":
         fetch_from_db = False
         
     last_yielded_height = 0
@@ -104,7 +107,7 @@ async def process_message_history(
     if fetch_from_db:
         last_key = await db.get_last_available_key(prefix=prefix)
         if last_key:
-            last_height = int(last_key.split("_")[0])
+            last_height = int(last_key.split("_")[1])
                 
             async for key, values in db.retrieve_entries(prefix=prefix):
                 if values["height"] >= min_height:
@@ -119,7 +122,6 @@ async def process_message_history(
                         yield result
                         
             if last_height > min_height:
-                min_height = last_height
                 # params['start_height'] = last_height
                 timestamp = await lookup_timestamp(web3, last_height)
                 params["start_date"] = timestamp - (60 * 60 * 24 * 7)
