@@ -184,6 +184,12 @@ class NodesStatus:
                 post_content = message_content["content"]
                 address = message_content["address"]
 
+                print(
+                    height,
+                    post_type,
+                    content["sender"]
+                )
+
                 if post_type == settings.scores_post_type:
                     for ccn_score in post_content["scores"]["ccn"]:
                         node_id = ccn_score["node_id"]
@@ -547,7 +553,7 @@ async def process(dbs):
             "balance-update",
             process_balances_history(
                 settings.ethereum_min_height, request_count=500,
-                db=dbs["messages"],),
+                db=dbs["balances"],),
         ),
         prepare_items(
             "staking-update",
@@ -568,7 +574,7 @@ async def process(dbs):
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
                 request_count=100,
-                db=dbs["messages"],
+                db=dbs["scores"],
             ),
         ),
     ]
@@ -626,7 +632,7 @@ async def process(dbs):
                         request_count=100,
                         # TODO: pass platform_balances here
                         request_sort="-1",
-                        db=dbs["messages"],
+                        db=dbs["balances"],
                     ),
                 )
             )
@@ -644,7 +650,7 @@ async def process(dbs):
                         request_count=50,
                         crawl_history=False,
                         request_sort="-1",
-                        db=dbs["messages"],
+                        db=dbs["scores"],
                     ),
                 )
             )
