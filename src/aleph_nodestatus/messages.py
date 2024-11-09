@@ -30,7 +30,7 @@ UNCONFIRMED_MESSAGES = deque([], maxlen=500)
 
 async def get_message_result(
     message, yield_unconfirmed=True, last_block=0, min_height=0,
-    last_seen=None, db=None, db_prefix=None
+    last_seen=None, addresses=None, db=None, db_prefix=None
 ):
     earliest = None
     for conf in message.get("confirmations", []):
@@ -38,8 +38,8 @@ async def get_message_result(
             if earliest is None or conf["height"] < earliest:
                 earliest = conf["height"]
                 
-    # key = f"{earliest}_{int(message['time'])}_{message['item_hash']}"
-    key = f"{int(message['time'])}_{earliest}_{message['item_hash']}"
+    key = f"{earliest}_{int(message['time'])}_{message['item_hash']}"
+    # key = f"{int(message['time'])}_{earliest}_{message['item_hash']}"
     
     if message["item_hash"] in UNCONFIRMED_MESSAGES:
         if earliest is not None:
@@ -51,6 +51,10 @@ async def get_message_result(
                 
     if message["item_hash"] in last_seen:
         return None
+    
+    if addresses is not None:
+        if message["sender"] not in addresses:
+            return None
     
     # print(earliest, min_height)
     if earliest is None and not yield_unconfirmed:
@@ -92,6 +96,7 @@ async def process_message_history(
         "contentTypes": ",".join(content_types),
         "pagination": request_count,
         "sort_order": request_sort,
+        "sort_by": "tx-time"
     }
     prefix = f"{message_type}_{','.join(tags)}_{','.join(content_types)}"
     
@@ -107,7 +112,7 @@ async def process_message_history(
     if fetch_from_db:
         last_key = await db.get_last_available_key(prefix=prefix)
         if last_key:
-            last_height = int(last_key.split("_")[1])
+            last_height = int(last_key.split("_")[0])
                 
             async for key, values in db.retrieve_entries(prefix=prefix):
                 if values["height"] >= min_height:
@@ -116,7 +121,8 @@ async def process_message_history(
                         yield_unconfirmed=yield_unconfirmed,
                         last_block=last_block,
                         min_height=min_height,
-                        last_seen=last_seen
+                        last_seen=last_seen,
+                        addresses=addresses
                     )
                     if result is not None:
                         yield result
@@ -150,6 +156,7 @@ async def process_message_history(
                     last_block=last_block,
                     min_height=min_height,
                     last_seen=last_seen,
+                    addresses=addresses,
                     db=db,
                     db_prefix=prefix
                 )
@@ -171,6 +178,7 @@ async def process_message_history(
                             last_block=last_block,
                             min_height=min_height,
                             last_seen=last_seen,
+                            addresses=addresses,
                             db=db,
                             db_prefix=prefix
                         )
