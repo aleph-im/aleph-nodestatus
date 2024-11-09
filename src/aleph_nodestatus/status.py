@@ -198,8 +198,17 @@ class NodesStatus:
                         decentralization = ccn_score["decentralization"]
                         if node_id in self.nodes:
                             node = self.nodes[node_id]
-                            node["score"] = score
-                            node["performance"] = performance
+                            
+                            if self.last_score_height > height - 10:
+                                # we got a new score for the same height, only keep the best one
+                                if score > node["score"]:
+                                    node["score"] = score
+                                if performance > node["performance"]:
+                                    node["performance"] = performance
+                            else: 
+                                node["score"] = score
+                                node["performance"] = performance
+                                
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
@@ -217,8 +226,17 @@ class NodesStatus:
                         decentralization = crn_score["decentralization"]
                         if node_id in self.resource_nodes:
                             node = self.resource_nodes[node_id]
-                            node["score"] = score
-                            node["performance"] = performance
+                            
+                            if self.last_score_height > height - 10:
+                                # we got a new score for the same height, only keep the best one
+                                if score > node["score"]:
+                                    node["score"] = score
+                                if performance > node["performance"]:
+                                    node["performance"] = performance
+                            else:
+                                node["score"] = score
+                                node["performance"] = performance
+                                
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
@@ -259,6 +277,11 @@ class NodesStatus:
                 if post_type == settings.node_post_type:
                     # Ok it's a wannabe node.
                     # Ignore creation if there is a node already or imbalance
+                    if content["item_hash"] == "071bf2d8ea1bb890863f1215a239d1ca5e24fdbfc4a106bc1982600e590f028d":
+                        print("### Ok found that NODEEEEE!!!!")
+                        print(address in self.address_nodes)
+                        print(self.balances.get(address, 0))
+                        
                     if (
                         post_action == "create-node"
                         and address not in self.address_nodes
