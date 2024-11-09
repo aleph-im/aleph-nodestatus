@@ -104,7 +104,7 @@ async def prepare_distribution(dbs, start_height, end_height):
             process_balances_history(
                 settings.ethereum_min_height,
                 request_count=500,
-                db=dbs["messages"],
+                db=dbs["balances"],
             )
         ),
         prepare_items(
@@ -127,7 +127,7 @@ async def prepare_distribution(dbs, start_height, end_height):
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
                 request_count=1000,
-                db=dbs["messages"],
+                db=dbs["scores"],
             ),
         ),
     ]
@@ -255,6 +255,7 @@ async def prepare_distribution(dbs, start_height, end_height):
             process_distribution(
                 nodes, resource_nodes, max(last_height, reward_start), height
             )
+            print(f"processing {max(last_height, reward_start)} to {height}")
 
         last_height = height
 
