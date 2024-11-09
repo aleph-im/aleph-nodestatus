@@ -1,6 +1,6 @@
 import plyvel
 import time
-import json
+import ujson as json
 import os
 from pathlib import Path
 from .settings import settings
@@ -52,6 +52,7 @@ def get_dbs():
         'erc20': Storage(settings.db_path, 'erc20'),
         'messages': Storage(settings.db_path, 'messages'),
         'balances': Storage(settings.db_path, 'balances'),
+        'scores': Storage(settings.db_path, 'scores'),
     }
 
 def close_dbs(dbs):
