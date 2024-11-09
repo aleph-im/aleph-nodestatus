@@ -15,7 +15,7 @@ async def process_balances_history(
 ):
     last_height = 0
     async for height, message in process_message_history(
-        [settings.filter_tag],
+        settings.balances_filter_tags,
         [settings.balances_post_type],
         settings.aleph_api_server,
         yield_unconfirmed=True,
