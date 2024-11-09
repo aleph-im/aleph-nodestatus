@@ -154,6 +154,10 @@ async def prepare_distribution(dbs, start_height, end_height):
         block_count = current - since
         LOGGER.debug(f"Calculating for block {current}, {block_count} blocks")
         active_nodes = [node for node in nodes.values() if node["status"] == "active"]
+        
+        address_validator = getattr(web3, "toChecksumAddress",
+                                getattr(web3, "to_checksum_address", None))
+        
         if not active_nodes:
             return
 
@@ -191,7 +195,7 @@ async def prepare_distribution(dbs, start_height, end_height):
 
                 rnode_reward_address = rnode["owner"]
                 try:
-                    rtaddress = web3.toChecksumAddress(rnode.get("reward", None))
+                    rtaddress = address_validator(rnode.get("reward", None))
                     if rtaddress:
                         rnode_reward_address = rtaddress
                 except Exception:
@@ -233,7 +237,7 @@ async def prepare_distribution(dbs, start_height, end_height):
             this_node = this_node * this_node_modifier
 
             try:
-                taddress = web3.toChecksumAddress(node.get("reward", None))
+                taddress = address_validator(node.get("reward", None))
                 if taddress:
                     reward_address = taddress
             except Exception:
@@ -252,6 +256,7 @@ async def prepare_distribution(dbs, start_height, end_height):
         if height > end_height:
             break
         if height > reward_start:
+            
             process_distribution(
                 nodes, resource_nodes, max(last_height, reward_start), height
             )
