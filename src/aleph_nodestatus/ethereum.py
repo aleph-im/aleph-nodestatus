@@ -101,13 +101,13 @@ async def transfer_tokens(targets, metadata=None):
     address_validator = getattr(w3, "toChecksumAddress",
                                 getattr(w3, "to_checksum_address", None))
     contract = get_token_contract(w3)
-    account = get_account()
+    account = get_eth_account()
 
     addr_count = len(targets.keys())
     total = sum(targets.values())
 
     LOGGER.info(f"Preparing transfer of {total} to {addr_count}")
-    gas_price = await get_gas_price()
+    max_fee, max_priority = get_gas_info(web3)
 
     if NONCE is None:
         NONCE = w3.eth.get_transaction_count(account.address)
@@ -134,8 +134,9 @@ async def transfer_tokens(targets, metadata=None):
             {
                 "chainId": settings.ethereum_chain_id,
                 "gas": 30000 + (20000 * len(targets)),
-                "gasPrice": gas_price,
                 "nonce": NONCE,
+                'maxFeePerGas': max_fee,
+                'maxPriorityFeePerGas': max_priority
             }
         )
         signed_tx = account.sign_transaction(tx)
