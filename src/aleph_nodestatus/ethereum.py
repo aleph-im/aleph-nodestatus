@@ -107,7 +107,7 @@ async def transfer_tokens(targets, metadata=None):
     total = sum(targets.values())
 
     LOGGER.info(f"Preparing transfer of {total} to {addr_count}")
-    max_fee, max_priority = get_gas_info(web3)
+    max_fee, max_priority = get_gas_info(w3)
 
     if NONCE is None:
         NONCE = w3.eth.get_transaction_count(account.address)
