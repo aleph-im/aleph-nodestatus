@@ -78,7 +78,6 @@ async def query_voucher_balances(endpoint, chain):
                         metadata = await fetch_metadata(url)
                         voucher_balance = await get_voucher_balance(owner, metadata, int(time.time())*1000)
                         values[owner] = values.get(owner, 0) + int(voucher_balance)
-                        values[owner] = 0
             if len(balances) >= limit:
                 skip += limit
             else:
