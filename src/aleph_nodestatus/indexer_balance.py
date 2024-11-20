@@ -37,8 +37,12 @@ async def update_balances(account, main_height, chain_name, chain_identifier, ba
 async def query_balances(endpoint, chain_name):
     query = (
         """
-query ($bc: String!) {
-  balances(blockchain: $bc, limit: 99999) {
+query ($bc: String!, $skip: Int!, $limit: Int!) {
+  balances(
+        blockchain: $bc,
+        skip: $skip
+        limit: $limit
+  ) {
     account
     balance
     balanceNum
@@ -46,29 +50,39 @@ query ($bc: String!) {
 }
 """
     )
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, json={
-                "query": query,
-                "variables": {"bc": chain_name},
-            }) as resp:
-            result = await resp.json()
-            holders = result["data"]["balances"]
-            seen_accounts = set()
-            values = {}
-            for h in holders:
-                if h is None:
-                    continue
-                if h["account"] not in seen_accounts:
-                    seen_accounts.add(h["account"])
-                    values[h["account"]] = values.get("account", 0) + h["balanceNum"]
 
-            if chain_name == 'solana':
-                voucher_balances = await query_voucher_balances(
-                    settings.voucher_indexer_endpoint, chain_name
-                )
-                for voucher_owner, balance in voucher_balances.items():
-                    values[voucher_owner] = values.get(voucher_owner, 0) + balance
-            return values
+    seen_accounts = set()
+    values = {}
+    async with aiohttp.ClientSession() as session:
+        skip = 0
+        limit = 100
+        while True:
+            async with session.post(endpoint, json={
+                    "query": query,
+                    "variables": {
+                        "bc": chain_name, "skip": skip, "limit": limit
+                    },
+                }) as resp:
+                result = await resp.json()
+                holders = result["data"]["balances"]
+                for h in holders:
+                    if h is None:
+                        continue
+                    if h["account"] not in seen_accounts:
+                        seen_accounts.add(h["account"])
+                        values[h["account"]] = values.get("account", 0) + h["balanceNum"]
+                if len(holders) >= limit:
+                    skip += limit
+                else:
+                    break
+
+        if chain_name == 'solana':
+            voucher_balances = await query_voucher_balances(
+                settings.voucher_indexer_endpoint, chain_name
+            )
+            for voucher_owner, balance in voucher_balances.items():
+                values[voucher_owner] = values.get(voucher_owner, 0) + balance
+        return values
             # return {h['owner']: int(h['balance']) for h in holders}
 
 
