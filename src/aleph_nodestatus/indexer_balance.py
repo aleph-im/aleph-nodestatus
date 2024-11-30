@@ -55,7 +55,10 @@ query ($bc: String!, $skip: Int!, $limit: Int!) {
     values = {}
     async with aiohttp.ClientSession() as session:
         skip = 0
-        limit = 100
+        limit = 99999
+        if chain_name == "solana":
+            limit = 1000
+
         while True:
             async with session.post(endpoint, json={
                     "query": query,
@@ -75,6 +78,8 @@ query ($bc: String!, $skip: Int!, $limit: Int!) {
                     skip += limit
                 else:
                     break
+            await asyncio.sleep(1)
+        print("Holders", len(values))
 
         if chain_name == 'solana':
             voucher_balances = await query_voucher_balances(
@@ -82,8 +87,9 @@ query ($bc: String!, $skip: Int!, $limit: Int!) {
             )
             for voucher_owner, balance in voucher_balances.items():
                 values[voucher_owner] = values.get(voucher_owner, 0) + balance
+
+        print("Holders + Vouchers", len(values))
         return values
-            # return {h['owner']: int(h['balance']) for h in holders}
 
 
 async def indexer_monitoring_process():
