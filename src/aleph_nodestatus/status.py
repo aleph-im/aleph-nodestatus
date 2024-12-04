@@ -28,6 +28,7 @@ EDITABLE_FIELDS = [
     "authorized",
     "locked",
     "registration_url",
+    "terms_and_conditions",
 ]
 
 
@@ -119,12 +120,12 @@ class NodesStatus:
             for platform in self.platform_balances.keys():
                 balance += self.platform_balances[platform].get(addr, 0)
             self.balances[addr] = balance
-    
+
     async def _prepare_crn_url(self, node, address=None):
         """ Verify that this URL doesn't exist for another resource node, and return the URL to use """
         if address is None:
             address = node["address"]
-            
+
         node_hostname = urlparse(address).hostname
         for crn in self.resource_nodes.values():
             # let's extract the hostname of the address
@@ -132,7 +133,7 @@ class NodesStatus:
                 crn_hostname = urlparse(crn["address"]).hostname
                 if node_hostname == crn_hostname:
                     return ''
-                
+
         return address
 
 
@@ -198,17 +199,17 @@ class NodesStatus:
                         decentralization = ccn_score["decentralization"]
                         if node_id in self.nodes:
                             node = self.nodes[node_id]
-                            
+
                             if self.last_score_height > height - 10:
                                 # we got a new score for the same height, only keep the best one
                                 if score > node["score"]:
                                     node["score"] = score
                                 if performance > node["performance"]:
                                     node["performance"] = performance
-                            else: 
+                            else:
                                 node["score"] = score
                                 node["performance"] = performance
-                                
+
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
@@ -226,7 +227,7 @@ class NodesStatus:
                         decentralization = crn_score["decentralization"]
                         if node_id in self.resource_nodes:
                             node = self.resource_nodes[node_id]
-                            
+
                             if self.last_score_height > height - 10:
                                 # we got a new score for the same height, only keep the best one
                                 if score > node["score"]:
@@ -236,7 +237,7 @@ class NodesStatus:
                             else:
                                 node["score"] = score
                                 node["performance"] = performance
-                                
+
                             node["decentralization"] = decentralization
                             node["score_updated"] = True
 
@@ -244,7 +245,7 @@ class NodesStatus:
                                 if node["inactive_since"] is None:
                                     # we should update the inactive_since only if it's null
                                     node["inactive_since"] = height
-                                
+
                                 if (height > settings.crn_inactivity_cutoff_height and
                                     ((height - node["inactive_since"]) > (settings.crn_inactivity_threshold_days * settings.ethereum_blocks_per_day))
                                     and node["parent"] is None):
@@ -252,7 +253,7 @@ class NodesStatus:
                                     await self.remove_resource_node(node_id)
                             else:
                                 node["inactive_since"] = None
-                
+
                     if height > self.last_score_height:
                         self.last_score_height = height
 
@@ -281,7 +282,7 @@ class NodesStatus:
                         print("### Ok found that NODEEEEE!!!!")
                         print(address in self.address_nodes)
                         print(self.balances.get(address, 0))
-                        
+
                     if (
                         post_action == "create-node"
                         and address not in self.address_nodes
