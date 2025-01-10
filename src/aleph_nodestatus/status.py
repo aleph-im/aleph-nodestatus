@@ -2,6 +2,7 @@ import asyncio
 import random
 from collections import deque
 from urllib.parse import urlparse
+from multiaddr import Multiaddr
 
 from aleph_nodestatus.monitored import process_balances_history
 
@@ -121,6 +122,17 @@ class NodesStatus:
                 balance += self.platform_balances[platform].get(addr, 0)
             self.balances[addr] = balance
 
+    def _get_hostname_from_multiaddress(self, multiaddress):
+        """ Extract the hostname from a multiaddress """
+        try:
+            maddr = Multiaddr(multiaddress)
+            for protocol in maddr.protocols():
+                if protocol.name in ['ip4', 'ip6', 'dns', 'dns4', 'dns6']:
+                    return maddr.value_for_protocol(protocol.code)
+        except Exception as e:
+            print(f"Error parsing multiaddress: {e}")
+        return None
+
     async def _prepare_crn_url(self, node, address=None):
         """ Verify that this URL doesn't exist for another resource node, and return the URL to use """
         if address is None:
@@ -136,6 +148,22 @@ class NodesStatus:
 
         return address
 
+    async def _prepare_ccn_multiaddress(self, node, multiaddress=None):
+        """ Verify that this multiaddress doesn't exist for another core channel node, and return the multiaddress to use """
+        if multiaddress is None:
+            multiaddress = node["multiaddress"]
+
+        node_hostname = self._get_hostname_from_multiaddress(multiaddress)
+        if node_hostname is None:
+            return ''
+
+        for ccn in self.nodes.values():
+            if ccn['hash'] != node['hash']:
+                other_node_hostname = self._get_hostname_from_multiaddress(ccn["multiaddress"])
+                if node_hostname == other_node_hostname:
+                    return ''
+
+        return multiaddress
 
     async def process(self, iterators):
         async for height, rnd, (evt_type, content) in merge(*iterators):
@@ -312,6 +340,10 @@ class NodesStatus:
                                 continue
 
                             new_node[field] = details.get(field, "")
+
+                            if field == "multiaddress":
+                                # we need to check that the Multiaddress is valid
+                                new_node["multiaddress"] = await self._prepare_ccn_multiaddress(new_node)
 
                         if height < settings.bonus_start:
                             new_node["has_bonus"] = True
@@ -509,6 +541,9 @@ class NodesStatus:
                             node[field] = bool(
                                 details.get(field, node.get(field, False))
                             )
+                        elif field == "multiaddress":
+                            # we need to check that the Multiaddress is valid
+                            node[field] = await self._prepare_ccn_multiaddress(node, multiaddress=details.get(field, node.get(field, "")))
                         else:
                             node[field] = details.get(field, node.get(field, ""))
 
