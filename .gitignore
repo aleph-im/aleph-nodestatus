@@ -51,3 +51,6 @@ MANIFEST
 
 .env
 .env.test
+device.key
+
+database/*
