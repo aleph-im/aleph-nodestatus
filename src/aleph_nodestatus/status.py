@@ -223,7 +223,7 @@ class NodesStatus:
                     for ccn_score in post_content["scores"]["ccn"]:
                         node_id = ccn_score["node_id"]
                         score = ccn_score["total_score"]
-                        performance = ccn_score["performance"]
+                        performance = ccn_score.get("performance", 0)
                         decentralization = ccn_score["decentralization"]
                         if node_id in self.nodes:
                             node = self.nodes[node_id]
@@ -251,7 +251,7 @@ class NodesStatus:
                     for crn_score in post_content["scores"]["crn"]:
                         node_id = crn_score["node_id"]
                         score = crn_score["total_score"]
-                        performance = crn_score["performance"]
+                        performance = crn_score.get("performance", 0)
                         decentralization = crn_score["decentralization"]
                         if node_id in self.resource_nodes:
                             node = self.resource_nodes[node_id]
