@@ -26,20 +26,19 @@ import click
 from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
 
+from .balances import do_reset_balances
 from .distribution import (
     create_distribution_tx_post,
     get_latest_successful_distribution,
     prepare_distribution,
 )
 from .erc20 import erc20_monitoring_process, process_contract_history
-from .ethereum import get_account, get_web3, transfer_tokens, get_eth_account
+from .ethereum import get_account, get_eth_account, get_web3, transfer_tokens
+from .indexer_balance import indexer_monitoring_process
 from .settings import settings
 from .solana import solana_monitoring_process
-from .indexer_balance import indexer_monitoring_process
 from .status import process
-
-from .storage import get_dbs, close_dbs
-
+from .storage import close_dbs, get_dbs
 
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
@@ -199,6 +198,28 @@ def monitor_indexer(verbose):
     setup_logging(verbose)
     LOGGER.debug("Starting indexer balance monitor")
     asyncio.run(indexer_monitoring_process())
+
+
+@click.command()
+@click.option("-v", "--verbose", count=True)
+@click.option(
+    "-c",
+    "--chain",
+    "chain",
+    help="Chain name (ethereum, solana, base)",
+    default=None,
+)
+def reset_balances(verbose, chain: str):
+    """
+    AlephResetBalances: Reset all balances for a specific chain.
+    """
+    setup_logging(verbose)
+    if chain is None:
+        LOGGER.warn("No chain provided!")
+        exit()
+
+    LOGGER.warn(f"Reset all balances for chain: {chain}")
+    asyncio.run(do_reset_balances(chain))
 
 
 def run():
