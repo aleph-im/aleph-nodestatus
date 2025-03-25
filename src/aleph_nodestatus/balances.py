@@ -53,7 +53,6 @@ async def do_reset_balances(chain_name: str):
     chain = settings.platform_indexer_chains[chain_name]
     balances = {}
     async for item in get_existing_balances(chain):
-        print(item)
         if float(item["balance"]) > 0:
             balances[item["address"]] = 0
 
