@@ -14,6 +14,7 @@ async def publish_balances(account, height, chain_name, chain_identifier, balanc
             post_content={
                 "tags": [chain_identifier, chain_name, settings.filter_tag],
                 "height": height,
+                "main_height": height,
                 "platform": "{}_{}".format(settings.token_symbol, chain_identifier),
                 "token_contract": "",
                 "token_symbol": settings.token_symbol,
