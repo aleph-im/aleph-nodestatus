@@ -47,7 +47,6 @@ async def get_existing_balances(chain: Chain):
                         yield balance
 
                     page += 1
-                    return
 
 
 async def do_reset_balances(chain_name: str):
