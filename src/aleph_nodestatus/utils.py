@@ -9,6 +9,7 @@ from heapq import merge as stdlib_merge
 from web3 import Web3
 
 from .settings import settings
+from .ethereum import get_web3
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +95,8 @@ async def merge(*iterables, key=None, reverse=False):
 
 async def fetch_last_ethereum_block_before(target_datetime: datetime):
     # Connect to an Ethereum node using Web3
-    w3 = Web3(Web3.HTTPProvider(settings.ethereum_api_server))
+    #w3 = Web3(Web3.HTTPProvider(settings.ethereum_api_server))
+    w3 = get_web3()
 
     # Get the latest block number
     latest_block_number = w3.eth.block_number

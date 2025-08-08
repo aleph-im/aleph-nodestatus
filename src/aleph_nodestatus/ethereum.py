@@ -40,7 +40,10 @@ def get_eth_account():
 def get_web3():
     w3 = None
     if settings.ethereum_api_server:
-        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(settings.ethereum_api_server))
+        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(
+            settings.ethereum_api_server,
+            request_kwargs={"timeout": 120}
+        ))
     else:
         from web3.auto.infura import w3 as iw3
 
@@ -185,6 +188,7 @@ async def get_logs_query(web3, contract, start_height, end_height, topics):
 
 
 async def get_logs(web3, contract, start_height, topics=None):
+    """
     try:
         logs = get_logs_query(web3, contract, start_height + 1, "latest", topics=topics)
         async for log in logs:
@@ -202,29 +206,35 @@ async def get_logs(web3, contract, start_height, topics=None):
             last_block = web3.eth.block_number
         #         if (start_height < config.ethereum.start_height.value):
         #             start_height = config.ethereum.start_height.value
-
+    
         end_height = start_height + settings.ethereum_block_width_big
+    """
+    try:
+        last_block = web3.eth.blockNumber
+    except AttributeError:
+        last_block = web3.eth.block_number
+        
+    end_height = start_height + settings.ethereum_block_width_big
+    while True:
+        try:
+            logs = get_logs_query(
+                web3, contract, start_height, end_height, topics=topics
+            )
+            async for log in logs:
+                yield log
 
-        while True:
-            try:
-                logs = get_logs_query(
-                    web3, contract, start_height, end_height, topics=topics
-                )
-                async for log in logs:
-                    yield log
+            start_height = end_height + 1
+            end_height = start_height + settings.ethereum_block_width_big
 
-                start_height = end_height + 1
-                end_height = start_height + settings.ethereum_block_width_big
+            if start_height > last_block:
+                LOGGER.info("Ending big batch sync")
+                break
 
-                if start_height > last_block:
-                    LOGGER.info("Ending big batch sync")
-                    break
-
-            except ValueError as e:
-                if -33000 < e.args[0]["code"] <= -32000:
-                    end_height = start_height + settings.ethereum_block_width_small
-                else:
-                    raise
+        except ValueError as e:
+            if -33000 < e.args[0]["code"] <= -32000:
+                end_height = start_height + settings.ethereum_block_width_small
+            else:
+                raise
 
 async def lookup_timestamp(web3, block_number, block_timestamps=None):
     if block_timestamps is not None and block_number in block_timestamps:
