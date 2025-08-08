@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     ethereum_swap_fee: int = 10
     ethereum_blocks_per_day: int = 7130
     ethereum_batch_size: int = 200
-    ethereum_block_width_big: int = 30000
+    ethereum_block_width_big: int = 10000
     ethereum_block_width_small: int = 200
 
     ethereum_sablier_contract: str = "0xCD18eAa163733Da39c232722cBC4E8940b1D8888"
