@@ -25,6 +25,7 @@ def get_aleph_account():
     account = ETHAccount(settings.ethereum_pkey)
     return account
 
+
 def get_eth_account():
     if settings.ethereum_pkey:
         pri_key = HexBytes(settings.ethereum_pkey)
@@ -36,14 +37,16 @@ def get_eth_account():
     else:
         return None
 
+
 @lru_cache(maxsize=2)
 def get_web3():
     w3 = None
     if settings.ethereum_api_server:
-        w3 = web3.Web3(web3.providers.rpc.HTTPProvider(
-            settings.ethereum_api_server,
-            request_kwargs={"timeout": 120}
-        ))
+        w3 = web3.Web3(
+            web3.providers.rpc.HTTPProvider(
+                settings.ethereum_api_server, request_kwargs={"timeout": 120}
+            )
+        )
     else:
         from web3.auto.infura import w3 as iw3
 
@@ -63,8 +66,9 @@ def get_token_contract_abi():
 @lru_cache(maxsize=2)
 def get_token_contract(web3):
 
-    address_validator = getattr(web3, "toChecksumAddress",
-                                getattr(web3, "to_checksum_address", None))
+    address_validator = getattr(
+        web3, "toChecksumAddress", getattr(web3, "to_checksum_address", None)
+    )
 
     tokens = web3.eth.contract(
         address=address_validator(settings.ethereum_token_contract),
@@ -72,11 +76,18 @@ def get_token_contract(web3):
     )
     return tokens
 
+
 def get_gas_info(web3):
     latest_block = web3.eth.get_block("latest")
-    base_fee_per_gas = latest_block.baseFeePerGas   # Base fee in the latest block (in wei)
-    max_priority_fee_per_gas = web3.to_wei(1, 'gwei') # Priority fee to include the transaction in the block
-    max_fee_per_gas = (5 * base_fee_per_gas) + max_priority_fee_per_gas # Maximum amount you’re willing to pay 
+    base_fee_per_gas = (
+        latest_block.baseFeePerGas
+    )  # Base fee in the latest block (in wei)
+    max_priority_fee_per_gas = web3.to_wei(
+        1, "gwei"
+    )  # Priority fee to include the transaction in the block
+    max_fee_per_gas = (
+        5 * base_fee_per_gas
+    ) + max_priority_fee_per_gas  # Maximum amount you’re willing to pay
     return max_fee_per_gas, max_priority_fee_per_gas
 
 
@@ -101,8 +112,9 @@ def get_account():
 async def transfer_tokens(targets, metadata=None):
     global NONCE
     w3 = get_web3()
-    address_validator = getattr(w3, "toChecksumAddress",
-                                getattr(w3, "to_checksum_address", None))
+    address_validator = getattr(
+        w3, "toChecksumAddress", getattr(w3, "to_checksum_address", None)
+    )
     contract = get_token_contract(w3)
     account = get_eth_account()
 
@@ -138,8 +150,8 @@ async def transfer_tokens(targets, metadata=None):
                 "chainId": settings.ethereum_chain_id,
                 "gas": 30000 + (20000 * len(targets)),
                 "nonce": NONCE,
-                'maxFeePerGas': max_fee,
-                'maxPriorityFeePerGas': max_priority
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": max_priority,
             }
         )
         signed_tx = account.sign_transaction(tx)
@@ -167,6 +179,13 @@ async def transfer_tokens(targets, metadata=None):
     )
 
     return metadata
+
+
+def get_last_block_number(web3):
+    try:
+        return web3.eth.blockNumber
+    except AttributeError:
+        return web3.eth.block_number
 
 
 async def get_logs_query(web3, contract, start_height, end_height, topics):
@@ -206,15 +225,12 @@ async def get_logs(web3, contract, start_height, topics=None):
             last_block = web3.eth.block_number
         #         if (start_height < config.ethereum.start_height.value):
         #             start_height = config.ethereum.start_height.value
-    
+
         end_height = start_height + settings.ethereum_block_width_big
     """
-    try:
-        last_block = web3.eth.blockNumber
-    except AttributeError:
-        last_block = web3.eth.block_number
-        
+    last_block = get_last_block_number(web3)
     end_height = start_height + settings.ethereum_block_width_big
+
     while True:
         try:
             logs = get_logs_query(
@@ -232,9 +248,18 @@ async def get_logs(web3, contract, start_height, topics=None):
 
         except ValueError as e:
             if -33000 < e.args[0]["code"] <= -32000:
+                last_block = get_last_block_number(web3)
+                if start_height > last_block:
+                    LOGGER.info("Ending big batch sync")
+                    break
+
                 end_height = start_height + settings.ethereum_block_width_small
+
+                if end_height > last_block:
+                    end_height = last_block
             else:
                 raise
+
 
 async def lookup_timestamp(web3, block_number, block_timestamps=None):
     if block_timestamps is not None and block_number in block_timestamps:
