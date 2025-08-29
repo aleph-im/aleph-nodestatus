@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from heapq import heapify, heappop, heapreplace
 from heapq import merge as stdlib_merge
+from itertools import islice
 
 from web3 import Web3
 
@@ -122,3 +123,9 @@ async def fetch_last_ethereum_block_before(target_datetime: datetime):
 
     print(f"Last block before {target_datetime}: {last_block_before_target_date}")
     print(last_block_before_target_date.number)
+
+
+def chunks(data, SIZE=10000):
+    it = iter(data)
+    for i in range(0, len(data), SIZE):
+        yield {k:data[k] for k in islice(it, SIZE)}
