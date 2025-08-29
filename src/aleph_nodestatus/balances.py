@@ -4,11 +4,12 @@ from aleph.sdk.client import AuthenticatedAlephHttpClient
 from aleph_message.models import Chain
 
 from .settings import settings
+from .utils import chunks
 
 
 async def publish_balances(account, height, chain_name, chain_identifier, balances):
     async with AuthenticatedAlephHttpClient(
-        account=account, api_server=settings.aleph_api_server
+        account=account, api_server="https://api.twentysix.testnet.network"
     ) as client:
         post_message, _ = await client.create_post(
             post_content={
@@ -28,6 +29,14 @@ async def publish_balances(account, height, chain_name, chain_identifier, balanc
         )
 
         return post_message
+
+
+async def do_update_balances(account, height, chain_name, chain_identifier, balances):
+    if len(balances) > 10000:
+        for _balances in chunks(balances, 10000):
+            yield await publish_balances(account, height, chain_name, chain_identifier, _balances)
+    else:
+        yield await publish_balances(account, height, chain_name, chain_identifier, balances)
 
 
 async def get_existing_balances(chain: Chain):
@@ -60,5 +69,5 @@ async def do_reset_balances(chain_name: str):
     if len(balances) > 0:
         account = ETHAccount(settings.ethereum_pkey)
 
-        message = await publish_balances(account, 0, chain_name, chain, balances)
-        print(f"Message item hash {message.item_hash}")
+        async for message in do_update_balances(account, 0, chain_name, chain, balances):
+            print(f"Message item hash {message.item_hash}")

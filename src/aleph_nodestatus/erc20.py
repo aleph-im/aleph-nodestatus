@@ -4,8 +4,6 @@ import logging
 import os
 from collections import deque
 from pathlib import Path
-import json
-
 from aleph.sdk.client import AuthenticatedAlephHttpClient
 from web3 import Web3
 from web3._utils.events import construct_event_topic_set
@@ -19,6 +17,7 @@ from web3.middleware import geth_poa_middleware, local_filter_middleware
 
 from .ethereum import get_logs, get_web3, get_aleph_account
 from .settings import settings
+from .utils import chunks
 
 LOGGER = logging.getLogger(__name__)
 
@@ -141,8 +140,8 @@ async def update_balances(account, height, balances, changed_addresses = None):
     if changed_addresses is None:
         changed_addresses = list(balances.keys())
         
-    async with AuthenticatedAlephHttpClient(account, api_server=settings.aleph_api_server) as client:
-        return await client.create_post(
+    async with AuthenticatedAlephHttpClient(account, api_server="https://api.twentysix.testnet.network") as client:
+        post_message, _ = await client.create_post(
             {
                 "tags": ["ERC20", settings.ethereum_token_contract, settings.filter_tag],
                 "height": height,
@@ -161,6 +160,14 @@ async def update_balances(account, height, balances, changed_addresses = None):
             channel=settings.aleph_channel
         )
 
+        return post_message
+
+async def do_update_balances(account, height, balances, changed_addresses = None):
+    if len(balances) > 10000:
+        for _balances in chunks(balances, 10000):
+            yield await update_balances(account, height, _balances, changed_addresses)
+    else:
+        yield await update_balances(account, height, balances, changed_addresses)
 
 async def erc20_monitoring_process(dbs):
     last_seen_txs = deque([], maxlen=100)
@@ -182,7 +189,8 @@ async def erc20_monitoring_process(dbs):
         balances = balances
     LOGGER.info("pushing current state")
 
-    await update_balances(account, last_height, balances)
+    async for message in do_update_balances(account, last_height, balances):
+        print(f"Balances update, Message item hash {message.item_hash}")
 
     while True:
         changed_items = None
@@ -202,7 +210,9 @@ async def erc20_monitoring_process(dbs):
 
         if changed_items:
             LOGGER.info("New data available for addresses %s, posting" % changed_items)
-            await update_balances(account, height, balances, changed_addresses=changed_items)
+            async for message in do_update_balances(account, height, balances, changed_addresses=changed_items):
+                print(f"Balances update, Message item hash {message.item_hash}")
+
             last_height = height
 
         await asyncio.sleep(5)
