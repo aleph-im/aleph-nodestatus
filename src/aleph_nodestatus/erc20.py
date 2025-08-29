@@ -140,7 +140,7 @@ async def update_balances(account, height, balances, changed_addresses = None):
     if changed_addresses is None:
         changed_addresses = list(balances.keys())
         
-    async with AuthenticatedAlephHttpClient(account, api_server="https://api.twentysix.testnet.network") as client:
+    async with AuthenticatedAlephHttpClient(account, api_server=settings.aleph_api_server) as client:
         post_message, _ = await client.create_post(
             {
                 "tags": ["ERC20", settings.ethereum_token_contract, settings.filter_tag],

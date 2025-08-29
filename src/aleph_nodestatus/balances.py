@@ -9,7 +9,7 @@ from .utils import chunks
 
 async def publish_balances(account, height, chain_name, chain_identifier, balances):
     async with AuthenticatedAlephHttpClient(
-        account=account, api_server="https://api.twentysix.testnet.network"
+        account=account, api_server=settings.aleph_api_server
     ) as client:
         post_message, _ = await client.create_post(
             post_content={
