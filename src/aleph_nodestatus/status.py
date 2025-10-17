@@ -36,7 +36,13 @@ EDITABLE_FIELDS = [
 async def prepare_items(item_type, iterator):
     async for height, item in iterator:
         yield (height, random.random(), (item_type, item))
-
+        
+async def is_block_in_discarded_scores_range(height):
+    for start, end in settings.scores_discard_periods:
+        if start <= height <= end:
+            return True
+        
+    return False
 
 class NodesStatus:
     def __init__(self, initial_height=0):
@@ -219,7 +225,7 @@ class NodesStatus:
                     content["sender"]
                 )
 
-                if post_type == settings.scores_post_type:
+                if post_type == settings.scores_post_type and not is_block_in_discarded_scores_range(height):
                     for ccn_score in post_content["scores"]["ccn"]:
                         node_id = ccn_score["node_id"]
                         score = ccn_score["total_score"]
