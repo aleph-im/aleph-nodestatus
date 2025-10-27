@@ -37,11 +37,11 @@ async def prepare_items(item_type, iterator):
     async for height, item in iterator:
         yield (height, random.random(), (item_type, item))
         
-async def is_block_in_discarded_scores_range(height):
+def is_block_in_discarded_scores_range(height):
     for start, end in settings.scores_discard_periods:
         if start <= height <= end:
             return True
-        
+
     return False
 
 class NodesStatus:
