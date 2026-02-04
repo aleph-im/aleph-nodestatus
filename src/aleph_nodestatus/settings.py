@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # account_type: str = Field(..., env='ACCT_TYPE')
     aleph_channel: str = "TEST"
     aleph_api_server: str = "https://api3.aleph.im"
+    aleph_testnet_api_server: str = "https://api.twentysix.testnet.network"
     token_symbol: str = "ALEPH"
     chain_name: str = "ETH"
 
@@ -98,3 +99,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Runtime mode for publishing (can be switched via CLI flags)
+class PublishMode:
+    """Controls which API server is used for publishing data."""
+    _use_testnet: bool = False
+
+    @classmethod
+    def set_testnet(cls, enabled: bool = True):
+        """Enable or disable testnet mode for publishing."""
+        cls._use_testnet = enabled
+
+    @classmethod
+    def is_testnet(cls) -> bool:
+        """Check if testnet mode is enabled."""
+        return cls._use_testnet
+
+    @classmethod
+    def get_publish_api_server(cls) -> str:
+        """Get the API server URL for publishing based on current mode."""
+        if cls._use_testnet:
+            return settings.aleph_testnet_api_server
+        return settings.aleph_api_server

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from collections import deque
+from functools import lru_cache
 from pathlib import Path
 from aleph.sdk.client import AuthenticatedAlephHttpClient
 from web3 import Web3
@@ -11,12 +12,12 @@ try:
     from web3.contract import get_event_data
 except ImportError:
     from web3._utils.events import get_event_data
-    
+
 from web3.gas_strategies.rpc import rpc_gas_price_strategy
 from web3.middleware import geth_poa_middleware, local_filter_middleware
 
 from .ethereum import get_logs, get_web3, get_aleph_account
-from .settings import settings
+from .settings import settings, PublishMode
 from .utils import chunks
 
 LOGGER = logging.getLogger(__name__)
@@ -24,7 +25,9 @@ LOGGER = logging.getLogger(__name__)
 DECIMALS = 10**settings.ethereum_decimals
 
 
+@lru_cache(maxsize=1)
 def get_contract_abi():
+    """Load ABI from file (cached to avoid repeated file I/O)."""
     return json.load(
         open(os.path.join(Path(__file__).resolve().parent, "abi/ALEPHERC20.json"))
     )
@@ -88,6 +91,7 @@ async def process_contract_history(
                 await handle_event(values["height"], values["args"])
         
     end_height = web3.eth.block_number
+    print("end height", end_height)
     
     start_height = last_height
     
@@ -139,8 +143,11 @@ async def process_contract_history(
 async def update_balances(account, height, balances, changed_addresses = None):
     if changed_addresses is None:
         changed_addresses = list(balances.keys())
-        
-    async with AuthenticatedAlephHttpClient(account, api_server=settings.aleph_api_server) as client:
+
+    api_server = PublishMode.get_publish_api_server()
+    print(f"Update balances diff {len(balances)} total, {len(changed_addresses)} changed -> {api_server}")
+
+    async with AuthenticatedAlephHttpClient(account, api_server=api_server) as client:
         post_message, _ = await client.create_post(
             {
                 "tags": ["ERC20", settings.ethereum_token_contract, settings.filter_tag],
