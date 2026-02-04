@@ -1,6 +1,7 @@
 import logging
 import math
 from collections import deque
+from functools import lru_cache
 
 from aleph.sdk.client import AuthenticatedAlephHttpClient
 from aleph.sdk.query.filters import PostFilter
@@ -9,12 +10,13 @@ from .erc20 import DECIMALS, process_contract_history
 from .ethereum import get_web3
 from .messages import get_aleph_account, get_aleph_address, process_message_history
 from .monitored import process_balances_history
-from .settings import settings
+from .settings import settings, PublishMode
 from .status import NodesStatus, prepare_items
 
 LOGGER = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=1024)
 def compute_score_multiplier(score: float) -> float:
     """
     Compute the score multiplier
@@ -32,8 +34,12 @@ def compute_score_multiplier(score: float) -> float:
 
 
 async def create_distribution_tx_post(distribution):
-    print(f"Preparing pending TX post {distribution}")
-    async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=settings.aleph_api_server) as client:
+    """Post distribution record to the API server based on PublishMode."""
+    api_server = PublishMode.get_publish_api_server()
+    mode = "TESTNET" if PublishMode.is_testnet() else "MAINNET"
+    print(f"Posting distribution to {mode}: {api_server}")
+    print(f"Distribution: {distribution}")
+    async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=api_server) as client:
         post = await client.create_post(
             distribution,
             post_type="staking-rewards-distribution",
@@ -79,6 +85,17 @@ async def get_latest_successful_distribution(sender=None):
 
 
 async def prepare_distribution(dbs, start_height, end_height):
+    # Validate input parameters to prevent incorrect distribution
+    if end_height <= start_height:
+        raise ValueError(
+            f"end_height ({end_height}) must be greater than start_height ({start_height})"
+        )
+
+    if end_height < settings.reward_start_height:
+        raise ValueError(
+            f"end_height ({end_height}) must be >= reward_start_height ({settings.reward_start_height})"
+        )
+
     state_machine = NodesStatus()
     account = get_aleph_account()
     reward_start = max(settings.reward_start_height, start_height)
@@ -152,12 +169,18 @@ async def prepare_distribution(dbs, start_height, end_height):
         # Ignore if we aren't in distribution period yet.
         # Handle calculation for previous period now.
         block_count = current - since
+
+        # Safety check: skip if no blocks to process (prevents negative rewards)
+        if block_count <= 0:
+            LOGGER.warning(f"Skipping distribution: invalid block range {since} to {current}")
+            return
+
         LOGGER.debug(f"Calculating for block {current}, {block_count} blocks")
         active_nodes = [node for node in nodes.values() if node["status"] == "active"]
-        
+
         address_validator = getattr(web3, "toChecksumAddress",
                                 getattr(web3, "to_checksum_address", None))
-        
+
         if not active_nodes:
             return
 

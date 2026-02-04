@@ -3,13 +3,14 @@ from aleph.sdk.chains.ethereum import ETHAccount
 from aleph.sdk.client import AuthenticatedAlephHttpClient
 from aleph_message.models import Chain
 
-from .settings import settings
+from .settings import settings, PublishMode
 from .utils import chunks
 
 
 async def publish_balances(account, height, chain_name, chain_identifier, balances):
+    api_server = PublishMode.get_publish_api_server()
     async with AuthenticatedAlephHttpClient(
-        account=account, api_server=settings.aleph_api_server
+        account=account, api_server=api_server
     ) as client:
         post_message, _ = await client.create_post(
             post_content={
