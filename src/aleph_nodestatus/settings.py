@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # account_pkey: str = Field(..., env='ACCT_PKEY')
     # account_type: str = Field(..., env='ACCT_TYPE')
     aleph_channel: str = "TEST"
-    aleph_api_server: str = "https://api3.aleph.im"
+    aleph_api_server: str = "https://api.aleph.im"
     aleph_testnet_api_server: str = "https://api.twentysix.testnet.network"
     token_symbol: str = "ALEPH"
     chain_name: str = "ETH"
