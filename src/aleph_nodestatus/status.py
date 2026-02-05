@@ -89,13 +89,15 @@ class NodesStatus:
             self.resource_nodes[rnode_hash]["status"] = "waiting"
         self.address_nodes.pop(node["owner"])
         del self.nodes[node_hash]
-        [await self.update_node_stats(nhash) for nhash in nodes_to_update]
+        # Parallelize node stats updates for better performance
+        if nodes_to_update:
+            await asyncio.gather(*[self.update_node_stats(nhash) for nhash in nodes_to_update])
 
     async def remove_resource_node(self, node_hash):
         node = self.resource_nodes[node_hash]
         if node["parent"] is not None:
             # unlink the node from the parent
-            self.nodes[node["parent"]]["resource_nodes"].remove(node_hash)
+            self.nodes[node["parent"]]["resource_nodes"].discard(node_hash)  # O(1) set operation
             await self.update_node_stats(node["parent"])
         del self.resource_nodes[node_hash]
 
@@ -228,9 +230,10 @@ class NodesStatus:
                 if post_type == settings.scores_post_type and not is_block_in_discarded_scores_range(height):
                     for ccn_score in post_content["scores"]["ccn"]:
                         node_id = ccn_score["node_id"]
-                        score = ccn_score["total_score"]
-                        performance = ccn_score.get("performance", 0)
-                        decentralization = ccn_score["decentralization"]
+                        # Clamp score and decentralization to [0.0, 1.0] to prevent over-distribution
+                        score = max(0.0, min(1.0, float(ccn_score["total_score"])))
+                        performance = max(0.0, min(1.0, float(ccn_score.get("performance", 0))))
+                        decentralization = max(0.0, min(1.0, float(ccn_score["decentralization"])))
                         if node_id in self.nodes:
                             node = self.nodes[node_id]
 
@@ -256,9 +259,10 @@ class NodesStatus:
 
                     for crn_score in post_content["scores"]["crn"]:
                         node_id = crn_score["node_id"]
-                        score = crn_score["total_score"]
-                        performance = crn_score.get("performance", 0)
-                        decentralization = crn_score["decentralization"]
+                        # Clamp score and decentralization to [0.0, 1.0] to prevent over-distribution
+                        score = max(0.0, min(1.0, float(crn_score["total_score"])))
+                        performance = max(0.0, min(1.0, float(crn_score.get("performance", 0))))
+                        decentralization = max(0.0, min(1.0, float(crn_score["decentralization"])))
                         if node_id in self.resource_nodes:
                             node = self.resource_nodes[node_id]
 
@@ -333,7 +337,7 @@ class NodesStatus:
                             "status": "waiting",
                             "time": content["time"],
                             "authorized": [],
-                            "resource_nodes": [],
+                            "resource_nodes": set(),  # Use set for O(1) add/remove/lookup
                             "score": 0,
                             "decentralization": 0,
                             "performance": 0,
@@ -417,7 +421,7 @@ class NodesStatus:
                     ):
                         node = self.nodes[existing_node]
                         resource_node = self.resource_nodes[ref]
-                        node["resource_nodes"].append(ref)
+                        node["resource_nodes"].add(ref)  # O(1) set operation
                         resource_node["parent"] = existing_node
                         resource_node["status"] = "linked"
                         await self.update_node_stats(existing_node)
@@ -441,7 +445,7 @@ class NodesStatus:
                     ):
                         resource_node = self.resource_nodes[ref]
                         node = self.nodes[resource_node["parent"]]
-                        node["resource_nodes"].remove(ref)
+                        node["resource_nodes"].discard(ref)  # O(1) set operation
                         resource_node["parent"] = None
                         resource_node["status"] = "waiting"
                         await self.update_node_stats(node["hash"])
@@ -595,7 +599,18 @@ class NodesStatus:
         # yield(self.last_checked_height, self.nodes)
 
 
-async def process(dbs):
+async def process(dbs, window_size=None):
+    """
+    Main processing loop for node status updates.
+
+    Args:
+        dbs: Database instances dict
+        window_size: Window size in seconds for message fetching (default: 86400 = 1 day)
+    """
+    from .messages import DEFAULT_WINDOW_SIZE
+    if window_size is None:
+        window_size = DEFAULT_WINDOW_SIZE
+
     state_machine = NodesStatus()
     account = get_aleph_account()
 
@@ -628,6 +643,7 @@ async def process(dbs):
                 settings.aleph_api_server,
                 request_count=1000,
                 db=dbs["messages"],
+                window_size=window_size,
             ),
         ),
         prepare_items(
@@ -640,6 +656,7 @@ async def process(dbs):
                 api_server=settings.aleph_api_server,
                 request_count=100,
                 db=dbs["scores"],
+                window_size=window_size,
             ),
         ),
     ]
@@ -665,6 +682,7 @@ async def process(dbs):
                     crawl_history=False,
                     request_sort="-1",
                     db=dbs["messages"],
+                    window_size=window_size,
                 ),
             )
         ]
@@ -716,6 +734,7 @@ async def process(dbs):
                         crawl_history=False,
                         request_sort="-1",
                         db=dbs["scores"],
+                        window_size=window_size,
                     ),
                 )
             )
