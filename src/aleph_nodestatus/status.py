@@ -599,7 +599,18 @@ class NodesStatus:
         # yield(self.last_checked_height, self.nodes)
 
 
-async def process(dbs):
+async def process(dbs, window_size=None):
+    """
+    Main processing loop for node status updates.
+
+    Args:
+        dbs: Database instances dict
+        window_size: Window size in seconds for message fetching (default: 86400 = 1 day)
+    """
+    from .messages import DEFAULT_WINDOW_SIZE
+    if window_size is None:
+        window_size = DEFAULT_WINDOW_SIZE
+
     state_machine = NodesStatus()
     account = get_aleph_account()
 
@@ -632,6 +643,7 @@ async def process(dbs):
                 settings.aleph_api_server,
                 request_count=1000,
                 db=dbs["messages"],
+                window_size=window_size,
             ),
         ),
         prepare_items(
@@ -644,6 +656,7 @@ async def process(dbs):
                 api_server=settings.aleph_api_server,
                 request_count=100,
                 db=dbs["scores"],
+                window_size=window_size,
             ),
         ),
     ]
@@ -669,6 +682,7 @@ async def process(dbs):
                     crawl_history=False,
                     request_sort="-1",
                     db=dbs["messages"],
+                    window_size=window_size,
                 ),
             )
         ]
@@ -720,6 +734,7 @@ async def process(dbs):
                         crawl_history=False,
                         request_sort="-1",
                         db=dbs["scores"],
+                        window_size=window_size,
                     ),
                 )
             )

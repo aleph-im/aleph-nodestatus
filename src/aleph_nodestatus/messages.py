@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import re
 import time
 from functools import lru_cache
 
@@ -18,6 +20,54 @@ DEFAULT_WINDOW_SIZE = 86400
 
 # Default start timestamp (Jan 1, 2020) - before Aleph mainnet launch
 DEFAULT_START_TIMESTAMP = 1577836800
+
+
+def parse_window_size(window_str: str) -> int:
+    """
+    Parse a human-readable window size string into seconds.
+
+    Supported formats:
+        - "1d", "2d", "7d" - days
+        - "1w", "2w" - weeks
+        - "1h", "12h" - hours
+        - "30m" - minutes
+        - "86400" - raw seconds (integer)
+
+    Examples:
+        parse_window_size("1d") -> 86400
+        parse_window_size("1w") -> 604800
+        parse_window_size("12h") -> 43200
+    """
+    if window_str is None:
+        return DEFAULT_WINDOW_SIZE
+
+    window_str = str(window_str).strip().lower()
+
+    # Try to parse as raw integer (seconds)
+    try:
+        return int(window_str)
+    except ValueError:
+        pass
+
+    # Parse human-readable format
+    match = re.match(r'^(\d+)\s*([dhwm])$', window_str)
+    if not match:
+        raise ValueError(
+            f"Invalid window size format: '{window_str}'. "
+            "Use formats like: 1d, 2d, 1w, 12h, 30m, or integer seconds"
+        )
+
+    value = int(match.group(1))
+    unit = match.group(2)
+
+    multipliers = {
+        'm': 60,           # minutes
+        'h': 3600,         # hours
+        'd': 86400,        # days
+        'w': 604800,       # weeks
+    }
+
+    return value * multipliers[unit]
 
 
 @lru_cache(maxsize=2)
@@ -195,6 +245,9 @@ async def process_message_history(
 
     logger.info(f"Starting window-based iteration from {start_timestamp} to {end_timestamp} (window_size={window_size}s)")
 
+    max_retries = 3
+    retry_delay = 5  # seconds
+
     async with aiohttp.ClientSession() as session:
         current_start = start_timestamp
         window_count = 0
@@ -210,48 +263,70 @@ async def process_message_history(
                 "endDate": window_end
             }
 
-            try:
-                async with session.get(
-                    f"{api_server}/api/v0/messages.json", params=params
-                ) as resp:
-                    if resp.status != 200:
-                        logger.error(f"API error {resp.status} for window {current_start}-{window_end}")
-                        current_start = window_end
-                        continue
+            # Retry logic for failed API calls
+            success = False
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(
+                        f"{api_server}/api/v0/messages.json", params=params, timeout=30
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"API error {resp.status} for window {current_start}-{window_end} (attempt {attempt + 1}/{max_retries})")
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            else:
+                                logger.error(f"Failed to fetch window after {max_retries} attempts, skipping")
+                                break
 
-                    items = await resp.json()
-                    messages = items.get("messages", [])
+                        items = await resp.json()
+                        messages = items.get("messages", [])
 
-                    logger.debug(f"Window {window_count}: {current_start}-{window_end}, got {len(messages)} messages")
+                        logger.debug(f"Window {window_count}: {current_start}-{window_end}, got {len(messages)} messages")
 
-                    for message in messages:
-                        item_hash = message["item_hash"]
+                        for message in messages:
+                            item_hash = message["item_hash"]
 
-                        # Skip if already seen (handles boundary duplicates)
-                        if item_hash in seen_hashes:
-                            continue
+                            # Skip if already seen (handles boundary duplicates)
+                            if item_hash in seen_hashes:
+                                continue
 
-                        seen_hashes.add(item_hash)
+                            seen_hashes.add(item_hash)
 
-                        result = await get_message_result(
-                            message,
-                            yield_unconfirmed=yield_unconfirmed,
-                            last_block=last_block,
-                            min_height=min_height,
-                            last_seen=last_seen,
-                            addresses=addresses,
-                            db=db,
-                            db_prefix=prefix
-                        )
-                        if result is not None:
-                            message_count += 1
-                            yield result
+                            result = await get_message_result(
+                                message,
+                                yield_unconfirmed=yield_unconfirmed,
+                                last_block=last_block,
+                                min_height=min_height,
+                                last_seen=last_seen,
+                                addresses=addresses,
+                                db=db,
+                                db_prefix=prefix
+                            )
+                            if result is not None:
+                                message_count += 1
+                                yield result
 
-            except aiohttp.ClientError as e:
-                logger.error(f"Network error fetching window {current_start}-{window_end}: {e}")
-                # Continue to next window instead of failing completely
+                        success = True
+                        break  # Success, exit retry loop
+
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout fetching window {current_start}-{window_end} (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                except aiohttp.ClientError as e:
+                    logger.warning(f"Network error fetching window {current_start}-{window_end}: {e} (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+
+            if not success:
+                logger.error(f"SKIPPING window {current_start}-{window_end} after {max_retries} failed attempts")
 
             current_start = window_end
+
+            # Log progress every 100 windows
+            if window_count % 100 == 0:
+                logger.info(f"Progress: {window_count} windows processed, {message_count} messages yielded")
 
     logger.info(f"Network iteration finished: {window_count} windows, {message_count} messages yielded")
 

@@ -40,6 +40,37 @@ from .solana import solana_monitoring_process
 from .status import process
 from .storage import close_dbs, get_dbs
 
+import os
+import shutil
+
+
+def _clear_messages_db():
+    """Clear the messages and scores databases to force a full resync.
+
+    This keeps the erc20 and balances databases intact since they are
+    expensive to rebuild (blockchain sync).
+    """
+    db_path = settings.db_path
+
+    # Clear messages DB
+    messages_path = os.path.join(db_path, "messages")
+    if os.path.exists(messages_path):
+        print(f"Removing {messages_path}...")
+        shutil.rmtree(messages_path)
+        print("Messages database cleared.")
+
+    # Clear scores DB (depends on messages for consistency)
+    scores_path = os.path.join(db_path, "scores")
+    if os.path.exists(scores_path):
+        print(f"Removing {scores_path}...")
+        shutil.rmtree(scores_path)
+        print("Scores database cleared.")
+
+    # Keep erc20 and balances intact
+    print("Keeping erc20 and balances databases intact.")
+    print("Full resync of messages will start from 2020-01-01...")
+
+
 __author__ = "Jonathan Schemoul"
 __copyright__ = "Jonathan Schemoul"
 __license__ = "mit"
@@ -67,12 +98,24 @@ def setup_logging(verbose):
     help="Publish to testnet API instead of mainnet",
     is_flag=True
 )
+@click.option(
+    "--force-resync",
+    help="Force resync of messages DB from scratch (keeps erc20 intact)",
+    is_flag=True
+)
+@click.option(
+    "--window-size", "-w",
+    help="Window size for message fetching (e.g., 1d, 2d, 1w, 12h). Default: 1d",
+    default="1d"
+)
 @click.version_option(version=__version__)
-def main(verbose, testnet):
+def main(verbose, testnet, force_resync, window_size):
     """
     NodeStatus: Keeps an aggregate up to date with current nodes statuses
 
     Use --testnet to publish status updates to testnet for testing.
+    Use --force-resync to rebuild the messages database from scratch.
+    Use --window-size to control message fetching speed (larger = faster but more memory).
     """
     setup_logging(verbose)
 
@@ -82,11 +125,24 @@ def main(verbose, testnet):
     else:
         LOGGER.info(f"MAINNET MODE: Publishing to {settings.aleph_api_server}")
 
+    if force_resync:
+        LOGGER.warning("FORCE RESYNC: Clearing messages and scores databases...")
+        _clear_messages_db()
+
+    # Parse and validate window size
+    from .messages import parse_window_size
+    try:
+        window_seconds = parse_window_size(window_size)
+        LOGGER.info(f"Using window size: {window_size} ({window_seconds} seconds)")
+    except ValueError as e:
+        LOGGER.error(str(e))
+        return
+
     LOGGER.debug("Starting nodestatus")
     account = get_eth_account()
     dbs = get_dbs()
     LOGGER.debug(f"Starting with ETH account {account.address}")
-    asyncio.run(process(dbs))
+    asyncio.run(process(dbs, window_size=window_seconds))
 
 
 async def process_distribution(start_height, end_height, act=False, reward_sender=None):
