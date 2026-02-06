@@ -37,7 +37,7 @@ ALEPH_TOKEN_CONTRACT = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
 DECIMALS = 10 ** 18
 
 # Default Infura endpoint
-DEFAULT_ETH_RPC = "https://mainnet.infura.io/v3/REDACTED_API_KEY"
+DEFAULT_ETH_RPC = os.environ.get("ETHEREUM_API_SERVER", "")
 
 
 def get_web3(eth_rpc: Optional[str] = None) -> Optional["Web3"]:
