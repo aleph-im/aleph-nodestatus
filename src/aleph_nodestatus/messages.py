@@ -221,6 +221,11 @@ async def process_message_history(
     if start_timestamp is None:
         if db_start_timestamp is not None:
             start_timestamp = db_start_timestamp
+        elif not crawl_history:
+            # For ongoing monitoring (crawl_history=False), only check recent messages
+            # Use 2x window_size as buffer to catch any edge cases
+            start_timestamp = end_timestamp - (window_size * 2)
+            logger.debug(f"Ongoing monitoring: checking from {start_timestamp} to {end_timestamp}")
         else:
             # Default: start from Jan 1, 2020 (before Aleph mainnet)
             start_timestamp = DEFAULT_START_TIMESTAMP
