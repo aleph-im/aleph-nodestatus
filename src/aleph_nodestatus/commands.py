@@ -280,8 +280,9 @@ async def process_credit_distribution(
             reward_sender
         )
         if last_end_time and dist:
-            start_time = last_end_time
-            print(f"Resuming from last successful distribution end_time: {start_time}")
+            # +1 second to avoid re-processing expenses at the boundary
+            start_time = last_end_time + 1
+            print(f"Resuming from last successful distribution end_time: {last_end_time} (start: {start_time})")
         else:
             print("ERROR: No previous credit distribution found. "
                   "Provide --start-time explicitly.")
