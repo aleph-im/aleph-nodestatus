@@ -11,7 +11,7 @@ from .erc20 import process_contract_history
 from .ethereum import get_web3
 from .messages import get_aleph_account, get_aleph_address, process_message_history
 from .monitored import process_balances_history
-from .settings import settings
+from .settings import settings, PublishMode
 from .status import NodesStatus, prepare_items
 
 LOGGER = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ async def get_latest_successful_credit_distribution(sender=None):
         sender = get_aleph_address()
 
     async with AuthenticatedAlephHttpClient(
-        get_aleph_account(), api_server=settings.aleph_api_server
+        get_aleph_account(), api_server=PublishMode.get_publish_api_server()
     ) as client:
         posts = await client.get_posts(
             post_filter=PostFilter(
@@ -272,13 +272,13 @@ async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
     the node/staker/score state at its confirmation height.
 
     Returns:
-        Tuple of (rewards, total_storage_aleph, total_execution_aleph)
+        Tuple of (rewards, total_storage_aleph, total_execution_aleph, total_dev_fund_aleph)
     """
     state_machine = NodesStatus()
     web3 = get_web3()
 
     # Fetch expenses first (sorted by height)
-    api_server = settings.aleph_api_server
+    api_server = PublishMode.get_publish_api_server()
     expenses = await fetch_credit_expenses(
         api_server,
         start_time,
@@ -288,7 +288,7 @@ async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
 
     if not expenses:
         LOGGER.warning("No credit expenses found in the given time range")
-        return {}, 0, 0
+        return {}, 0, 0, 0
 
     last_seen_txs = deque([], maxlen=100)
 
