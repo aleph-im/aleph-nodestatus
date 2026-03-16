@@ -89,6 +89,20 @@ class Settings(BaseSettings):
 
     voucher_indexer_endpoint = "https://vouchers.api.2n6.io"
 
+    credit_expense_sender: str = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
+
+    # Credit distribution shares (storage, 95% total)
+    credit_storage_ccn_share: float = 0.75
+    credit_storage_staker_share: float = 0.20
+
+    # Credit distribution shares (execution, 95% total)
+    credit_execution_crn_share: float = 0.60
+    credit_execution_ccn_share: float = 0.15
+    credit_execution_staker_share: float = 0.20
+
+    # Dev fund (not distributed, tracked for accounting)
+    credit_dev_fund_share: float = 0.05
+
     crn_inactivity_threshold_days: int = 90
     crn_inactivity_cutoff_height: int = 20840959
 

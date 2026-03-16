@@ -33,7 +33,7 @@ def compute_score_multiplier(score: float) -> float:
         return (score - 0.2) / 0.6
 
 
-async def create_distribution_tx_post(distribution):
+async def create_distribution_tx_post(distribution, post_type="staking-rewards-distribution"):
     """Post distribution record to the API server based on PublishMode."""
     api_server = PublishMode.get_publish_api_server()
     mode = "TESTNET" if PublishMode.is_testnet() else "MAINNET"
@@ -42,7 +42,7 @@ async def create_distribution_tx_post(distribution):
     async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=api_server) as client:
         post = await client.create_post(
             distribution,
-            post_type="staking-rewards-distribution",
+            post_type=post_type,
             channel=settings.aleph_channel
         )
     return post

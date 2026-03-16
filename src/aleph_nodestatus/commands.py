@@ -20,6 +20,7 @@ import asyncio
 import logging
 import math
 import sys
+import time as time_mod
 
 import click
 
@@ -27,6 +28,11 @@ from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
 
 from .balances import do_reset_balances
+from .credit_distribution import (
+    CREDIT_DISTRIBUTION_POST_TYPE,
+    get_latest_successful_credit_distribution,
+    prepare_credit_distribution,
+)
 from .distribution import (
     create_distribution_tx_post,
     get_latest_successful_distribution,
@@ -256,6 +262,155 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
     asyncio.run(
         process_distribution(
             start_height, end_height, act=act, reward_sender=reward_sender
+        )
+    )
+
+
+async def process_credit_distribution(
+    start_time, end_time, act=False, reward_sender=None
+):
+    dbs = get_dbs()
+    web3 = get_web3()
+
+    if end_time is None:
+        end_time = time_mod.time()
+
+    if start_time is None:
+        last_end_time, dist = await get_latest_successful_credit_distribution(
+            reward_sender
+        )
+        if last_end_time and dist:
+            start_time = last_end_time
+            print(f"Resuming from last successful distribution end_time: {start_time}")
+        else:
+            print("ERROR: No previous credit distribution found. "
+                  "Provide --start-time explicitly.")
+            return
+
+    # Convert end_time to block height for node state (last block <= end_time)
+    end_block = web3.eth.block_number
+    block = web3.eth.get_block(end_block)
+    if block.timestamp > end_time:
+        lo, hi = 0, end_block
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if web3.eth.get_block(mid).timestamp <= end_time:
+                lo = mid
+            else:
+                hi = mid - 1
+        end_block = lo
+
+    rewards, total_storage, total_execution, total_dev_fund = (
+        await prepare_credit_distribution(dbs, end_block, start_time, end_time)
+    )
+
+    is_testnet = PublishMode.is_testnet()
+    if is_testnet:
+        status = "simulation"
+        tags = ["simulation", "credits", settings.filter_tag]
+    elif act:
+        status = "distribution"
+        tags = ["distribution", "credits", settings.filter_tag]
+    else:
+        status = "calculation"
+        tags = ["calculation", "credits", settings.filter_tag]
+
+    distribution = dict(
+        incentive="credits",
+        status=status,
+        start_time=start_time,
+        end_time=end_time,
+        end_height=end_block,
+        rewards=rewards,
+        tags=tags,
+        storage_total_aleph=total_storage,
+        execution_total_aleph=total_execution,
+        dev_fund_total_aleph=total_dev_fund,
+    )
+
+    total_rewards = sum(rewards.values())
+    api_server = PublishMode.get_publish_api_server()
+    print(f"\n{'='*60}")
+    print(f"Credit Distribution Summary ({status.upper()})")
+    print(f"{'='*60}")
+    print(f"Target API: {api_server}")
+    print(f"Time range: {start_time} -> {end_time}")
+    print(f"Node state at block: {end_block}")
+    print(f"Storage expenses: {total_storage:,.4f} ALEPH")
+    print(f"Execution expenses: {total_execution:,.4f} ALEPH")
+    print(f"Dev fund ({settings.credit_dev_fund_share:.0%}): {total_dev_fund:,.4f} ALEPH")
+    print(f"Total recipients: {len(rewards)}")
+    print(f"Total rewards: {total_rewards:,.4f} ALEPH")
+    print(f"{'='*60}\n")
+
+    if act and not is_testnet:
+        print("Executing actual token transfers...")
+        max_items = settings.ethereum_batch_size
+        distribution_list = list(rewards.items())
+
+        for i in range(math.ceil(len(distribution_list) / max_items)):
+            step_items = distribution_list[max_items * i : max_items * (i + 1)]
+            print(f"Batch {i+1}: transferring to {len(step_items)} recipients")
+            await transfer_tokens(dict(step_items), metadata=distribution)
+
+    await create_distribution_tx_post(distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE)
+
+
+@click.command()
+@click.option("-v", "--verbose", count=True)
+@click.option("-a", "--act", help="Do actual batch transfer", is_flag=True)
+@click.option(
+    "-t", "--testnet",
+    help="Publish to testnet API instead of mainnet (no token transfers)",
+    is_flag=True,
+)
+@click.option(
+    "--start-time",
+    "start_time",
+    help="Start timestamp (unix seconds). Auto-detected from last distribution if omitted.",
+    default=None,
+    type=float,
+)
+@click.option(
+    "--end-time",
+    "end_time",
+    help="End timestamp (unix seconds, default: now)",
+    default=None,
+    type=float,
+)
+@click.option(
+    "--reward-sender",
+    "reward_sender",
+    help="Reward emitting address (to find last distribution)",
+    default=None,
+)
+def distribute_credits(verbose, act=False, testnet=False, start_time=None,
+                       end_time=None, reward_sender=None):
+    """
+    Credit-based distribution script (new tokenomics).
+
+    Distributes revenue from credit expenses to CRNs, CCNs, and stakers.
+    Auto-detects start time from last successful distribution if --start-time
+    is not provided.
+
+    Storage:   75% CCNs (score-weighted) + 20% stakers
+    Execution: 60% CRN (per-job) + 15% CCNs (score-weighted) + 20% stakers
+    """
+    setup_logging(verbose)
+
+    if act and testnet:
+        print("ERROR: Cannot use --act and --testnet together")
+        return
+
+    if testnet:
+        PublishMode.set_testnet(True)
+
+    mode = "TESTNET (simulation)" if testnet else ("LIVE DISTRIBUTION" if act else "CALCULATION ONLY")
+    print(f"Mode: {mode}")
+
+    asyncio.run(
+        process_credit_distribution(
+            start_time, end_time, act=act, reward_sender=reward_sender
         )
     )
 
