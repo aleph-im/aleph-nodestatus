@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
-from pkg_resources import DistributionNotFound, get_distribution
-
 try:
-    # Change here if project is renamed and does not equal the package name
+    from importlib.metadata import version, PackageNotFoundError
     dist_name = "aleph-nodestatus"
-    __version__ = get_distribution(dist_name).version
-except DistributionNotFound:
+    __version__ = version(dist_name)
+except PackageNotFoundError:
     __version__ = "unknown"
-finally:
-    del get_distribution, DistributionNotFound
