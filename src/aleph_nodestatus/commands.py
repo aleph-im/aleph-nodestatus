@@ -267,10 +267,9 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 
 
 async def process_credit_distribution(
-    start_time, end_time, act=False, reward_sender=None
+    start_time, end_time, act=False, reward_sender=None, full_resync=False
 ):
     dbs = get_dbs()
-    web3 = get_web3()
 
     if end_time is None:
         end_time = time_mod.time()
@@ -288,21 +287,26 @@ async def process_credit_distribution(
                   "Provide --start-time explicitly.")
             return
 
-    # Convert end_time to block height for node state (last block <= end_time)
-    end_block = web3.eth.block_number
-    block = web3.eth.get_block(end_block)
-    if block.timestamp > end_time:
-        lo, hi = 0, end_block
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if web3.eth.get_block(mid).timestamp <= end_time:
-                lo = mid
-            else:
-                hi = mid - 1
-        end_block = lo
+    # end_height only needed for full resync (state machine uses block heights)
+    end_block = None
+    if full_resync:
+        web3 = get_web3()
+        end_block = web3.eth.block_number
+        block = web3.eth.get_block(end_block)
+        if block.timestamp > end_time:
+            lo, hi = 0, end_block
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if web3.eth.get_block(mid).timestamp <= end_time:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            end_block = lo
 
     rewards, total_storage, total_execution, total_dev_fund = (
-        await prepare_credit_distribution(dbs, end_block, start_time, end_time)
+        await prepare_credit_distribution(
+            dbs, end_block, start_time, end_time, full_resync=full_resync
+        )
     )
 
     is_testnet = PublishMode.is_testnet()
@@ -321,22 +325,24 @@ async def process_credit_distribution(
         status=status,
         start_time=start_time,
         end_time=end_time,
-        end_height=end_block,
         rewards=rewards,
         tags=tags,
         storage_total_aleph=total_storage,
         execution_total_aleph=total_execution,
         dev_fund_total_aleph=total_dev_fund,
+        full_resync=full_resync,
     )
+    if end_block is not None:
+        distribution["end_height"] = end_block
 
     total_rewards = sum(rewards.values())
     api_server = PublishMode.get_publish_api_server()
+    mode_label = "full resync" if full_resync else "snapshots"
     print(f"\n{'='*60}")
-    print(f"Credit Distribution Summary ({status.upper()})")
+    print(f"Credit Distribution Summary ({status.upper()}, {mode_label})")
     print(f"{'='*60}")
     print(f"Target API: {api_server}")
     print(f"Time range: {start_time} -> {end_time}")
-    print(f"Node state at block: {end_block}")
     print(f"Storage expenses: {total_storage:,.4f} ALEPH")
     print(f"Execution expenses: {total_execution:,.4f} ALEPH")
     print(f"Dev fund ({settings.credit_dev_fund_share:.0%}): {total_dev_fund:,.4f} ALEPH")
@@ -385,14 +391,19 @@ async def process_credit_distribution(
     help="Reward emitting address (to find last distribution)",
     default=None,
 )
+@click.option(
+    "--full-resync",
+    help="Replay full state machine from genesis instead of using published snapshots",
+    is_flag=True,
+)
 def distribute_credits(verbose, act=False, testnet=False, start_time=None,
-                       end_time=None, reward_sender=None):
+                       end_time=None, reward_sender=None, full_resync=False):
     """
     Credit-based distribution script (new tokenomics).
 
     Distributes revenue from credit expenses to CRNs, CCNs, and stakers.
-    Auto-detects start time from last successful distribution if --start-time
-    is not provided.
+    Uses published node status snapshots by default (fast).
+    Use --full-resync to replay the full state machine from genesis (slow but exact).
 
     Storage:   75% CCNs (score-weighted) + 20% stakers
     Execution: 60% CRN (per-job) + 15% CCNs (score-weighted) + 20% stakers
@@ -411,7 +422,8 @@ def distribute_credits(verbose, act=False, testnet=False, start_time=None,
 
     asyncio.run(
         process_credit_distribution(
-            start_time, end_time, act=act, reward_sender=reward_sender
+            start_time, end_time, act=act, reward_sender=reward_sender,
+            full_resync=full_resync,
         )
     )
 

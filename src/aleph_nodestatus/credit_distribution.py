@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import logging
 from collections import deque
 
@@ -56,6 +57,71 @@ async def get_latest_successful_credit_distribution(sender=None):
         return 0, None
 
 
+async def _fetch_paginated_messages(session, api_server, params, max_retries=3,
+                                     retry_delay=5):
+    """Fetch paginated messages from the Aleph API with retry logic."""
+    seen_hashes = set()
+    messages = []
+
+    while True:
+        data = None
+        for attempt in range(max_retries):
+            try:
+                async with session.get(
+                    f"{api_server}/api/v0/messages.json",
+                    params=params,
+                    timeout=60,
+                ) as resp:
+                    if resp.status != 200:
+                        LOGGER.warning(
+                            f"API error {resp.status} (attempt {attempt + 1}/{max_retries})"
+                        )
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise Exception(
+                            f"API error {resp.status} fetching messages"
+                        )
+                    data = await resp.json()
+                    break
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                LOGGER.warning(
+                    f"Network error: {e} (attempt {attempt + 1}/{max_retries})"
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    raise
+
+        page_messages = data.get("messages", [])
+
+        if not page_messages:
+            break
+
+        for msg in page_messages:
+            if msg["item_hash"] not in seen_hashes:
+                seen_hashes.add(msg["item_hash"])
+                messages.append(msg)
+
+        total = data.get("pagination_total", 0)
+        per_page = data.get("pagination_per_page", 500)
+        if params["page"] * per_page >= total:
+            break
+        params["page"] += 1
+
+    return messages
+
+
+def _extract_eth_height(msg):
+    """Extract the earliest ETH confirmation height from a message."""
+    height = None
+    for conf in msg.get("confirmations", []):
+        if conf["chain"] == "ETH":
+            if height is None or conf["height"] < height:
+                height = conf["height"]
+    return height
+
+
 async def fetch_credit_expenses(api_server, start_time, end_time, sender=None):
     """
     Fetch aleph_credit_expense messages from the Aleph API.
@@ -80,82 +146,26 @@ async def fetch_credit_expenses(api_server, start_time, end_time, sender=None):
     if sender:
         params["addresses"] = sender
 
-    seen_hashes = set()
-    max_retries = 3
-    retry_delay = 5
-
     async with aiohttp.ClientSession() as session:
-        while True:
-            data = None
-            for attempt in range(max_retries):
-                try:
-                    async with session.get(
-                        f"{api_server}/api/v0/messages.json",
-                        params=params,
-                        timeout=60,
-                    ) as resp:
-                        if resp.status != 200:
-                            LOGGER.warning(
-                                f"API error {resp.status} (attempt {attempt + 1}/{max_retries})"
-                            )
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(retry_delay)
-                                continue
-                            raise Exception(
-                                f"API error {resp.status} fetching credit expenses"
-                            )
-                        data = await resp.json()
-                        break
-                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                    LOGGER.warning(
-                        f"Network error fetching credit expenses: {e} "
-                        f"(attempt {attempt + 1}/{max_retries})"
-                    )
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        raise
+        messages = await _fetch_paginated_messages(session, api_server, params)
 
-            messages = data.get("messages", [])
+    for msg in messages:
+        height = _extract_eth_height(msg)
+        if height is None:
+            LOGGER.debug(f"Skipping unconfirmed expense {msg['item_hash']}")
+            continue
 
-            if not messages:
-                break
+        content = msg.get("content", {}).get("content", {})
+        tags = content.get("tags", [])
+        expense = content.get("expense", {})
 
-            for msg in messages:
-                if msg["item_hash"] in seen_hashes:
-                    continue
-                seen_hashes.add(msg["item_hash"])
+        if not expense:
+            continue
 
-                # Extract ETH confirmation height
-                height = None
-                for conf in msg.get("confirmations", []):
-                    if conf["chain"] == "ETH":
-                        if height is None or conf["height"] < height:
-                            height = conf["height"]
-
-                if height is None:
-                    LOGGER.debug(
-                        f"Skipping unconfirmed expense {msg['item_hash']}"
-                    )
-                    continue
-
-                content = msg.get("content", {}).get("content", {})
-                tags = content.get("tags", [])
-                expense = content.get("expense", {})
-
-                if not expense:
-                    continue
-
-                if "type_storage" in tags:
-                    expenses.append((height, "storage", expense))
-                elif "type_execution" in tags:
-                    expenses.append((height, "execution", expense))
-
-            total = data.get("pagination_total", 0)
-            per_page = data.get("pagination_per_page", 500)
-            if params["page"] * per_page >= total:
-                break
-            params["page"] += 1
+        if "type_storage" in tags:
+            expenses.append((height, "storage", expense))
+        elif "type_execution" in tags:
+            expenses.append((height, "execution", expense))
 
     expenses.sort(key=lambda x: x[0])
     storage_count = sum(1 for e in expenses if e[1] == "storage")
@@ -165,6 +175,58 @@ async def fetch_credit_expenses(api_server, start_time, end_time, sender=None):
         f"{execution_count} execution expense messages"
     )
     return expenses
+
+
+async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
+    """
+    Fetch historical corechannel aggregate snapshots for the period.
+
+    Fetches from 1 day before start_time to ensure we have a snapshot
+    before the first expense.
+
+    Returns:
+        List of (height, nodes_dict, resource_nodes_dict) sorted by height.
+    """
+    if sender is None:
+        sender = settings.status_sender
+
+    snapshots = []
+
+    params = {
+        "msgType": "AGGREGATE",
+        "addresses": sender,
+        "startDate": int(start_time - 86400),
+        "endDate": int(end_time),
+        "pagination": 500,
+        "page": 1,
+        "sort_order": "1",
+        "sort_by": "tx-time",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        messages = await _fetch_paginated_messages(session, api_server, params)
+
+    for msg in messages:
+        content = msg.get("content", {})
+        if content.get("key") != "corechannel":
+            continue
+
+        height = _extract_eth_height(msg)
+        if height is None:
+            continue
+
+        inner = content.get("content", {})
+        nodes_list = inner.get("nodes", [])
+        resource_nodes_list = inner.get("resource_nodes", [])
+
+        nodes_dict = {node["hash"]: node for node in nodes_list}
+        resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
+
+        snapshots.append((height, nodes_dict, resource_nodes_dict))
+
+    snapshots.sort(key=lambda x: x[0])
+    LOGGER.info(f"Fetched {len(snapshots)} node status snapshots")
+    return snapshots
 
 
 def _get_reward_address(node, web3=None):
@@ -189,11 +251,16 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
     """
     Distribute a single expense message using the current node state.
 
+    ALEPH cost per credit entry = credit["amount"] * expense["credit_price_aleph"]
+    (credit["price"] is the compute rate, NOT the ALEPH cost)
+
     Mutates `rewards` in place.
     Returns (storage_aleph, execution_aleph, dev_fund_aleph) totals.
     """
+    credit_price_aleph = expense.get("credit_price_aleph", 0)
     total_aleph = sum(
-        credit["price"] for credit in expense.get("credits", [])
+        credit["amount"] * credit_price_aleph
+        for credit in expense.get("credits", [])
     )
 
     dev_fund = total_aleph * settings.credit_dev_fund_share
@@ -207,13 +274,14 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
 
         # CRN share to the specific CRN per credit
         for credit in expense.get("credits", []):
+            credit_aleph = credit["amount"] * credit_price_aleph
             node_id = credit.get("node_id")
             if node_id and node_id in resource_nodes:
                 rnode = resource_nodes[node_id]
                 addr = _get_reward_address(rnode, web3)
                 rewards[addr] = (
                     rewards.get(addr, 0)
-                    + credit["price"] * settings.credit_execution_crn_share
+                    + credit_aleph * settings.credit_execution_crn_share
                 )
             elif node_id:
                 LOGGER.warning(
@@ -264,31 +332,94 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
         return 0, total_aleph, dev_fund
 
 
-async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
+async def prepare_credit_distribution(dbs, end_height, start_time, end_time,
+                                       full_resync=False):
     """
-    Build node state and distribute credit expenses at their confirmed heights.
+    Distribute credit expenses using node state snapshots.
 
-    Advances with the state machine so each expense is distributed using
-    the node/staker/score state at its confirmation height.
+    By default, fetches published corechannel aggregate snapshots and
+    advances through them. With full_resync=True, replays the full state
+    machine from genesis instead.
 
     Returns:
         Tuple of (rewards, total_storage_aleph, total_execution_aleph, total_dev_fund_aleph)
     """
-    state_machine = NodesStatus()
-    web3 = get_web3()
-
-    # Fetch expenses first (sorted by height)
     api_server = PublishMode.get_publish_api_server()
+
     expenses = await fetch_credit_expenses(
-        api_server,
-        start_time,
-        end_time,
+        api_server, start_time, end_time,
         sender=settings.credit_expense_sender,
     )
 
     if not expenses:
         LOGGER.warning("No credit expenses found in the given time range")
         return {}, 0, 0, 0
+
+    if full_resync:
+        web3 = get_web3()
+        return await _prepare_with_state_machine(
+            dbs, end_height, expenses, web3
+        )
+    else:
+        # web3 only needed for checksum validation, not required in snapshot mode
+        try:
+            web3 = get_web3()
+        except Exception:
+            web3 = None
+        return await _prepare_with_snapshots(
+            api_server, start_time, end_time, expenses, web3
+        )
+
+
+async def _prepare_with_snapshots(api_server, start_time, end_time,
+                                    expenses, web3):
+    """Distribute using published corechannel aggregate snapshots."""
+    snapshots = await fetch_node_snapshots(
+        api_server, start_time, end_time
+    )
+
+    if not snapshots:
+        raise ValueError(
+            "No node status snapshots found. "
+            "Use --full-resync or ensure nodestatus is running."
+        )
+
+    snapshot_heights = [s[0] for s in snapshots]
+
+    rewards = {}
+    total_storage = 0
+    total_execution = 0
+    total_dev_fund = 0
+
+    for exp_height, exp_type, expense in expenses:
+        # Find the most recent snapshot at or before this expense's height
+        idx = bisect.bisect_right(snapshot_heights, exp_height) - 1
+        if idx < 0:
+            idx = 0  # Use earliest available snapshot
+
+        _, nodes, resource_nodes = snapshots[idx]
+
+        s, e, d = _distribute_expense(
+            exp_type, expense, nodes, resource_nodes, rewards, web3=web3
+        )
+        total_storage += s
+        total_execution += e
+        total_dev_fund += d
+
+    LOGGER.info(
+        f"Credit distribution (snapshots): "
+        f"{total_storage:.4f} ALEPH storage, "
+        f"{total_execution:.4f} ALEPH execution, "
+        f"{total_dev_fund:.4f} ALEPH dev fund (not distributed), "
+        f"{sum(rewards.values()):.4f} ALEPH total distributed"
+    )
+
+    return rewards, total_storage, total_execution, total_dev_fund
+
+
+async def _prepare_with_state_machine(dbs, end_height, expenses, web3):
+    """Distribute by replaying the full state machine from genesis."""
+    state_machine = NodesStatus()
 
     last_seen_txs = deque([], maxlen=100)
 
@@ -348,7 +479,6 @@ async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
         if height > end_height:
             break
 
-        # Distribute any expenses confirmed at or before this height
         while expense_idx < len(expenses) and expenses[expense_idx][0] <= height:
             exp_height, exp_type, expense = expenses[expense_idx]
             s, e, d = _distribute_expense(
@@ -359,8 +489,6 @@ async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
             total_dev_fund += d
             expense_idx += 1
 
-    # Distribute any remaining expenses (confirmed after last state change
-    # but still within end_height)
     if nodes is not None:
         while expense_idx < len(expenses):
             exp_height, exp_type, expense = expenses[expense_idx]
@@ -383,7 +511,7 @@ async def prepare_credit_distribution(dbs, end_height, start_time, end_time):
         raise ValueError("No node state available")
 
     LOGGER.info(
-        f"Credit distribution: "
+        f"Credit distribution (full resync): "
         f"{total_storage:.4f} ALEPH storage, "
         f"{total_execution:.4f} ALEPH execution, "
         f"{total_dev_fund:.4f} ALEPH dev fund (not distributed), "
