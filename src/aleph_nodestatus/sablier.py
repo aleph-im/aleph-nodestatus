@@ -159,7 +159,7 @@ async def update_balances(account, height, balances):
 
 
 async def sablier_monitoring_process():
-    from .ethereum import get_account
+    from .ethereum import get_aleph_account
 
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()
