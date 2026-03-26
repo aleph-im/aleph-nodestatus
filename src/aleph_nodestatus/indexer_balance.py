@@ -73,7 +73,7 @@ query ($bc: String!, $skip: Int!, $limit: Int!) {
                         continue
                     if h["account"] not in seen_accounts:
                         seen_accounts.add(h["account"])
-                        values[h["account"]] = values.get("account", 0) + h["balanceNum"]
+                        values[h["account"]] = values.get(h["account"], 0) + h["balanceNum"]
                 if len(holders) >= limit:
                     skip += limit
                 else:
