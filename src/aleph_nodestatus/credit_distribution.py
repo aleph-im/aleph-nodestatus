@@ -38,7 +38,16 @@ async def get_latest_successful_credit_distribution(sender=None):
     current_post = None
     current_end_time = 0
     for post in posts.posts:
-        if post.content.get("status") != "distribution":
+        status = post.content.get("status")
+        if status not in ("distribution", "pending"):
+            continue
+
+        # A pending record means transfers may have started — treat it
+        # the same as a successful distribution to avoid double-payment.
+        if status == "pending":
+            if post.content.get("end_time", 0) >= current_end_time:
+                current_post = post
+                current_end_time = post.content["end_time"]
             continue
 
         successful = False

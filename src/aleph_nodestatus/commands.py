@@ -206,6 +206,13 @@ async def process_distribution(start_height, end_height, act=False, reward_sende
     print(f"{'='*60}\n")
 
     if act and not is_testnet:
+        # Post a pending record BEFORE transfers to claim this period.
+        # If we crash after transferring but before the final amend,
+        # the resume logic will see "pending" and skip this period.
+        pending_post = await create_distribution_tx_post(distribution)
+        pending_hash = pending_post[0].item_hash
+        print(f"Posted pending distribution record: {pending_hash}")
+
         print("Executing actual token transfers...")
         max_items = settings.ethereum_batch_size
         distribution_list = list(rewards.items())
@@ -215,7 +222,11 @@ async def process_distribution(start_height, end_height, act=False, reward_sende
             print(f"Batch {i+1}: transferring to {len(step_items)} recipients")
             await transfer_tokens(dict(step_items), metadata=distribution)
 
-    await create_distribution_tx_post(distribution)
+        # Amend the pending record with transfer results and final status
+        distribution["status"] = "distribution"
+        await create_distribution_tx_post(distribution, ref=pending_hash)
+    else:
+        await create_distribution_tx_post(distribution)
 
 
 @click.command()
@@ -351,6 +362,15 @@ async def process_credit_distribution(
     print(f"{'='*60}\n")
 
     if act and not is_testnet:
+        # Post a pending record BEFORE transfers to claim this period.
+        # If we crash after transferring but before the final amend,
+        # the resume logic will see "pending" and skip this period.
+        pending_post = await create_distribution_tx_post(
+            distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE
+        )
+        pending_hash = pending_post[0].item_hash
+        print(f"Posted pending credit distribution record: {pending_hash}")
+
         print("Executing actual token transfers...")
         max_items = settings.ethereum_batch_size
         distribution_list = list(rewards.items())
@@ -360,7 +380,13 @@ async def process_credit_distribution(
             print(f"Batch {i+1}: transferring to {len(step_items)} recipients")
             await transfer_tokens(dict(step_items), metadata=distribution)
 
-    await create_distribution_tx_post(distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE)
+        # Amend the pending record with transfer results and final status
+        distribution["status"] = "distribution"
+        await create_distribution_tx_post(
+            distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE, ref=pending_hash
+        )
+    else:
+        await create_distribution_tx_post(distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE)
 
 
 @click.command()
