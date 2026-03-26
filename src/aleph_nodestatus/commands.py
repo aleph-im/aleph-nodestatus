@@ -15,7 +15,6 @@ also be used as template for Python modules.
 Note: This skeleton file can be safely removed if not needed!
 """
 
-import argparse
 import asyncio
 import logging
 import math

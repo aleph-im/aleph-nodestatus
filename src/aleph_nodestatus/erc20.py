@@ -13,9 +13,6 @@ try:
 except ImportError:
     from web3._utils.events import get_event_data
 
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
-from web3.middleware import geth_poa_middleware, local_filter_middleware
-
 from .ethereum import get_logs, get_web3, get_aleph_account
 from .settings import settings, PublishMode
 from .utils import chunks

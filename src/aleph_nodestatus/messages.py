@@ -7,7 +7,6 @@ from functools import lru_cache
 import aiohttp
 from aleph.sdk.chains.ethereum import ETHAccount
 from aleph.sdk.client import AuthenticatedAlephHttpClient
-from hexbytes import HexBytes
 
 from .erc20 import DECIMALS
 from .ethereum import get_web3, lookup_timestamp

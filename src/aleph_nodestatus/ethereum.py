@@ -7,9 +7,6 @@ from pathlib import Path
 import aiohttp
 import web3
 from eth_account import Account
-from hexbytes import HexBytes
-from requests import ReadTimeout
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
 from aleph.sdk.chains.ethereum import ETHAccount
 
 from .settings import settings
