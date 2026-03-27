@@ -661,11 +661,13 @@ async def process(dbs, window_size=None):
         ),
     ]
     nodes = None
+    resource_nodes = None
     async for height, nodes, resource_nodes in state_machine.process(iterators):
         pass
 
-    print("should set status")
-    await set_status(account, nodes, resource_nodes)
+    if nodes is not None:
+        print("should set status")
+        await set_status(account, nodes, resource_nodes)
 
     i = 0
     while True:

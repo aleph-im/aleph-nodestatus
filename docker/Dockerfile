@@ -6,7 +6,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY ../ .
+COPY . .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 # Stage 2: Runtime (no compiler, no sources)
@@ -17,4 +17,6 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+RUN rm -f /wheels/setuptools-*.whl && \
+    pip install --no-cache-dir /wheels/*.whl && \
+    rm -rf /wheels
