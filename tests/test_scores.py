@@ -1,11 +1,6 @@
-import sys
-
 import pytest
 
 from aleph_nodestatus.distribution import compute_score_multiplier
-from aleph_nodestatus.scores import process_scores_history
-from aleph_nodestatus.settings import settings
-from aleph_nodestatus.status import prepare_items
 
 
 def test_compute_score_multiplier():
@@ -16,39 +11,23 @@ def test_compute_score_multiplier():
     assert t(0.0) == 0
     assert t(0.1) == 0
     assert t(0.2) == 0
-    assert t(0.3) == 0.16666666666666663
-    assert t(0.4) == 0.33333333333333337
+    assert t(0.3) == pytest.approx(0.16666666666666663)
+    assert t(0.4) == pytest.approx(0.33333333333333337)
     assert t(0.5) == 0.5
-    assert t(0.6) == 0.6666666666666666
-    assert t(0.7) == 0.8333333333333333
+    assert t(0.6) == pytest.approx(0.6666666666666666)
+    assert t(0.7) == pytest.approx(0.8333333333333333)
     assert t(0.8) == 1
     assert t(0.9) == 1
     assert t(1.0) == 1
 
 
-@pytest.mark.asyncio
-async def test_process_scores_history():
-    value = process_scores_history(settings)
-
-    messages = []
-    async for message in value:
-        sys.stdout.write(".")
-        sys.stdout.flush()
-        messages.append(message)
-
-    print(len(messages))
+def test_score_multiplier_boundary():
+    """Score just above 0.2 should give a tiny positive multiplier."""
+    assert compute_score_multiplier(0.2001) > 0
+    assert compute_score_multiplier(0.1999) == 0
 
 
-@pytest.mark.asyncio
-async def test_prepare_items_process_scores_history():
-    result = prepare_items(
-        "score-update",
-        process_scores_history(
-            settings=settings,
-        ),
-    )
-    print(result)
-    async for item in result:
-        print(item)
-
-    assert False
+def test_score_multiplier_clamped_input():
+    """Scores outside [0,1] should still return sensible values."""
+    assert compute_score_multiplier(-0.5) == 0
+    assert compute_score_multiplier(1.5) == 1

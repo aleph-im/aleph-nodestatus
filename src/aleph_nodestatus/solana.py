@@ -1,31 +1,34 @@
 import asyncio
 
 import aiohttp
+from aleph.sdk.client import AuthenticatedAlephHttpClient
 
-from .ethereum import get_logs, get_web3
+from .ethereum import get_web3
 from .settings import settings
 
 DECIMALS = 10**settings.platform_solana_decimals
 
 
 async def update_balances(account, main_height, balances):
-    return await create_post(
-        account,
-        {
-            "tags": ["SOL", "SPL", settings.platform_solana_mint, settings.filter_tag],
-            "main_height": main_height,
-            "platform": "{}_{}".format(settings.token_symbol, "SOL"),
-            "token_contract": settings.platform_solana_mint,
-            "token_symbol": settings.token_symbol,
-            "chain": "SOL",
-            "balances": {
-                addr: value / DECIMALS for addr, value in balances.items() if value > 0
+    async with AuthenticatedAlephHttpClient(
+        account=account, api_server=settings.aleph_api_server
+    ) as client:
+        post_message, _ = await client.create_post(
+            post_content={
+                "tags": ["SOL", "SPL", settings.platform_solana_mint, settings.filter_tag],
+                "main_height": main_height,
+                "platform": "{}_{}".format(settings.token_symbol, "SOL"),
+                "token_contract": settings.platform_solana_mint,
+                "token_symbol": settings.token_symbol,
+                "chain": "SOL",
+                "balances": {
+                    addr: value / DECIMALS for addr, value in balances.items() if value > 0
+                },
             },
-        },
-        settings.balances_post_type,
-        channel=settings.aleph_channel,
-        api_server=settings.aleph_api_server,
-    )
+            post_type=settings.balances_post_type,
+            channel=settings.aleph_channel,
+        )
+        return post_message
 
 
 async def query_balances(endpoint, mint):
