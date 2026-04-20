@@ -303,7 +303,7 @@ async def process_credit_distribution(
                     hi = mid - 1
             end_block = lo
 
-    rewards, total_storage, total_execution, total_dev_fund = (
+    rewards, total_storage, total_execution, total_hold_rewards, total_dev_fund = (
         await prepare_credit_distribution(
             dbs, end_block, start_time, end_time, full_resync=full_resync
         )
@@ -329,6 +329,7 @@ async def process_credit_distribution(
         tags=tags,
         storage_total_aleph=total_storage,
         execution_total_aleph=total_execution,
+        hold_rewards_total_aleph=total_hold_rewards,
         dev_fund_total_aleph=total_dev_fund,
         full_resync=full_resync,
     )
@@ -345,6 +346,7 @@ async def process_credit_distribution(
     print(f"Time range: {start_time} -> {end_time}")
     print(f"Storage expenses: {total_storage:,.4f} ALEPH")
     print(f"Execution expenses: {total_execution:,.4f} ALEPH")
+    print(f"Hold rewards (incentives pool): {total_hold_rewards:,.4f} ALEPH")
     print(f"Dev fund ({settings.credit_dev_fund_share:.0%}): {total_dev_fund:,.4f} ALEPH")
     print(f"Total recipients: {len(rewards)}")
     print(f"Total rewards: {total_rewards:,.4f} ALEPH")
