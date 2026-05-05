@@ -1,5 +1,4 @@
 import asyncio
-import random
 from collections import deque
 from urllib.parse import urlparse
 from multiaddr import Multiaddr
@@ -35,7 +34,17 @@ EDITABLE_FIELDS = [
 
 async def prepare_items(item_type, iterator):
     async for height, item in iterator:
-        yield (height, random.random(), (item_type, item))
+        # Tiebreaker for items sharing a block height. For Aleph messages, prefer
+        # the inner content.time (when the user signed) over the envelope time, and
+        # use item_hash as a final deterministic tiebreaker. Non-message items
+        # (balance/contract tuples) sort first with (0, "").
+        if isinstance(item, dict):
+            inner = item.get("content") if isinstance(item.get("content"), dict) else None
+            msg_time = (inner or {}).get("time", item.get("time")) or 0
+            tiebreak = (msg_time, item.get("item_hash", ""))
+        else:
+            tiebreak = (0, "")
+        yield (height, tiebreak, (item_type, item))
         
 def is_block_in_discarded_scores_range(height):
     for start, end in settings.scores_discard_periods:
