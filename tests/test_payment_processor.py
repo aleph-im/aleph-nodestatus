@@ -114,3 +114,76 @@ def test_execute_process_signs_and_sends(monkeypatch):
     processor.functions.process.assert_called_once_with(
         "0xUSDC", 1_000_000, 999_000, 1800
     )
+
+
+from aleph_nodestatus.payment_processor import extract_aleph
+
+
+def _mk_swap_config(v, t="0x000000000000000000000000000000000000abCd"):
+    return {"v": v, "t": t, "v3": b"\xde\xad", "v2": [], "v4": []}
+
+
+def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
+    w3 = MagicMock()
+    processor = MagicMock()
+    quoter = MagicMock()
+
+    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+    quoter.functions.quoteExactInput.return_value.call.return_value = (
+        10_000, [0], [0], 0
+    )
+
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    execute_called = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.execute_process",
+        lambda *a, **kw: execute_called.append(1),
+    )
+
+    result = extract_aleph(
+        w3, processor, quoter, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+    )
+
+    assert execute_called == []
+    assert len(result["tokens"]) == 3
+    for entry in result["tokens"]:
+        assert entry["simulated_only"] is True
+
+
+def test_extract_aleph_zero_balance_skipped(monkeypatch):
+    w3 = MagicMock()
+    processor = MagicMock()
+    quoter = MagicMock()
+    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 0
+    w3.eth.get_balance.return_value = 0
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoter, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+    )
+    for entry in result["tokens"]:
+        assert entry["skipped_reason"] == "zero_balance"
