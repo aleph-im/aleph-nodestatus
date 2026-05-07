@@ -109,6 +109,44 @@ class Settings(BaseSettings):
 
     db_path: str = "./database"
 
+    # === AlephPaymentProcessor ===
+    payment_processor_address: str = "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
+    payment_processor_admin_pkey: str = ""
+    distribution_recipient: str = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
+
+    # Tokens to process, in order. address(0) for ETH.
+    process_tokens: List[tuple] = [
+        ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        ("ETH",  "0x0000000000000000000000000000000000000000"),
+        ("ALEPH","0x27702a26126e0B3702af63Ee09aC4d1A084EF628"),
+    ]
+
+    # Slippage / quoter
+    uniswap_v3_quoter_address: str = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+    process_slippage_bps: int = 200          # 2%
+    process_min_token_value_usd: float = 50
+    process_ttl_seconds: int = 1800          # must be <= 3600
+
+    # === Wage subsidy ===
+    wage_start_date: str = "2026-04-01T00:00:00+00:00"
+    wage_duration_months: int = 6
+    wage_initial_monthly_aleph: int = 900_000
+    wage_ccn_share: float = 1/3
+    wage_crn_share: float = 1/3
+    wage_staker_share: float = 1/3
+
+    # === Cadence & filtering ===
+    credit_dist_min_interval_seconds: int = 10 * 86400
+    credit_dist_dust_threshold_aleph: float = 0.01
+
+    # === Feature flags ===
+    credit_dist_extract_enabled: bool        = True
+    credit_dist_credit_revenue_enabled: bool = True
+    credit_dist_wage_subsidy_enabled: bool   = True
+    credit_dist_holder_tier_enabled: bool    = False
+    credit_dist_transfer_enabled: bool       = True
+    credit_dist_publish_enabled: bool        = True
+
     class Config:
         env_file = ".env"
 
