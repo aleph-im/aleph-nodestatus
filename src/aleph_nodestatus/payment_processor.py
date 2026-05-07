@@ -54,3 +54,37 @@ def get_quoter_contract(w3):
         address=w3.to_checksum_address(settings.uniswap_v3_quoter_address),
         abi=_load_abi("UniswapV3QuoterV2"),
     )
+
+
+def simulate_process(
+    w3, processor,
+    from_address: str,
+    token: str, amount_in: int, min_out: int, ttl: int,
+    contract_logic_error_cls=None,
+) -> Optional[str]:
+    """eth_call the process() tx to detect revert.
+
+    Returns None on success, error message string on revert.
+    """
+    if contract_logic_error_cls is None:
+        try:
+            from web3.exceptions import ContractLogicError
+            contract_logic_error_cls = ContractLogicError
+        except ImportError:
+            contract_logic_error_cls = Exception
+
+    data = processor.encodeABI(
+        fn_name="process",
+        args=[token, amount_in, min_out, ttl],
+    )
+    try:
+        w3.eth.call({
+            "from": from_address,
+            "to": settings.payment_processor_address,
+            "data": data,
+        })
+        return None
+    except contract_logic_error_cls as e:
+        return str(e)
+    except Exception as e:
+        return f"unexpected error during simulate: {e!r}"

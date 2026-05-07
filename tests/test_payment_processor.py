@@ -43,3 +43,38 @@ def test_quote_amount_out_v4_raises():
     swap_config = {"v": 4, "v4": []}
     with pytest.raises(NotImplementedError, match="V4"):
         quote_amount_out(quoter, swap_config, amount_in=1_000_000)
+
+
+from aleph_nodestatus.payment_processor import simulate_process
+
+
+def test_simulate_process_success_returns_no_error(monkeypatch):
+    w3 = MagicMock()
+    w3.eth.call.return_value = b""
+    processor = MagicMock()
+    processor.encodeABI.return_value = b"\xab\xcd"
+
+    err = simulate_process(
+        w3, processor,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        token="0xUSDC", amount_in=1_000_000, min_out=999_000, ttl=1800,
+    )
+    assert err is None
+    w3.eth.call.assert_called_once()
+
+
+def test_simulate_process_revert_returns_message(monkeypatch):
+    class ContractLogicError(Exception):
+        pass
+    w3 = MagicMock()
+    w3.eth.call.side_effect = ContractLogicError("InsufficientOutput()")
+    processor = MagicMock()
+    processor.encodeABI.return_value = b"\xab\xcd"
+
+    err = simulate_process(
+        w3, processor,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        token="0xUSDC", amount_in=1_000_000, min_out=999_000_000, ttl=1800,
+        contract_logic_error_cls=ContractLogicError,
+    )
+    assert "InsufficientOutput" in err
