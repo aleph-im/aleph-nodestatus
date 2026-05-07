@@ -389,7 +389,23 @@ async def process_credit_distribution(
                 start_time, end_time, nodes, resource_nodes, web3=web3,
             )
         else:
-            LOGGER.warning("No snapshots for wage subsidy; pool unallocated.")
+            from .wage_subsidy import compute_period_subsidy, months_since_start
+            period_total = compute_period_subsidy(start_time, end_time)
+            wage_totals = {
+                "period_total_aleph": period_total,
+                "unallocated_aleph":  period_total,
+                "start_t_months":     months_since_start(start_time),
+                "end_t_months":       months_since_start(end_time),
+                "split": {
+                    "ccn":     period_total * settings.wage_ccn_share,
+                    "crn":     period_total * settings.wage_crn_share,
+                    "stakers": period_total * settings.wage_staker_share,
+                },
+            }
+            LOGGER.warning(
+                f"No snapshots for wage subsidy; entire {period_total:.4f} "
+                f"ALEPH recorded as unallocated."
+            )
 
     # === Step 4: merge + dust filter ===
     final_rewards, by_source = merge_rewards(
