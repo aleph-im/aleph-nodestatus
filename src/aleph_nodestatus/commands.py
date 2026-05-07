@@ -267,165 +267,129 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 
 
 async def process_credit_distribution(
-    start_time, end_time, act=False, reward_sender=None, full_resync=False
+    start_time, end_time, *,
+    act=False, dry_run=False, force=False,
+    flags=None, reward_sender=None, full_resync=False,
 ):
-    dbs = get_dbs()
-
-    if end_time is None:
-        end_time = time_mod.time()
-
-    if start_time is None:
-        last_end_time, dist = await get_latest_successful_credit_distribution(
-            reward_sender
-        )
-        if last_end_time and dist:
-            # +1 second to avoid re-processing expenses at the boundary
-            start_time = last_end_time + 1
-            print(f"Resuming from last successful distribution end_time: {last_end_time} (start: {start_time})")
-        else:
-            print("ERROR: No previous credit distribution found. "
-                  "Provide --start-time explicitly.")
-            return
-
-    # end_height only needed for full resync (state machine uses block heights)
-    end_block = None
-    if full_resync:
-        web3 = get_web3()
-        end_block = web3.eth.block_number
-        block = web3.eth.get_block(end_block)
-        if block.timestamp > end_time:
-            lo, hi = 0, end_block
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if web3.eth.get_block(mid).timestamp <= end_time:
-                    lo = mid
-                else:
-                    hi = mid - 1
-            end_block = lo
-
-    rewards, total_storage, total_execution, total_dev_fund = (
-        await prepare_credit_distribution(
-            dbs, end_block, start_time, end_time, full_resync=full_resync
-        )
+    # Body left mostly intact for now -- Task 19 rewrites it.
+    # For now, log + return early so the new CLI doesn't accidentally
+    # run the OLD distribution logic with the new flags.
+    LOGGER.info(
+        "process_credit_distribution: stub (Task 19 wires the orchestrator)"
     )
-
-    is_testnet = PublishMode.is_testnet()
-    if is_testnet:
-        status = "simulation"
-        tags = ["simulation", "credits", settings.filter_tag]
-    elif act:
-        status = "distribution"
-        tags = ["distribution", "credits", settings.filter_tag]
-    else:
-        status = "calculation"
-        tags = ["calculation", "credits", settings.filter_tag]
-
-    distribution = dict(
-        incentive="credits",
-        status=status,
-        start_time=start_time,
-        end_time=end_time,
-        rewards=rewards,
-        tags=tags,
-        storage_total_aleph=total_storage,
-        execution_total_aleph=total_execution,
-        dev_fund_total_aleph=total_dev_fund,
-        full_resync=full_resync,
-    )
-    if end_block is not None:
-        distribution["end_height"] = end_block
-
-    total_rewards = sum(rewards.values())
-    api_server = PublishMode.get_publish_api_server()
-    mode_label = "full resync" if full_resync else "snapshots"
-    print(f"\n{'='*60}")
-    print(f"Credit Distribution Summary ({status.upper()}, {mode_label})")
-    print(f"{'='*60}")
-    print(f"Target API: {api_server}")
-    print(f"Time range: {start_time} -> {end_time}")
-    print(f"Storage expenses: {total_storage:,.4f} ALEPH")
-    print(f"Execution expenses: {total_execution:,.4f} ALEPH")
-    print(f"Dev fund ({settings.credit_dev_fund_share:.0%}): {total_dev_fund:,.4f} ALEPH")
-    print(f"Total recipients: {len(rewards)}")
-    print(f"Total rewards: {total_rewards:,.4f} ALEPH")
-    print(f"{'='*60}\n")
-
-    if act and not is_testnet:
-        print("Executing actual token transfers...")
-        max_items = settings.ethereum_batch_size
-        distribution_list = list(rewards.items())
-
-        for i in range(math.ceil(len(distribution_list) / max_items)):
-            step_items = distribution_list[max_items * i : max_items * (i + 1)]
-            print(f"Batch {i+1}: transferring to {len(step_items)} recipients")
-            await transfer_tokens(dict(step_items), metadata=distribution)
-
-    await create_distribution_tx_post(distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE)
+    return
 
 
 @click.command()
 @click.option("-v", "--verbose", count=True)
-@click.option("-a", "--act", help="Do actual batch transfer", is_flag=True)
-@click.option(
-    "-t", "--testnet",
-    help="Publish to testnet API instead of mainnet (no token transfers)",
-    is_flag=True,
-)
-@click.option(
-    "--start-time",
-    "start_time",
-    help="Start timestamp (unix seconds). Auto-detected from last distribution if omitted.",
-    default=None,
-    type=float,
-)
-@click.option(
-    "--end-time",
-    "end_time",
-    help="End timestamp (unix seconds, default: now)",
-    default=None,
-    type=float,
-)
-@click.option(
-    "--reward-sender",
-    "reward_sender",
-    help="Reward emitting address (to find last distribution)",
-    default=None,
-)
-@click.option(
-    "--full-resync",
-    help="Replay full state machine from genesis instead of using published snapshots",
-    is_flag=True,
-)
-def distribute_credits(verbose, act=False, testnet=False, start_time=None,
-                       end_time=None, reward_sender=None, full_resync=False):
-    """
-    Credit-based distribution script (new tokenomics).
-
-    Distributes revenue from credit expenses to CRNs, CCNs, and stakers.
-    Uses published node status snapshots by default (fast).
-    Use --full-resync to replay the full state machine from genesis (slow but exact).
-
-    Storage:   75% CCNs (score-weighted) + 20% stakers
-    Execution: 60% CRN (per-job) + 15% CCNs (score-weighted) + 20% stakers
-    """
+@click.option("-a", "--act", help="Execute transfers + post status=distribution",
+              is_flag=True)
+@click.option("-t", "--testnet",
+              help="Publish to testnet API; no transfers",
+              is_flag=True)
+@click.option("--dry-run",
+              help="No post, no transfers; simulate process() via eth_call",
+              is_flag=True)
+@click.option("--force", help="Bypass the cadence guard", is_flag=True)
+@click.option("--start-time", "start_time", default=None, type=float,
+              help="Unix seconds, default: resume from last distribution")
+@click.option("--end-time", "end_time", default=None, type=float,
+              help="Unix seconds, default: now")
+@click.option("--full-resync", is_flag=True,
+              help="Replay full state machine from genesis")
+@click.option("--no-extract", "no_extract", is_flag=True,
+              help="Skip process() calls")
+@click.option("--no-credit-revenue", "no_credit_revenue", is_flag=True,
+              help="Skip credit-expense reward computation")
+@click.option("--no-wage", "no_wage", is_flag=True,
+              help="Skip wage subsidy")
+@click.option("--enable-holder-tier", "enable_holder_tier", is_flag=True,
+              help="Process expense.rewards[] (deprecated branch)")
+@click.option("--no-holder-tier", "no_holder_tier", is_flag=True,
+              help="Force holder-tier OFF (overrides env=True)")
+@click.option("--no-transfer", "no_transfer", is_flag=True,
+              help="Compute everything but don't broadcast txs")
+@click.option("--no-publish", "no_publish", is_flag=True,
+              help="Don't post the Aleph distribution record")
+@click.option("--slippage-bps", default=None, type=int,
+              help="Override per-run slippage tolerance")
+@click.option("--reward-sender", default=None,
+              help="Address used to look up the previous distribution")
+def distribute_credits(verbose, act, testnet, dry_run, force,
+                       start_time, end_time, full_resync,
+                       no_extract, no_credit_revenue, no_wage,
+                       enable_holder_tier, no_holder_tier,
+                       no_transfer, no_publish,
+                       slippage_bps, reward_sender):
+    """Credit-based distribution script (new tokenomics)."""
     setup_logging(verbose)
 
     if act and testnet:
-        print("ERROR: Cannot use --act and --testnet together")
-        return
+        click.echo("ERROR: --act and --testnet are mutually exclusive")
+        sys.exit(2)
+    if act and dry_run:
+        click.echo("ERROR: --act and --dry-run are mutually exclusive")
+        sys.exit(2)
+    if enable_holder_tier and no_holder_tier:
+        click.echo("ERROR: --enable-holder-tier and --no-holder-tier are "
+                   "mutually exclusive")
+        sys.exit(2)
 
     if testnet:
         PublishMode.set_testnet(True)
 
-    mode = "TESTNET (simulation)" if testnet else ("LIVE DISTRIBUTION" if act else "CALCULATION ONLY")
-    print(f"Mode: {mode}")
-
-    asyncio.run(
-        process_credit_distribution(
-            start_time, end_time, act=act, reward_sender=reward_sender,
-            full_resync=full_resync,
-        )
+    flags = _resolve_feature_flags(
+        no_extract=no_extract, no_credit_revenue=no_credit_revenue,
+        no_wage=no_wage, enable_holder_tier=enable_holder_tier,
+        no_holder_tier=no_holder_tier,
+        no_transfer=no_transfer, no_publish=no_publish,
+        act=act, dry_run=dry_run,
     )
+
+    if slippage_bps is not None:
+        settings.process_slippage_bps = slippage_bps
+
+    mode = (
+        "DRY-RUN" if dry_run else
+        "TESTNET (calculation)" if testnet else
+        "LIVE DISTRIBUTION" if act else
+        "CALCULATION ONLY"
+    )
+    click.echo(f"Mode: {mode}")
+    click.echo(f"Flags: {flags}")
+
+    asyncio.run(process_credit_distribution(
+        start_time=start_time, end_time=end_time,
+        act=act, dry_run=dry_run, force=force,
+        flags=flags, reward_sender=reward_sender,
+        full_resync=full_resync,
+    ))
+
+
+def _resolve_feature_flags(*, no_extract, no_credit_revenue, no_wage,
+                           enable_holder_tier, no_holder_tier,
+                           no_transfer, no_publish, act, dry_run):
+    f = {
+        "extract":        settings.credit_dist_extract_enabled,
+        "credit_revenue": settings.credit_dist_credit_revenue_enabled,
+        "wage":           settings.credit_dist_wage_subsidy_enabled,
+        "holder_tier":    settings.credit_dist_holder_tier_enabled,
+        "transfer":       settings.credit_dist_transfer_enabled,
+        "publish":        settings.credit_dist_publish_enabled,
+    }
+    if no_extract:        f["extract"] = False
+    if no_credit_revenue: f["credit_revenue"] = False
+    if no_wage:           f["wage"] = False
+    if enable_holder_tier: f["holder_tier"] = True
+    if no_holder_tier:    f["holder_tier"] = False
+    if no_transfer:       f["transfer"] = False
+    if no_publish:        f["publish"] = False
+    if dry_run:
+        f["transfer"] = False
+        f["publish"]  = False
+    if not act and not dry_run:
+        f["transfer"] = False
+    return f
 
 
 @click.command()
