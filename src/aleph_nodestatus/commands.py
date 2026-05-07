@@ -271,13 +271,193 @@ async def process_credit_distribution(
     act=False, dry_run=False, force=False,
     flags=None, reward_sender=None, full_resync=False,
 ):
-    # Body left mostly intact for now -- Task 19 rewrites it.
-    # For now, log + return early so the new CLI doesn't accidentally
-    # run the OLD distribution logic with the new flags.
-    LOGGER.info(
-        "process_credit_distribution: stub (Task 19 wires the orchestrator)"
+    from .credit_distribution import (
+        compute_rewards, should_skip_run, fetch_node_snapshots,
     )
-    return
+    from .payment_processor import (
+        extract_aleph, get_processor_contract, get_quoter_contract,
+    )
+    from .rewards_merge import merge_rewards
+    from .wage_subsidy import compute_subsidy
+    from .ethereum import get_eth_account, get_web3, get_token_contract
+    from hexbytes import HexBytes
+    from eth_account import Account
+    import time as _time
+    import json as _json
+
+    flags = flags or {}
+    dbs = get_dbs()
+    if end_time is None:
+        end_time = _time.time()
+
+    # === Cadence guard ===
+    if start_time is None:
+        last_end, _ = await get_latest_successful_credit_distribution(reward_sender)
+        if last_end:
+            if should_skip_run(last_end, _time.time(),
+                               settings.credit_dist_min_interval_seconds,
+                               force):
+                click.echo(
+                    f"Cadence guard: only {(_time.time()-last_end):.0f}s "
+                    f"since last run; skipping (use --force to override)."
+                )
+                return
+            start_time = last_end + 1
+            click.echo(f"Resuming from last_end={last_end}; start={start_time}")
+        else:
+            click.echo("ERROR: --start-time required for first run.")
+            return
+
+    web3 = get_web3()
+    admin_address = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    admin_account = None
+    if flags.get("extract") and (act and not dry_run):
+        pk = settings.payment_processor_admin_pkey or settings.ethereum_pkey
+        if not settings.payment_processor_admin_pkey:
+            LOGGER.warning(
+                "payment_processor_admin_pkey not set; falling back to ethereum_pkey"
+            )
+        admin_account = Account.from_key(HexBytes(pk))
+        admin_address = admin_account.address
+
+    # === Step 1: extract ALEPH from the processor ===
+    extract_block = {"tokens": [], "errors": []}
+    if flags.get("extract"):
+        processor = get_processor_contract(web3)
+        quoter = get_quoter_contract(web3)
+        extract_block = extract_aleph(
+            web3, processor, quoter,
+            account=admin_account,
+            from_address=admin_address,
+            dry_run=dry_run or not flags.get("transfer"),
+            transfer_enabled=flags.get("transfer"),
+        )
+
+    # === Step 2: credit_revenue + holder_tier rewards ===
+    end_block = None
+    if full_resync:
+        end_block = web3.eth.block_number
+        block = web3.eth.get_block(end_block)
+        if block.timestamp > end_time:
+            lo, hi = 0, end_block
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if web3.eth.get_block(mid).timestamp <= end_time:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            end_block = lo
+
+    zero_totals = lambda: {"storage_total_aleph": 0,
+                            "execution_total_aleph": 0,
+                            "dev_fund_total_aleph": 0}
+    streams = {
+        "credit_revenue": ({}, zero_totals()),
+        "holder_tier":    ({}, zero_totals()),
+    }
+    if flags.get("credit_revenue"):
+        streams = await compute_rewards(
+            start_time, end_time,
+            full_resync=full_resync,
+            include_holder_tier=flags.get("holder_tier", False),
+            sender=settings.credit_expense_sender,
+            dbs=dbs, end_height=end_block, web3=web3,
+        )
+
+    credit_rewards, credit_totals = streams["credit_revenue"]
+    holder_rewards, holder_totals = streams["holder_tier"]
+
+    # === Step 3: wage subsidy ===
+    wage_rewards = {}
+    wage_totals = {
+        "period_total_aleph": 0,
+        "unallocated_aleph": 0,
+        "start_t_months": 0,
+        "end_t_months": 0,
+        "split": {"ccn": 0, "crn": 0, "stakers": 0},
+    }
+    if flags.get("wage"):
+        api_server = PublishMode.get_publish_api_server()
+        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
+        if snapshots:
+            _, nodes, resource_nodes = snapshots[-1]
+            wage_rewards, wage_totals = compute_subsidy(
+                start_time, end_time, nodes, resource_nodes, web3=web3,
+            )
+        else:
+            LOGGER.warning("No snapshots for wage subsidy; pool unallocated.")
+
+    # === Step 4: merge + dust filter ===
+    final_rewards, by_source = merge_rewards(
+        {"credit_revenue": credit_rewards,
+         "holder_tier":    holder_rewards,
+         "wage_subsidy":   wage_rewards},
+        dust_threshold=settings.credit_dist_dust_threshold_aleph,
+    )
+
+    # === Holder-tier safety check ===
+    if flags.get("holder_tier") and holder_rewards:
+        token = get_token_contract(web3)
+        bal = token.functions.balanceOf(
+            web3.to_checksum_address(settings.distribution_recipient)
+        ).call() / (10 ** settings.ethereum_decimals)
+        owed = sum(final_rewards.values())
+        if owed > bal + 1e-6:
+            click.echo(
+                f"ABORT: owed {owed} ALEPH > balance {bal} at "
+                f"{settings.distribution_recipient}"
+            )
+            return
+
+    # === Step 5: transfer (or simulate) ===
+    is_testnet = PublishMode.is_testnet()
+    if flags.get("transfer") and act and not is_testnet:
+        click.echo("Executing batchTransfer …")
+        max_items = settings.ethereum_batch_size
+        items = list(final_rewards.items())
+        for i in range(math.ceil(len(items) / max_items)):
+            step = items[max_items*i:max_items*(i+1)]
+            click.echo(f"Batch {i+1}: transferring to {len(step)} recipients")
+            await transfer_tokens(
+                dict(step),
+                metadata={"sources": list(by_source.keys())},
+            )
+    elif not flags.get("transfer"):
+        click.echo("--no-transfer / dry-run: skipping batchTransfer")
+        n = len(final_rewards)
+        batch_size = settings.ethereum_batch_size
+        for i in range(math.ceil(n / batch_size)):
+            count = min(batch_size, n - i * batch_size)
+            click.echo(f"Batch {i+1}: would transfer to {count} recipients")
+
+    # === Step 6: publish ===
+    status = "distribution" if act else "calculation"
+    distribution = {
+        "incentive": "credits",
+        "status": status,
+        "start_time": start_time, "end_time": end_time,
+        "rewards": final_rewards,
+        "rewards_by_source": by_source,
+        "credit_revenue_totals": credit_totals,
+        "holder_tier_totals": {**holder_totals,
+                                "included": flags.get("holder_tier", False)},
+        "wage_subsidy": wage_totals,
+        "extract": extract_block,
+        "feature_flags": flags,
+        "tags": [status, "credits", settings.filter_tag],
+    }
+    if end_block is not None:
+        distribution["end_height"] = end_block
+
+    if flags.get("publish") and not dry_run:
+        await create_distribution_tx_post(
+            distribution, post_type=CREDIT_DISTRIBUTION_POST_TYPE
+        )
+    else:
+        click.echo("--no-publish / dry-run: skipping Aleph post")
+        preview = {k: v for k, v in distribution.items()
+                    if k != "rewards_by_source"}
+        click.echo(_json.dumps(preview, indent=2, default=str)[:4000])
 
 
 @click.command()
