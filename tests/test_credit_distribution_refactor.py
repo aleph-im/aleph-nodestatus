@@ -1,6 +1,11 @@
+import asyncio
+
 import pytest
 
-from aleph_nodestatus.credit_distribution import _distribute_expense
+from aleph_nodestatus.credit_distribution import (
+    _distribute_expense,
+    compute_rewards,
+)
 
 
 def _node(hash, score, stakers, resource_nodes=None):
@@ -38,12 +43,6 @@ def test_distribute_expense_execution_split():
     assert rewards["0xCRN1"] == pytest.approx(total_aleph * 0.60)
     assert rewards["0xCCN-n1"] == pytest.approx(total_aleph * 0.15)
     assert rewards["0xS1"] == pytest.approx(total_aleph * 0.20)
-
-
-import asyncio
-from unittest.mock import patch, AsyncMock
-
-from aleph_nodestatus.credit_distribution import compute_rewards
 
 
 def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
