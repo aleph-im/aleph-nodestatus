@@ -20,6 +20,22 @@ LOGGER = logging.getLogger(__name__)
 CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 
 
+def _shares_for(expense_type):
+    if expense_type == "storage":
+        return dict(
+            ccn_share=settings.credit_storage_ccn_share,
+            staker_share=settings.credit_storage_staker_share,
+            crn_share=0.0,
+            dev_share=settings.credit_dev_fund_share,
+        )
+    return dict(
+        ccn_share=settings.credit_execution_ccn_share,
+        staker_share=settings.credit_execution_staker_share,
+        crn_share=settings.credit_execution_crn_share,
+        dev_share=settings.credit_dev_fund_share,
+    )
+
+
 async def get_latest_successful_credit_distribution(sender=None):
     """Find the last credit distribution that had successful transfers."""
     if sender is None:
@@ -246,33 +262,27 @@ def _get_reward_address(node, web3=None):
     return reward or node["owner"]
 
 
-def _distribute_expense(expense_type, expense, nodes, resource_nodes,
-                         rewards, web3=None):
-    """
-    Distribute a single expense message using the current node state.
+def _distribute_expense(
+    expense_type, expense, nodes, resource_nodes, rewards,
+    web3=None,
+    *,
+    ccn_share: float,
+    staker_share: float,
+    crn_share: float = 0.0,
+    dev_share: float,
+):
+    """Distribute a single expense entry. Pure function: shares are explicit.
 
-    ALEPH cost per credit entry = credit["amount"] * expense["credit_price_aleph"]
-    (credit["price"] is the compute rate, NOT the ALEPH cost)
-
-    Mutates `rewards` in place.
-    Returns (storage_aleph, execution_aleph, dev_fund_aleph) totals.
+    Returns (storage_aleph, execution_aleph, dev_fund_aleph).
     """
     credit_price_aleph = expense.get("credit_price_aleph", 0)
     total_aleph = sum(
         credit["amount"] * credit_price_aleph
         for credit in expense.get("credits", [])
     )
+    dev_fund = total_aleph * dev_share
 
-    dev_fund = total_aleph * settings.credit_dev_fund_share
-
-    if expense_type == "storage":
-        ccn_share = settings.credit_storage_ccn_share
-        staker_share = settings.credit_storage_staker_share
-    else:
-        ccn_share = settings.credit_execution_ccn_share
-        staker_share = settings.credit_execution_staker_share
-
-        # CRN share to the specific CRN per credit
+    if expense_type == "execution":
         for credit in expense.get("credits", []):
             credit_aleph = credit["amount"] * credit_price_aleph
             node_id = credit.get("node_id")
@@ -280,16 +290,14 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
                 rnode = resource_nodes[node_id]
                 addr = _get_reward_address(rnode, web3)
                 rewards[addr] = (
-                    rewards.get(addr, 0)
-                    + credit_aleph * settings.credit_execution_crn_share
+                    rewards.get(addr, 0) + credit_aleph * crn_share
                 )
             elif node_id:
                 LOGGER.warning(
-                    f"CRN {node_id} not found in resource_nodes, "
-                    f"skipping CRN share"
+                    f"CRN {node_id} not found in resource_nodes, skipping"
                 )
 
-    # --- CCN pool (weighted by score) ---
+    # CCN pool (score-weighted)
     ccn_weights = {}
     for node_hash, node in nodes.items():
         if node["status"] != "active":
@@ -300,17 +308,16 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
                 "score": score,
                 "reward_address": _get_reward_address(node, web3),
             }
-
     total_ccn_score = sum(v["score"] for v in ccn_weights.values())
     ccn_pool = total_aleph * ccn_share
-
     if total_ccn_score > 0 and ccn_pool > 0:
         for info in ccn_weights.values():
-            share = info["score"] / total_ccn_score
-            addr = info["reward_address"]
-            rewards[addr] = rewards.get(addr, 0) + ccn_pool * share
+            rewards[info["reward_address"]] = (
+                rewards.get(info["reward_address"], 0)
+                + ccn_pool * info["score"] / total_ccn_score
+            )
 
-    # --- Staker pool ---
+    # Staker pool
     all_stakers = {}
     for node in nodes.values():
         if node["status"] != "active":
@@ -318,13 +325,12 @@ def _distribute_expense(expense_type, expense, nodes, resource_nodes,
         for addr, amount in node["stakers"].items():
             all_stakers[addr] = all_stakers.get(addr, 0) + amount
     total_staked = sum(all_stakers.values())
-
     staker_pool = total_aleph * staker_share
-
     if total_staked > 0 and staker_pool > 0:
         for addr, staked in all_stakers.items():
-            share = staked / total_staked
-            rewards[addr] = rewards.get(addr, 0) + staker_pool * share
+            rewards[addr] = (
+                rewards.get(addr, 0) + staker_pool * staked / total_staked
+            )
 
     if expense_type == "storage":
         return total_aleph, 0, dev_fund
@@ -400,7 +406,8 @@ async def _prepare_with_snapshots(api_server, start_time, end_time,
         _, nodes, resource_nodes = snapshots[idx]
 
         s, e, d = _distribute_expense(
-            exp_type, expense, nodes, resource_nodes, rewards, web3=web3
+            exp_type, expense, nodes, resource_nodes, rewards,
+            web3=web3, **_shares_for(exp_type),
         )
         total_storage += s
         total_execution += e
@@ -482,7 +489,8 @@ async def _prepare_with_state_machine(dbs, end_height, expenses, web3):
         while expense_idx < len(expenses) and expenses[expense_idx][0] <= height:
             exp_height, exp_type, expense = expenses[expense_idx]
             s, e, d = _distribute_expense(
-                exp_type, expense, nodes, resource_nodes, rewards, web3=web3
+                exp_type, expense, nodes, resource_nodes, rewards,
+                web3=web3, **_shares_for(exp_type),
             )
             total_storage += s
             total_execution += e
@@ -500,7 +508,8 @@ async def _prepare_with_state_machine(dbs, end_height, expenses, web3):
                 expense_idx += 1
                 continue
             s, e, d = _distribute_expense(
-                exp_type, expense, nodes, resource_nodes, rewards, web3=web3
+                exp_type, expense, nodes, resource_nodes, rewards,
+                web3=web3, **_shares_for(exp_type),
             )
             total_storage += s
             total_execution += e
