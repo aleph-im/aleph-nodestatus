@@ -139,19 +139,56 @@ for (symbol, token_addr) in settings.process_tokens:
 
 ### 5.2 Credit reward computation (`credit_distribution.py` refactor)
 
-Extract a pure function. When `include_holder_tier` is on, run the same computation twice — once over `content.expense` entries, once over `content.rewards` entries — and return both result dicts plus their totals so the audit post can attribute amounts to source. The merge for actual transfer happens later in §5.4.
+Each `aleph_credit_expense` message has the shape (canonical TypeScript interface for the execution variant; the storage variant is structurally identical with different per-line fields):
+
+```typescript
+interface ExecutionExpenseMessage {
+  start_date: number;
+  end_date:   number;
+  credits:    ExecutionExpenseLine[];          // real, paid credit entries
+  amount?:    number;                          // aggregate of credits[].amount
+  count?:     number;                          // len(credits)
+  credit_price_aleph?: number;
+  credit_price_usdc?:  number;
+  // @temporary: hold rewards
+  rewards?:        ExecutionExpenseLine[];     // holder-tier hosting (same per-item shape as credits)
+  rewards_amount?: number;                     // aggregate of rewards[].amount
+  rewards_count?:  number;                     // len(rewards)
+}
+```
+
+This object lives at `content.content.expense`. `rewards[]` is a sibling of `credits[]`, marked `@temporary` in the source — aligned with the holder-tier deprecation. Items inside `rewards[]` have the same fields as `credits[]` (`ref`, `amount`, `address`, plus `node_id`/`execution_id` for execution or `size` for storage). `rewards[]` is currently absent in production messages; we treat its absence as an empty list.
+
+`rewards_amount` and `rewards_count` are informational aggregates we don't depend on for math, but we **validate** them when present: if `sum(rewards[].amount) != rewards_amount` (within rounding) or `len(rewards) != rewards_count`, log a `WARN` and continue — the per-entry sum is authoritative.
+
+Extract a pure function. A single API fetch yields per-message data; from each message we derive **up to two entries** — one synthesized from `credits[]` (always) and one synthesized from `rewards[]` (only when `include_holder_tier` is on). The two streams feed `_distribute_expense()` separately so the audit post can attribute amounts to source. The merge for actual transfer happens later in §5.4.
 
 ```python
 async def compute_rewards(start_time, end_time, full_resync=False,
                           include_holder_tier=False, web3=None):
-    expense_entries = await fetch_credit_expenses(...)
+    msgs = await _fetch_expense_messages(start_time, end_time)
+
+    # One paginated fetch; split per-message into two synthetic expense entries.
+    expense_entries = []  # (height, type, {credit_price_aleph, credits: [...]})
+    holder_entries  = []  # (height, type, {credit_price_aleph, credits: rewards})
+    for m in msgs:
+        height, exp_type, expense = _parse(m)
+        if not expense:
+            continue
+        if expense.get("credits"):
+            expense_entries.append(
+                (height, exp_type, _project(expense, "credits"))
+            )
+        if include_holder_tier and expense.get("rewards"):
+            holder_entries.append(
+                (height, exp_type, _project(expense, "rewards"))
+            )
+
     expense_rewards, expense_totals = await _distribute(
         expense_entries, full_resync, web3
     )
-
     holder_rewards, holder_totals = ({}, _zero_totals())
     if include_holder_tier:
-        holder_entries = await fetch_credit_rewards(...)
         holder_rewards, holder_totals = await _distribute(
             holder_entries, full_resync, web3
         )
@@ -160,9 +197,18 @@ async def compute_rewards(start_time, end_time, full_resync=False,
         "credit_revenue": (expense_rewards, expense_totals),
         "holder_tier":    (holder_rewards, holder_totals),
     }
+
+
+def _project(expense, src_key):
+    """Build a synthetic expense object with the chosen list aliased as credits[].
+    Lets _distribute_expense() consume rewards[] entries unchanged."""
+    return {
+        "credit_price_aleph": expense.get("credit_price_aleph", 0),
+        "credits": expense.get(src_key, []),
+    }
 ```
 
-`fetch_credit_rewards()` reuses `_fetch_paginated_messages`, then reads `content.content.rewards` instead of `content.content.expense`. Each entry is yielded with the same `(height, "storage"|"execution", entry)` shape so `_distribute_expense()` consumes it unchanged. The math is identical: `credit_amount × credit_price_aleph` becomes a CRN/CCN/staker pool the same way. `_distribute(...)` is a thin wrapper that picks `_prepare_with_state_machine` or `_prepare_with_snapshots` based on `full_resync`.
+`_distribute(...)` is a thin wrapper that picks `_prepare_with_state_machine` or `_prepare_with_snapshots` based on `full_resync`. The math inside `_distribute_expense()` is unchanged — both streams go through the same CRN/CCN/staker split, same `credit_amount × credit_price_aleph` revenue calculation.
 
 The split percentages (`credit_storage_ccn_share`, `credit_execution_crn_share`, etc.) stay as-is; per the new tokenomics this is **60 CRN / 15 CCN / 20 stakers / 5 dev / 0 burn**. Existing settings already encode this; verify on implementation.
 
@@ -432,7 +478,7 @@ The cadence guard inside the script enforces the 10-day spacing; cron just gives
 - `test_credit_pipeline.py`
   - Merge + dust filter: addresses below threshold are excluded; per-source breakdown preserved
   - Feature flags: each off-permutation removes the expected key from the post
-  - Holder-tier path: `content.rewards` entries flow through the same `_distribute_expense()` math; result equals credit-revenue computed from same payload moved to `content.expense`
+  - Holder-tier path: `content.content.expense.rewards[]` entries flow through the same `_distribute_expense()` math via the `_project()` alias; result equals credit-revenue computed from the same payload swapped between `credits[]` and `rewards[]`
   - Pre-transfer assertion fires when owed > available
 
 **Integration:**
