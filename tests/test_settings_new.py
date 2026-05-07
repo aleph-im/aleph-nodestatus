@@ -8,6 +8,8 @@ def test_payment_processor_settings_defaults():
         "0x3a5cc6abd06b601f4654035d125f9dd2fc992c25"
     assert settings.uniswap_v3_quoter_address.lower() == \
         "0x61ffe014ba17989e743c5f6cb21bf9697530b21e"
+    assert settings.payment_processor_admin_address.lower() == \
+        "0xc870b0ca4b3d65f33e2a3c732ab3cd2ae555b14e"
 
 
 def test_token_list_default():

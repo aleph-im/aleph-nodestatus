@@ -309,7 +309,7 @@ async def process_credit_distribution(
             return
 
     web3 = get_web3()
-    admin_address = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    admin_address = settings.payment_processor_admin_address
     admin_account = None
     if flags.get("extract") and (act and not dry_run):
         pk = settings.payment_processor_admin_pkey or settings.ethereum_pkey

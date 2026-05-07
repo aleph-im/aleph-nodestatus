@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     # === AlephPaymentProcessor ===
     payment_processor_address: str = "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
     payment_processor_admin_pkey: str = ""
+    payment_processor_admin_address: str = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
     distribution_recipient: str = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
 
     # Tokens to process, in order. address(0) for ETH.
