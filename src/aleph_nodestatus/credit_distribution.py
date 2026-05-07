@@ -338,193 +338,257 @@ def _distribute_expense(
         return 0, total_aleph, dev_fund
 
 
-async def prepare_credit_distribution(dbs, end_height, start_time, end_time,
-                                       full_resync=False):
-    """
-    Distribute credit expenses using node state snapshots.
+async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
+    """Single paginated fetch of aleph_credit_expense messages."""
+    params = {
+        "msgType": "POST",
+        "contentTypes": "aleph_credit_expense",
+        "startDate": int(start_time),
+        "endDate": int(end_time),
+        "pagination": 500,
+        "page": 1,
+        "sort_order": "1",
+        "sort_by": "tx-time",
+    }
+    if sender:
+        params["addresses"] = sender
+    async with aiohttp.ClientSession() as session:
+        return await _fetch_paginated_messages(session, api_server, params)
 
-    By default, fetches published corechannel aggregate snapshots and
-    advances through them. With full_resync=True, replays the full state
-    machine from genesis instead.
+
+def _parse_message(msg):
+    """Return (height, expense_type, expense_dict) or (None, None, None)."""
+    height = _extract_eth_height(msg)
+    if height is None:
+        return None, None, None
+    content = msg.get("content", {}).get("content", {})
+    tags = content.get("tags", [])
+    expense = content.get("expense", {})
+    if not expense:
+        return None, None, None
+    if "type_storage" in tags:
+        return height, "storage", expense
+    if "type_execution" in tags:
+        return height, "execution", expense
+    return None, None, None
+
+
+def _project_expense(expense, src_key):
+    """Synthesize an expense with the chosen list aliased as credits[]."""
+    return {
+        "credit_price_aleph": expense.get("credit_price_aleph", 0),
+        "credits":            expense.get(src_key, []),
+    }
+
+
+def _zero_totals():
+    return {"storage_total_aleph": 0,
+            "execution_total_aleph": 0,
+            "dev_fund_total_aleph": 0}
+
+
+def _validate_rewards_aggregates(expense):
+    declared_count = expense.get("rewards_count")
+    declared_amount = expense.get("rewards_amount")
+    rewards = expense.get("rewards", [])
+    if declared_count is not None and declared_count != len(rewards):
+        LOGGER.warning(
+            f"rewards_count mismatch: declared={declared_count}, "
+            f"actual={len(rewards)}"
+        )
+    if declared_amount is not None:
+        actual = sum(r.get("amount", 0) for r in rewards)
+        if abs(actual - declared_amount) > 1:
+            LOGGER.warning(
+                f"rewards_amount mismatch: declared={declared_amount}, "
+                f"actual={actual}"
+            )
+
+
+def _apply_expense_to(rewards, totals, exp_type, expense,
+                      nodes, resource_nodes, web3):
+    s, e, d = _distribute_expense(
+        exp_type, expense, nodes, resource_nodes, rewards,
+        web3=web3, **_shares_for(exp_type),
+    )
+    totals["storage_total_aleph"]   += s
+    totals["execution_total_aleph"] += e
+    totals["dev_fund_total_aleph"]  += d
+
+
+async def compute_rewards(
+    start_time, end_time, full_resync=False,
+    include_holder_tier=False, sender=None,
+    dbs=None, end_height=None, web3=None,
+):
+    """Pure function: produce credit-revenue and optional holder-tier rewards.
 
     Returns:
-        Tuple of (rewards, total_storage_aleph, total_execution_aleph, total_dev_fund_aleph)
+        {"credit_revenue": (rewards_dict, totals_dict),
+         "holder_tier":    (rewards_dict, totals_dict)}
     """
     api_server = PublishMode.get_publish_api_server()
+    sender = sender or settings.credit_expense_sender
 
-    expenses = await fetch_credit_expenses(
-        api_server, start_time, end_time,
-        sender=settings.credit_expense_sender,
-    )
-
-    if not expenses:
+    msgs = await _fetch_expense_messages(api_server, start_time, end_time, sender)
+    if not msgs:
         LOGGER.warning("No credit expenses found in the given time range")
-        return {}, 0, 0, 0
+        return {
+            "credit_revenue": ({}, _zero_totals()),
+            "holder_tier":    ({}, _zero_totals()),
+        }
 
-    if full_resync:
-        web3 = get_web3()
-        return await _prepare_with_state_machine(
-            dbs, end_height, expenses, web3
-        )
-    else:
-        # web3 only needed for checksum validation, not required in snapshot mode
+    if web3 is None:
         try:
             web3 = get_web3()
         except Exception:
             web3 = None
-        return await _prepare_with_snapshots(
-            api_server, start_time, end_time, expenses, web3
+
+    if full_resync:
+        return await _compute_rewards_full_resync(
+            dbs, end_height, msgs, include_holder_tier, web3
         )
-
-
-async def _prepare_with_snapshots(api_server, start_time, end_time,
-                                    expenses, web3):
-    """Distribute using published corechannel aggregate snapshots."""
-    snapshots = await fetch_node_snapshots(
-        api_server, start_time, end_time
+    return await _compute_rewards_snapshots(
+        api_server, start_time, end_time, msgs, include_holder_tier, web3
     )
 
+
+async def _compute_rewards_snapshots(
+    api_server, start_time, end_time, msgs, include_holder_tier, web3
+):
+    snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
     if not snapshots:
         raise ValueError(
             "No node status snapshots found. "
             "Use --full-resync or ensure nodestatus is running."
         )
-
     snapshot_heights = [s[0] for s in snapshots]
 
-    rewards = {}
-    total_storage = 0
-    total_execution = 0
-    total_dev_fund = 0
+    credit_rewards, credit_totals = {}, _zero_totals()
+    holder_rewards, holder_totals = {}, _zero_totals()
 
-    for exp_height, exp_type, expense in expenses:
-        # Find the most recent snapshot at or before this expense's height
-        idx = bisect.bisect_right(snapshot_heights, exp_height) - 1
-        if idx < 0:
-            idx = 0  # Use earliest available snapshot
+    for msg in msgs:
+        height, exp_type, expense = _parse_message(msg)
+        if expense is None:
+            continue
 
+        idx = max(0, bisect.bisect_right(snapshot_heights, height) - 1)
         _, nodes, resource_nodes = snapshots[idx]
 
-        s, e, d = _distribute_expense(
-            exp_type, expense, nodes, resource_nodes, rewards,
-            web3=web3, **_shares_for(exp_type),
+        _apply_expense_to(
+            credit_rewards, credit_totals, exp_type,
+            _project_expense(expense, "credits"),
+            nodes, resource_nodes, web3,
         )
-        total_storage += s
-        total_execution += e
-        total_dev_fund += d
 
-    LOGGER.info(
-        f"Credit distribution (snapshots): "
-        f"{total_storage:.4f} ALEPH storage, "
-        f"{total_execution:.4f} ALEPH execution, "
-        f"{total_dev_fund:.4f} ALEPH dev fund (not distributed), "
-        f"{sum(rewards.values()):.4f} ALEPH total distributed"
-    )
+        if include_holder_tier and expense.get("rewards"):
+            _validate_rewards_aggregates(expense)
+            _apply_expense_to(
+                holder_rewards, holder_totals, exp_type,
+                _project_expense(expense, "rewards"),
+                nodes, resource_nodes, web3,
+            )
 
-    return rewards, total_storage, total_execution, total_dev_fund
+    return {
+        "credit_revenue": (credit_rewards, credit_totals),
+        "holder_tier":    (holder_rewards, holder_totals),
+    }
 
 
-async def _prepare_with_state_machine(dbs, end_height, expenses, web3):
-    """Distribute by replaying the full state machine from genesis."""
+async def _compute_rewards_full_resync(
+    dbs, end_height, msgs, include_holder_tier, web3
+):
+    """Identical math as snapshot mode but driven by the state machine."""
+    parsed = []
+    for msg in msgs:
+        height, exp_type, expense = _parse_message(msg)
+        if expense is not None:
+            parsed.append((height, exp_type, expense))
+    parsed.sort(key=lambda x: x[0])
+
     state_machine = NodesStatus()
-
     last_seen_txs = deque([], maxlen=100)
-
     iterators = [
-        prepare_items(
-            "balance-update",
+        prepare_items("balance-update",
             process_contract_history(
                 settings.ethereum_token_contract,
                 settings.ethereum_min_height,
-                last_seen=last_seen_txs,
-                db=dbs["erc20"],
-                fetch_from_db=True,
-            ),
-        ),
-        prepare_items(
-            "balance-update",
+                last_seen=last_seen_txs, db=dbs["erc20"], fetch_from_db=True)),
+        prepare_items("balance-update",
             process_balances_history(
                 settings.ethereum_min_height,
-                request_count=500,
-                db=dbs["balances"],
-            ),
-        ),
-        prepare_items(
-            "staking-update",
+                request_count=500, db=dbs["balances"])),
+        prepare_items("staking-update",
             process_message_history(
                 [settings.filter_tag],
                 [settings.node_post_type, "amend"],
                 settings.aleph_api_server,
-                yield_unconfirmed=False,
-                request_count=5000,
-                db=dbs["messages"],
-            ),
-        ),
-        prepare_items(
-            "score-update",
+                yield_unconfirmed=False, request_count=5000,
+                db=dbs["messages"])),
+        prepare_items("score-update",
             process_message_history(
                 [settings.filter_tag],
                 [settings.scores_post_type],
                 message_type="POST",
                 addresses=settings.scores_senders,
                 api_server=settings.aleph_api_server,
-                request_count=1000,
-                db=dbs["scores"],
-            ),
-        ),
+                request_count=1000, db=dbs["scores"])),
     ]
 
-    rewards = {}
-    total_storage = 0
-    total_execution = 0
-    total_dev_fund = 0
-    expense_idx = 0
-    nodes = None
-    resource_nodes = None
+    credit_rewards, credit_totals = {}, _zero_totals()
+    holder_rewards, holder_totals = {}, _zero_totals()
+    idx = 0
+    nodes = resource_nodes = None
 
     async for height, nodes, resource_nodes in state_machine.process(iterators):
-        if height > end_height:
+        if end_height and height > end_height:
             break
+        while idx < len(parsed) and parsed[idx][0] <= height:
+            _, exp_type, expense = parsed[idx]
+            _apply_expense_to(credit_rewards, credit_totals, exp_type,
+                              _project_expense(expense, "credits"),
+                              nodes, resource_nodes, web3)
+            if include_holder_tier and expense.get("rewards"):
+                _validate_rewards_aggregates(expense)
+                _apply_expense_to(holder_rewards, holder_totals, exp_type,
+                                  _project_expense(expense, "rewards"),
+                                  nodes, resource_nodes, web3)
+            idx += 1
 
-        while expense_idx < len(expenses) and expenses[expense_idx][0] <= height:
-            exp_height, exp_type, expense = expenses[expense_idx]
-            s, e, d = _distribute_expense(
-                exp_type, expense, nodes, resource_nodes, rewards,
-                web3=web3, **_shares_for(exp_type),
-            )
-            total_storage += s
-            total_execution += e
-            total_dev_fund += d
-            expense_idx += 1
-
-    if nodes is not None:
-        while expense_idx < len(expenses):
-            exp_height, exp_type, expense = expenses[expense_idx]
-            if exp_height > end_height:
-                LOGGER.warning(
-                    f"Expense at height {exp_height} is beyond end_height "
-                    f"{end_height}, skipping"
-                )
-                expense_idx += 1
-                continue
-            s, e, d = _distribute_expense(
-                exp_type, expense, nodes, resource_nodes, rewards,
-                web3=web3, **_shares_for(exp_type),
-            )
-            total_storage += s
-            total_execution += e
-            total_dev_fund += d
-            expense_idx += 1
+    while idx < len(parsed) and nodes is not None:
+        h, exp_type, expense = parsed[idx]
+        if end_height and h > end_height:
+            idx += 1; continue
+        _apply_expense_to(credit_rewards, credit_totals, exp_type,
+                          _project_expense(expense, "credits"),
+                          nodes, resource_nodes, web3)
+        if include_holder_tier and expense.get("rewards"):
+            _validate_rewards_aggregates(expense)
+            _apply_expense_to(holder_rewards, holder_totals, exp_type,
+                              _project_expense(expense, "rewards"),
+                              nodes, resource_nodes, web3)
+        idx += 1
 
     if nodes is None:
         raise ValueError("No node state available")
 
-    LOGGER.info(
-        f"Credit distribution (full resync): "
-        f"{total_storage:.4f} ALEPH storage, "
-        f"{total_execution:.4f} ALEPH execution, "
-        f"{total_dev_fund:.4f} ALEPH dev fund (not distributed), "
-        f"{sum(rewards.values()):.4f} ALEPH total distributed"
-    )
+    return {
+        "credit_revenue": (credit_rewards, credit_totals),
+        "holder_tier":    (holder_rewards, holder_totals),
+    }
 
-    return rewards, total_storage, total_execution, total_dev_fund
+
+async def prepare_credit_distribution(
+    dbs, end_height, start_time, end_time, full_resync=False
+):
+    result = await compute_rewards(
+        start_time, end_time, full_resync=full_resync,
+        include_holder_tier=False, dbs=dbs, end_height=end_height,
+    )
+    rewards, totals = result["credit_revenue"]
+    return (
+        rewards,
+        totals["storage_total_aleph"],
+        totals["execution_total_aleph"],
+        totals["dev_fund_total_aleph"],
+    )
