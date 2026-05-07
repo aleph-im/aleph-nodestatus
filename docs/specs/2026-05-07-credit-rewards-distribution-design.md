@@ -161,54 +161,58 @@ This object lives at `content.content.expense`. `rewards[]` is a sibling of `cre
 
 `rewards_amount` and `rewards_count` are informational aggregates we don't depend on for math, but we **validate** them when present: if `sum(rewards[].amount) != rewards_amount` (within rounding) or `len(rewards) != rewards_count`, log a `WARN` and continue — the per-entry sum is authoritative.
 
-Extract a pure function. A single API fetch yields per-message data; from each message we derive **up to two entries** — one synthesized from `credits[]` (always) and one synthesized from `rewards[]` (only when `include_holder_tier` is on). The two streams feed `_distribute_expense()` separately so the audit post can attribute amounts to source. The merge for actual transfer happens later in §5.4.
+Extract a pure function. **Everything is walked once**: one paginated API fetch for messages, one for snapshots (or one state-machine replay on `--full-resync`), one bisect/snapshot lookup per message. Inside the per-message step we call `_distribute_expense()` once for `credits[]` (always) and once more for `rewards[]` (only when `include_holder_tier` is on) — both calls reuse the same snapshot, accumulating into separate reward dicts so the audit post keeps source attribution.
 
 ```python
 async def compute_rewards(start_time, end_time, full_resync=False,
                           include_holder_tier=False, web3=None):
-    msgs = await _fetch_expense_messages(start_time, end_time)
+    msgs = await _fetch_expense_messages(start_time, end_time)   # 1 paginated fetch
+    snapshots = await fetch_node_snapshots(...)                  # 1 paginated fetch
+    # or: state_machine walk once if full_resync
 
-    # One paginated fetch; split per-message into two synthetic expense entries.
-    expense_entries = []  # (height, type, {credit_price_aleph, credits: [...]})
-    holder_entries  = []  # (height, type, {credit_price_aleph, credits: rewards})
+    credit_rewards = {}
+    holder_rewards = {}
+    credit_totals  = Totals()    # storage, execution, dev_fund
+    holder_totals  = Totals()
+
     for m in msgs:
         height, exp_type, expense = _parse(m)
         if not expense:
             continue
-        if expense.get("credits"):
-            expense_entries.append(
-                (height, exp_type, _project(expense, "credits"))
-            )
-        if include_holder_tier and expense.get("rewards"):
-            holder_entries.append(
-                (height, exp_type, _project(expense, "rewards"))
-            )
+        nodes, resource_nodes = lookup_snapshot(snapshots, height)   # 1 bisect
 
-    expense_rewards, expense_totals = await _distribute(
-        expense_entries, full_resync, web3
-    )
-    holder_rewards, holder_totals = ({}, _zero_totals())
-    if include_holder_tier:
-        holder_rewards, holder_totals = await _distribute(
-            holder_entries, full_resync, web3
-        )
+        if expense.get("credits"):
+            s, e, d = _distribute_expense(
+                exp_type, _project(expense, "credits"),
+                nodes, resource_nodes, credit_rewards, web3=web3,
+            )
+            credit_totals.add(exp_type, s, e, d)
+
+        if include_holder_tier and expense.get("rewards"):
+            s, e, d = _distribute_expense(
+                exp_type, _project(expense, "rewards"),
+                nodes, resource_nodes, holder_rewards, web3=web3,
+            )
+            holder_totals.add(exp_type, s, e, d)
 
     return {
-        "credit_revenue": (expense_rewards, expense_totals),
+        "credit_revenue": (credit_rewards, credit_totals),
         "holder_tier":    (holder_rewards, holder_totals),
     }
 
 
 def _project(expense, src_key):
-    """Build a synthetic expense object with the chosen list aliased as credits[].
-    Lets _distribute_expense() consume rewards[] entries unchanged."""
+    """Alias the chosen list (credits or rewards) as 'credits' so
+    _distribute_expense() consumes either stream unchanged."""
     return {
         "credit_price_aleph": expense.get("credit_price_aleph", 0),
-        "credits": expense.get(src_key, []),
+        "credits":            expense.get(src_key, []),
     }
 ```
 
-`_distribute(...)` is a thin wrapper that picks `_prepare_with_state_machine` or `_prepare_with_snapshots` based on `full_resync`. The math inside `_distribute_expense()` is unchanged — both streams go through the same CRN/CCN/staker split, same `credit_amount × credit_price_aleph` revenue calculation.
+For `--full-resync` mode (state-machine replay), the same single-pass principle applies: the state machine yields `(height, nodes, resource_nodes)` tuples; as the height crosses each pending expense we apply both `credits[]` and (if enabled) `rewards[]` against the same `nodes` / `resource_nodes` snapshot. The state machine is walked exactly once regardless of the holder-tier flag.
+
+The math inside `_distribute_expense()` is unchanged — both streams go through the same CRN/CCN/staker split, same `credit_amount × credit_price_aleph` revenue calculation. Cost when holder-tier is **on**: one extra in-memory loop over `rewards[]` entries per message; no extra API calls, no extra snapshot lookups.
 
 The split percentages (`credit_storage_ccn_share`, `credit_execution_crn_share`, etc.) stay as-is; per the new tokenomics this is **60 CRN / 15 CCN / 20 stakers / 5 dev / 0 burn**. Existing settings already encode this; verify on implementation.
 
