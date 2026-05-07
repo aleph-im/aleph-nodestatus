@@ -78,3 +78,39 @@ def test_simulate_process_revert_returns_message(monkeypatch):
         contract_logic_error_cls=ContractLogicError,
     )
     assert "InsufficientOutput" in err
+
+
+from aleph_nodestatus.payment_processor import execute_process
+
+
+def test_execute_process_signs_and_sends(monkeypatch):
+    w3 = MagicMock()
+    w3.eth.get_transaction_count.return_value = 7
+    w3.to_wei.return_value = 1_000_000_000
+    w3.eth.get_block.return_value.baseFeePerGas = 5_000_000_000
+
+    fake_built = {"chainId": 1, "nonce": 7}
+    processor = MagicMock()
+    processor.functions.process.return_value.build_transaction.return_value = fake_built
+
+    acct = MagicMock()
+    acct.address = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    signed = MagicMock()
+    signed.rawTransaction = b"\xde\xad"
+    acct.sign_transaction.return_value = signed
+
+    w3.eth.send_raw_transaction.return_value.hex.return_value = "0xfeedbeef"
+    w3.eth.wait_for_transaction_receipt.return_value = {
+        "status": 1, "transactionHash": MagicMock(hex=lambda: "0xfeedbeef"),
+    }
+
+    result = execute_process(
+        w3, processor, account=acct,
+        token="0xUSDC", amount_in=1_000_000, min_out=999_000, ttl=1800,
+    )
+
+    assert result["tx_hash"] == "0xfeedbeef"
+    assert result["status"] == 1
+    processor.functions.process.assert_called_once_with(
+        "0xUSDC", 1_000_000, 999_000, 1800
+    )

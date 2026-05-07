@@ -88,3 +88,35 @@ def simulate_process(
         return str(e)
     except Exception as e:
         return f"unexpected error during simulate: {e!r}"
+
+
+def execute_process(
+    w3, processor, account,
+    token: str, amount_in: int, min_out: int, ttl: int,
+    receipt_timeout: int = 300,
+) -> dict:
+    """Sign and broadcast the process() tx, wait for receipt."""
+    nonce = w3.eth.get_transaction_count(account.address)
+    latest = w3.eth.get_block("latest")
+    base_fee = latest.baseFeePerGas
+    max_priority = w3.to_wei(1, "gwei")
+    max_fee = 5 * base_fee + max_priority
+
+    tx = processor.functions.process(token, amount_in, min_out, ttl)
+    tx = tx.build_transaction({
+        "chainId": settings.ethereum_chain_id,
+        "gas": 500_000,
+        "nonce": nonce,
+        "maxFeePerGas": max_fee,
+        "maxPriorityFeePerGas": max_priority,
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction).hex()
+    LOGGER.info(f"process() tx broadcast: {tx_hash}")
+    receipt = w3.eth.wait_for_transaction_receipt(
+        tx_hash, timeout=receipt_timeout
+    )
+    return {
+        "tx_hash": tx_hash,
+        "status":  int(receipt["status"]),
+    }
