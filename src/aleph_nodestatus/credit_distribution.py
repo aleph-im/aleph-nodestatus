@@ -559,3 +559,13 @@ async def prepare_credit_distribution(
         totals["execution_total_aleph"],
         totals["dev_fund_total_aleph"],
     )
+
+
+def should_skip_run(last_end, now, min_interval, force=False):
+    """Return True if we should skip the run because the min interval
+    hasn't elapsed since the last successful distribution."""
+    if force:
+        return False
+    if not last_end:
+        return False
+    return (now - last_end) < min_interval
