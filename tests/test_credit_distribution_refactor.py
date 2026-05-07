@@ -76,3 +76,84 @@ def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
     assert credit_rewards == {}
     assert holder_rewards == {}
     assert credit_totals["storage_total_aleph"] == 0
+
+
+def test_compute_rewards_holder_tier_processes_rewards_field(monkeypatch):
+    expense = {
+        "credit_price_aleph": 0.001,
+        "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
+        "rewards": [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
+        "rewards_amount": 500,
+        "rewards_count": 1,
+    }
+    msg = {
+        "item_hash": "h1",
+        "confirmations": [{"chain": "ETH", "height": 100}],
+        "content": {"content": {
+            "tags": ["credit_expense", "type_execution"],
+            "expense": expense,
+        }},
+    }
+
+    async def fake_fetch_msgs(*a, **kw): return [msg]
+    async def fake_fetch_snaps(*a, **kw):
+        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+                                   resource_nodes=["r1"])},
+                     {"r1": _rnode("r1", 0.9, "0xCRN1")})]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+
+    result = asyncio.run(compute_rewards(
+        start_time=1.0, end_time=2.0,
+        include_holder_tier=True,
+    ))
+
+    credit, credit_totals = result["credit_revenue"]
+    holder, holder_totals = result["holder_tier"]
+
+    assert credit_totals["execution_total_aleph"] == pytest.approx(1.0)
+    assert holder_totals["execution_total_aleph"] == pytest.approx(0.5)
+    assert credit["0xCRN1"] == pytest.approx(0.60)
+    assert holder["0xCRN1"] == pytest.approx(0.30)
+
+
+def test_compute_rewards_holder_tier_off_ignores_rewards_field(monkeypatch):
+    expense = {
+        "credit_price_aleph": 0.001,
+        "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
+        "rewards": [{"amount": 500,  "node_id": "r1", "address": "0xH1"}],
+    }
+    msg = {
+        "item_hash": "h1",
+        "confirmations": [{"chain": "ETH", "height": 100}],
+        "content": {"content": {
+            "tags": ["credit_expense", "type_execution"],
+            "expense": expense,
+        }},
+    }
+    async def fake_fetch_msgs(*a, **kw): return [msg]
+    async def fake_fetch_snaps(*a, **kw):
+        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+                                   resource_nodes=["r1"])},
+                     {"r1": _rnode("r1", 0.9, "0xCRN1")})]
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+    result = asyncio.run(compute_rewards(
+        start_time=1.0, end_time=2.0,
+        include_holder_tier=False,
+    ))
+    assert result["holder_tier"][0] == {}
+    assert result["holder_tier"][1]["execution_total_aleph"] == 0
