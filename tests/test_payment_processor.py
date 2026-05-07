@@ -120,7 +120,8 @@ from aleph_nodestatus.payment_processor import extract_aleph
 
 
 def _mk_swap_config(v, t="0x000000000000000000000000000000000000abCd"):
-    return {"v": v, "t": t, "v3": b"\xde\xad", "v2": [], "v4": []}
+    # Match the on-chain SwapConfig struct shape: (v, t, v2, v3, v4)
+    return (v, t, [], b"\xde\xad", [])
 
 
 def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):

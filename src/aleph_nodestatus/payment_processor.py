@@ -147,8 +147,7 @@ def _balance_of(w3, contract_address, token_address):
 
 
 def _swap_config_to_dict(swap_config_tuple):
-    if isinstance(swap_config_tuple, dict):
-        return swap_config_tuple
+    """Map ABI-decoded tuple to a dict the quoter helper understands."""
     v, t, v2, v3, v4 = swap_config_tuple
     return {"v": v, "t": t, "v2": list(v2), "v3": bytes(v3), "v4": list(v4)}
 
