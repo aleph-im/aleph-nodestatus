@@ -126,3 +126,33 @@ def split_subsidy(
         unallocated += staker_pool
 
     return rewards, unallocated
+
+
+def compute_subsidy(
+    start_time: float,
+    end_time: float,
+    nodes: dict,
+    resource_nodes: dict,
+    web3=None,
+) -> Tuple[Dict[str, float], dict]:
+    """Compute the wage subsidy for [start_time, end_time] and split it.
+
+    Returns (rewards_by_address, totals) where totals contains:
+        period_total_aleph, unallocated_aleph, start_t_months, end_t_months,
+        split={ccn, crn, stakers}.
+    """
+    period_total = compute_period_subsidy(start_time, end_time)
+    rewards, unallocated = split_subsidy(period_total, nodes, resource_nodes, web3)
+
+    totals = {
+        "start_t_months":     months_since_start(start_time),
+        "end_t_months":       months_since_start(end_time),
+        "period_total_aleph": period_total,
+        "unallocated_aleph":  unallocated,
+        "split": {
+            "ccn":     period_total * settings.wage_ccn_share,
+            "crn":     period_total * settings.wage_crn_share,
+            "stakers": period_total * settings.wage_staker_share,
+        },
+    }
+    return rewards, totals

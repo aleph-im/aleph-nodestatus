@@ -138,3 +138,27 @@ def test_split_subsidy_score_weighted_ccn():
     rewards, _ = split_subsidy(600.0, nodes, rnodes)
     assert rewards["0xCCN1"] == pytest.approx(200 * 1.0 / 1.5)
     assert rewards["0xCCN2"] == pytest.approx(200 * 0.5 / 1.5)
+
+
+from aleph_nodestatus.wage_subsidy import compute_subsidy
+
+
+def test_compute_subsidy_returns_rewards_totals_unallocated():
+    settings.wage_start_date = "2026-04-01T00:00:00+00:00"
+    start = parse_wage_start()
+    end = start + 30 * 86400
+    nodes = {"n1": _node("n1", "active", 0.9, "0xCCN1",
+                          stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+
+    rewards, totals = compute_subsidy(start, end, nodes, rnodes)
+
+    period_total = 825_000
+    assert totals["period_total_aleph"] == pytest.approx(period_total)
+    assert totals["unallocated_aleph"]  == pytest.approx(0.0)
+    assert totals["start_t_months"]     == pytest.approx(0.0)
+    assert totals["end_t_months"]       == pytest.approx(1.0)
+    assert totals["split"]["ccn"]       == pytest.approx(period_total / 3)
+    assert totals["split"]["crn"]       == pytest.approx(period_total / 3)
+    assert totals["split"]["stakers"]   == pytest.approx(period_total / 3)
+    assert sum(rewards.values()) == pytest.approx(period_total)
