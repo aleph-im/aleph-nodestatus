@@ -138,61 +138,6 @@ def _extract_eth_height(msg):
     return height
 
 
-async def fetch_credit_expenses(api_server, start_time, end_time, sender=None):
-    """
-    Fetch aleph_credit_expense messages from the Aleph API.
-
-    Returns:
-        List of (height, "storage"|"execution", expense_dict) sorted by height.
-        Messages without ETH confirmation are skipped.
-    """
-    expenses = []
-
-    params = {
-        "msgType": "POST",
-        "contentTypes": "aleph_credit_expense",
-        "startDate": int(start_time),
-        "endDate": int(end_time),
-        "pagination": 500,
-        "page": 1,
-        "sort_order": "1",
-        "sort_by": "tx-time",
-    }
-
-    if sender:
-        params["addresses"] = sender
-
-    async with aiohttp.ClientSession() as session:
-        messages = await _fetch_paginated_messages(session, api_server, params)
-
-    for msg in messages:
-        height = _extract_eth_height(msg)
-        if height is None:
-            LOGGER.debug(f"Skipping unconfirmed expense {msg['item_hash']}")
-            continue
-
-        content = msg.get("content", {}).get("content", {})
-        tags = content.get("tags", [])
-        expense = content.get("expense", {})
-
-        if not expense:
-            continue
-
-        if "type_storage" in tags:
-            expenses.append((height, "storage", expense))
-        elif "type_execution" in tags:
-            expenses.append((height, "execution", expense))
-
-    expenses.sort(key=lambda x: x[0])
-    storage_count = sum(1 for e in expenses if e[1] == "storage")
-    execution_count = sum(1 for e in expenses if e[1] == "execution")
-    LOGGER.info(
-        f"Fetched {storage_count} storage and "
-        f"{execution_count} execution expense messages"
-    )
-    return expenses
-
-
 async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     """
     Fetch historical corechannel aggregate snapshots for the period.
@@ -444,13 +389,34 @@ async def compute_rewards(
         except Exception:
             web3 = None
 
+    if full_resync and end_height is None:
+        raise ValueError(
+            "end_height is required when full_resync=True (state-machine "
+            "drain depends on a known upper bound)"
+        )
+
     if full_resync:
-        return await _compute_rewards_full_resync(
+        result = await _compute_rewards_full_resync(
             dbs, end_height, msgs, include_holder_tier, web3
         )
-    return await _compute_rewards_snapshots(
-        api_server, start_time, end_time, msgs, include_holder_tier, web3
+    else:
+        result = await _compute_rewards_snapshots(
+            api_server, start_time, end_time, msgs, include_holder_tier, web3
+        )
+
+    credit_totals = result["credit_revenue"][1]
+    holder_totals = result["holder_tier"][1]
+    LOGGER.info(
+        "compute_rewards: revenue=%.4f storage / %.4f execution / %.4f dev | "
+        "holder=%.4f storage / %.4f execution / %.4f dev",
+        credit_totals["storage_total_aleph"],
+        credit_totals["execution_total_aleph"],
+        credit_totals["dev_fund_total_aleph"],
+        holder_totals["storage_total_aleph"],
+        holder_totals["execution_total_aleph"],
+        holder_totals["dev_fund_total_aleph"],
     )
+    return result
 
 
 async def _compute_rewards_snapshots(
@@ -541,7 +507,7 @@ async def _compute_rewards_full_resync(
     nodes = resource_nodes = None
 
     async for height, nodes, resource_nodes in state_machine.process(iterators):
-        if end_height and height > end_height:
+        if end_height is not None and height > end_height:
             break
         while idx < len(parsed) and parsed[idx][0] <= height:
             _, exp_type, expense = parsed[idx]
@@ -557,8 +523,9 @@ async def _compute_rewards_full_resync(
 
     while idx < len(parsed) and nodes is not None:
         h, exp_type, expense = parsed[idx]
-        if end_height and h > end_height:
-            idx += 1; continue
+        if end_height is not None and h > end_height:
+            idx += 1
+            continue
         _apply_expense_to(credit_rewards, credit_totals, exp_type,
                           _project_expense(expense, "credits"),
                           nodes, resource_nodes, web3)
