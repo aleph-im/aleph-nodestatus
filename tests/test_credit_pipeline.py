@@ -175,3 +175,61 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
         assert "period_total_aleph" in result.output
     finally:
         settings.wage_start_date = original
+
+
+def test_holder_tier_safety_aborts_when_balance_short(monkeypatch):
+    """When holder_tier rewards exceed available ALEPH at the recipient,
+    the run aborts with a non-zero exit code.
+    """
+    import json as _json
+    expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
+    # Inject rewards[] into the fixture so holder_tier path produces rewards
+    expense_msg["message"]["content"]["content"]["expense"]["rewards"] = [
+        {"amount": 10_000_000, "node_id": "test-crn-1",
+         "address": "0xH1"},
+    ]
+    snapshot = _json.loads((FIX / "snapshot.json").read_text())
+
+    async def fake_fetch_msgs(*a, **kw):
+        return [expense_msg["message"]]
+
+    async def fake_fetch_snaps(*a, **kw):
+        nodes = {n["hash"]: n for n in snapshot["nodes"]}
+        rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
+        return [(snapshot["height"], nodes, rnodes)]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+
+    import aleph_nodestatus.commands as cmd_module
+    monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+
+    fake_web3 = MagicMock()
+    fake_web3.to_checksum_address = lambda x: x
+    fake_web3.eth.get_balance.return_value = 0
+    monkeypatch.setattr(
+        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+    )
+
+    # ALEPH balance at the distribution recipient: very low — safety must fire
+    fake_token = MagicMock()
+    fake_token.functions.balanceOf.return_value.call.return_value = 1  # 1 wei
+    monkeypatch.setattr(
+        "aleph_nodestatus.ethereum.get_token_contract",
+        lambda w3: fake_token,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(distribute_credits, [
+        "--act", "--no-extract", "--enable-holder-tier", "--no-wage",
+        "--start-time", "1778050000",
+        "--end-time",   "1778100000",
+    ])
+    assert result.exit_code != 0, result.output
+    assert "ABORT" in result.output

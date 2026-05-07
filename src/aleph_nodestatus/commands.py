@@ -427,7 +427,7 @@ async def process_credit_distribution(
                 f"ABORT: owed {owed} ALEPH > balance {bal} at "
                 f"{settings.distribution_recipient}"
             )
-            return
+            sys.exit(1)
 
     # === Step 5: transfer (or simulate) ===
     is_testnet = PublishMode.is_testnet()
