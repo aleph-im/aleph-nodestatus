@@ -165,11 +165,16 @@ def extract_aleph(
     dry_run: bool = False,
     transfer_enabled: bool = True,
     aleph_address: Optional[str] = None,
+    slippage_bps: int = None,
 ) -> dict:
     """Run process() per token in settings.process_tokens. Returns the
     extract block for the audit post.
     """
     aleph_address = aleph_address or _aleph_token_address()
+    effective_slippage = (
+        slippage_bps if slippage_bps is not None
+        else settings.process_slippage_bps
+    )
     out = {"tokens": [], "errors": []}
 
     for symbol, token in settings.process_tokens:
@@ -198,7 +203,7 @@ def extract_aleph(
                 cfg = _swap_config_to_dict(swap_config)
                 expected_out = quote_amount_out(quoter, cfg, balance)
                 min_out = apply_slippage(
-                    expected_out, settings.process_slippage_bps
+                    expected_out, effective_slippage
                 )
             except Exception as e:
                 entry["error"] = f"quote_failed: {e!r}"

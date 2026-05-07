@@ -269,7 +269,7 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 async def process_credit_distribution(
     start_time, end_time, *,
     act=False, dry_run=False, force=False,
-    flags=None, reward_sender=None, full_resync=False,
+    flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
     from .credit_distribution import (
         compute_rewards, should_skip_run, fetch_node_snapshots,
@@ -331,6 +331,10 @@ async def process_credit_distribution(
             from_address=admin_address,
             dry_run=dry_run or not flags.get("transfer"),
             transfer_enabled=flags.get("transfer"),
+            slippage_bps=(
+                slippage_bps if slippage_bps is not None
+                else settings.process_slippage_bps
+            ),
         )
 
     # === Step 2: credit_revenue + holder_tier rewards ===
@@ -526,9 +530,6 @@ def distribute_credits(verbose, act, testnet, dry_run, force,
         act=act, dry_run=dry_run,
     )
 
-    if slippage_bps is not None:
-        settings.process_slippage_bps = slippage_bps
-
     mode = (
         "DRY-RUN" if dry_run else
         "TESTNET (calculation)" if testnet else
@@ -541,7 +542,8 @@ def distribute_credits(verbose, act, testnet, dry_run, force,
     asyncio.run(process_credit_distribution(
         start_time=start_time, end_time=end_time,
         act=act, dry_run=dry_run, force=force,
-        flags=flags, reward_sender=reward_sender,
+        flags=flags, slippage_bps=slippage_bps,
+        reward_sender=reward_sender,
         full_resync=full_resync,
     ))
 

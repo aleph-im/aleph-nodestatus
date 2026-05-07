@@ -164,6 +164,44 @@ def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
         assert entry["simulated_only"] is True
 
 
+def test_extract_aleph_slippage_bps_override(monkeypatch):
+    """Per-run slippage_bps override is passed to apply_slippage, not mutated."""
+    w3 = MagicMock()
+    processor = MagicMock()
+    quoter = MagicMock()
+    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+    quoter.functions.quoteExactInput.return_value.call.return_value = (
+        10_000_000, [0], [0], 0
+    )
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    # Snapshot original value
+    from aleph_nodestatus.settings import settings
+    original = settings.process_slippage_bps
+
+    result = extract_aleph(
+        w3, processor, quoter, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        slippage_bps=500,   # 5% — different from default
+    )
+
+    # Side-effect free: settings unchanged
+    assert settings.process_slippage_bps == original
+    # USDC entry uses 5% slippage: min_out = 10_000_000 * 9500 / 10000 = 9_500_000
+    usdc_entry = next(e for e in result["tokens"] if e["symbol"] == "USDC")
+    assert int(usdc_entry["min_out"]) == 9_500_000
+
+
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
     w3 = MagicMock()
     processor = MagicMock()
