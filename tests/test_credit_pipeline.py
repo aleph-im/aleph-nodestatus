@@ -1,0 +1,114 @@
+"""End-to-end dry-run integration test against recorded fixtures.
+
+Mocks the high-level fetchers (expense messages, node snapshots), the on-chain
+process() extraction, and the Aleph post. Asserts that --dry-run produces no
+side effects and emits a DRY-RUN summary.
+"""
+
+# plyvel stub for environments without the native library; safe no-op
+# elsewhere. See payment_processor / commands plyvel notes.
+import sys
+import types
+
+if "plyvel" not in sys.modules:
+    _plyvel_stub = types.ModuleType("plyvel")
+    _plyvel_stub.DB = lambda *a, **kw: None  # type: ignore[attr-defined]
+    sys.modules["plyvel"] = _plyvel_stub
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from click.testing import CliRunner
+
+from aleph_nodestatus.commands import distribute_credits
+
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def patched_pipeline(monkeypatch):
+    """Patch external I/O so the orchestrator runs end-to-end in-memory."""
+    expense_msg = json.loads((FIX / "expense_execution.json").read_text())
+    snapshot = json.loads((FIX / "snapshot.json").read_text())
+
+    async def fake_fetch_msgs(*a, **kw):
+        return [expense_msg["message"]]
+
+    async def fake_fetch_snaps(*a, **kw):
+        nodes = {n["hash"]: n for n in snapshot["nodes"]}
+        rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
+        return [(snapshot["height"], nodes, rnodes)]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+
+    # Stub get_dbs so we don't open the on-disk LevelDB.
+    import aleph_nodestatus.commands as cmd_module
+    monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+
+    # Stub web3 — no live RPC available in the test env.
+    fake_web3 = MagicMock()
+    fake_web3.to_checksum_address = lambda x: x
+    fake_web3.eth.get_balance.return_value = 0
+    monkeypatch.setattr(
+        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+    )
+
+    # Track side effects
+    posts = []
+    transfers = []
+
+    async def fake_post(*a, **kw):
+        posts.append((a, kw))
+
+    async def fake_transfer(*a, **kw):
+        transfers.append((a, kw))
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.commands.create_distribution_tx_post",
+        fake_post,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.commands.transfer_tokens",
+        fake_transfer,
+    )
+
+    return {"posts": posts, "transfers": transfers}
+
+
+def test_dry_run_does_not_post_or_transfer(patched_pipeline):
+    """--dry-run runs every computation step but skips posts + transfers."""
+    runner = CliRunner()
+    result = runner.invoke(distribute_credits, [
+        "--dry-run", "--no-extract",
+        "--start-time", "1778050000",
+        "--end-time",   "1778100000",
+    ])
+    assert result.exit_code == 0, result.output
+    assert patched_pipeline["posts"] == []
+    assert patched_pipeline["transfers"] == []
+    assert "DRY-RUN" in result.output
+
+
+def test_dry_run_includes_wage_and_credit_in_summary(patched_pipeline):
+    """The summary printed in dry-run mode contains both per-stream totals."""
+    runner = CliRunner()
+    result = runner.invoke(distribute_credits, [
+        "--dry-run", "--no-extract",
+        "--start-time", "1778050000",
+        "--end-time",   "1778100000",
+    ])
+    assert result.exit_code == 0, result.output
+    # The summary preview JSON should mention these top-level keys
+    assert "wage_subsidy" in result.output
+    assert "credit_revenue_totals" in result.output
+    assert "feature_flags" in result.output
