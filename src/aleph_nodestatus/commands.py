@@ -272,7 +272,7 @@ async def process_credit_distribution(
     flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
     from .credit_distribution import (
-        compute_rewards, should_skip_run, fetch_node_snapshots,
+        compute_rewards, should_skip_run, fetch_node_snapshots, zero_totals,
     )
     from .payment_processor import (
         extract_aleph, get_processor_contract, get_quoter_contract,
@@ -347,9 +347,6 @@ async def process_credit_distribution(
         )
 
     # === Step 2: credit_revenue + holder_tier rewards ===
-    zero_totals = lambda: {"storage_total_aleph": 0,
-                            "execution_total_aleph": 0,
-                            "dev_fund_total_aleph": 0}
     streams = {
         "credit_revenue": ({}, zero_totals()),
         "holder_tier":    ({}, zero_totals()),
@@ -379,6 +376,11 @@ async def process_credit_distribution(
         api_server = PublishMode.get_publish_api_server()
         snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
         if snapshots:
+            # Design choice: use the most recent snapshot as the canonical
+            # weighting for the whole period. Intermediate node/staker state
+            # changes within the window are intentionally collapsed — the
+            # wage subsidy is a CCN/CRN/staker pool split, not a per-block
+            # reward, so the latest snapshot is treated as authoritative.
             _, nodes, resource_nodes = snapshots[-1]
             wage_rewards, wage_totals = compute_subsidy(
                 start_time, end_time, nodes, resource_nodes, web3=web3,

@@ -37,9 +37,9 @@ def quote_amount_out(quoter, swap_config: dict, amount_in: int) -> int:
 
 @lru_cache(maxsize=2)
 def _load_abi(name: str):
-    return json.load(
-        open(os.path.join(Path(__file__).resolve().parent, "abi", f"{name}.json"))
-    )
+    path = os.path.join(Path(__file__).resolve().parent, "abi", f"{name}.json")
+    with open(path) as f:
+        return json.load(f)
 
 
 def get_processor_contract(w3):

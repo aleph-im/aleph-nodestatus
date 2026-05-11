@@ -324,7 +324,7 @@ def _project_expense(expense, src_key):
     }
 
 
-def _zero_totals():
+def zero_totals():
     return {"storage_total_aleph": 0,
             "execution_total_aleph": 0,
             "dev_fund_total_aleph": 0}
@@ -377,8 +377,8 @@ async def compute_rewards(
     if not msgs:
         LOGGER.warning("No credit expenses found in the given time range")
         return {
-            "credit_revenue": ({}, _zero_totals()),
-            "holder_tier":    ({}, _zero_totals()),
+            "credit_revenue": ({}, zero_totals()),
+            "holder_tier":    ({}, zero_totals()),
         }
 
     if web3 is None:
@@ -428,8 +428,8 @@ async def _compute_rewards_snapshots(
         )
     snapshot_heights = [s[0] for s in snapshots]
 
-    credit_rewards, credit_totals = {}, _zero_totals()
-    holder_rewards, holder_totals = {}, _zero_totals()
+    credit_rewards, credit_totals = {}, zero_totals()
+    holder_rewards, holder_totals = {}, zero_totals()
 
     for msg in msgs:
         height, exp_type, expense = _parse_message(msg)
@@ -499,8 +499,8 @@ async def _compute_rewards_full_resync(
                 request_count=1000, db=dbs["scores"])),
     ]
 
-    credit_rewards, credit_totals = {}, _zero_totals()
-    holder_rewards, holder_totals = {}, _zero_totals()
+    credit_rewards, credit_totals = {}, zero_totals()
+    holder_rewards, holder_totals = {}, zero_totals()
     idx = 0
     nodes = resource_nodes = None
 
@@ -519,6 +519,11 @@ async def _compute_rewards_full_resync(
                                   nodes, resource_nodes, web3)
             idx += 1
 
+    # Tail: expenses with height > last state-machine yield (but <= end_height)
+    # are applied against the final (nodes, resource_nodes) snapshot from the
+    # loop above. The state machine only emits a yield when corechannel state
+    # changes; expenses landing in the gap between the last yield and
+    # end_height all share that terminal state.
     while idx < len(parsed) and nodes is not None:
         h, exp_type, expense = parsed[idx]
         if end_height is not None and h > end_height:
