@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     wage_staker_share: float = 1/3
 
     # === Cadence & filtering ===
-    credit_dist_min_interval_seconds: int = 10 * 86400
+    credit_dist_min_interval_blocks: int = 10 * 7130
     credit_dist_dust_threshold_aleph: float = 0.01
 
     # === Feature flags ===

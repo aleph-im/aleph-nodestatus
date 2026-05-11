@@ -4,13 +4,13 @@ import logging
 from collections import deque
 
 import aiohttp
-from aleph.sdk.client import AuthenticatedAlephHttpClient
+from aleph.sdk.client import AlephHttpClient
 from aleph.sdk.query.filters import PostFilter
 
 from .distribution import compute_score_multiplier
 from .erc20 import process_contract_history
 from .ethereum import get_web3
-from .messages import get_aleph_account, get_aleph_address, process_message_history
+from .messages import process_message_history
 from .monitored import process_balances_history
 from .settings import settings, PublishMode
 from .status import NodesStatus, prepare_items
@@ -37,24 +37,38 @@ def _shares_for(expense_type):
 
 
 async def get_latest_successful_credit_distribution(sender=None):
-    """Find the last credit distribution that had successful transfers."""
-    if sender is None:
-        sender = get_aleph_address()
+    """Find the last credit distribution that had successful transfers.
 
-    async with AuthenticatedAlephHttpClient(
-        get_aleph_account(), api_server=PublishMode.get_publish_api_server()
+    Queries posts from both status_sender (calculation publisher) and
+    distribution_recipient (distribution publisher) so either cron deployment
+    can discover the most recent successful distribution regardless of which
+    address signed it.
+    """
+    if sender is None:
+        senders = [settings.status_sender, settings.distribution_recipient]
+    elif isinstance(sender, (list, tuple)):
+        senders = list(sender)
+    else:
+        senders = [sender]
+
+    async with AlephHttpClient(
+        api_server=PublishMode.get_publish_api_server()
     ) as client:
         posts = await client.get_posts(
             post_filter=PostFilter(
                 types=[CREDIT_DISTRIBUTION_POST_TYPE],
-                addresses=[sender],
+                addresses=senders,
             )
         )
 
     current_post = None
-    current_end_time = 0
+    current_end_height = 0
     for post in posts.posts:
         if post.content.get("status") != "distribution":
+            continue
+
+        end_height = post.content.get("end_height")
+        if end_height is None:
             continue
 
         successful = False
@@ -63,12 +77,12 @@ async def get_latest_successful_credit_distribution(sender=None):
                 successful = True
                 break
 
-        if successful and post.content.get("end_time", 0) >= current_end_time:
+        if successful and end_height >= current_end_height:
             current_post = post
-            current_end_time = post.content["end_time"]
+            current_end_height = end_height
 
     if current_post is not None:
-        return current_end_time, current_post.content
+        return current_end_height, current_post.content
     else:
         return 0, None
 

@@ -59,6 +59,8 @@ def patched_pipeline(monkeypatch):
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
+    fake_web3.eth.block_number = 100
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
         "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
     )
@@ -90,8 +92,8 @@ def test_dry_run_does_not_post_or_transfer(patched_pipeline):
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
         "--dry-run", "--no-extract",
-        "--start-time", "1778050000",
-        "--end-time",   "1778100000",
+        "--start-height", "10",
+        "--end-height",   "20",
     ])
     assert result.exit_code == 0, result.output
     assert patched_pipeline["posts"] == []
@@ -104,14 +106,16 @@ def test_dry_run_includes_wage_and_credit_in_summary(patched_pipeline):
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
         "--dry-run", "--no-extract",
-        "--start-time", "1778050000",
-        "--end-time",   "1778100000",
+        "--start-height", "10",
+        "--end-height",   "20",
     ])
     assert result.exit_code == 0, result.output
     # The summary preview JSON should mention these top-level keys
     assert "wage_subsidy" in result.output
     assert "credit_revenue_totals" in result.output
     assert "feature_flags" in result.output
+    assert "start_height" in result.output
+    assert "end_height" in result.output
 
 
 def test_wage_unallocated_when_no_snapshots(monkeypatch):
@@ -145,6 +149,8 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
+    fake_web3.eth.block_number = 100
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
         "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
     )
@@ -163,8 +169,8 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
         runner = CliRunner()
         result = runner.invoke(distribute_credits, [
             "--dry-run", "--no-extract", "--no-credit-revenue",
-            "--start-time", "1778050000",
-            "--end-time",   "1778100000",
+            "--start-height", "10",
+            "--end-height",   "20",
         ])
         assert result.exit_code == 0, result.output
         # The console output prints the distribution preview JSON
@@ -213,6 +219,8 @@ def test_holder_tier_safety_aborts_when_balance_short(monkeypatch):
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
+    fake_web3.eth.block_number = 100
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
         "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
     )
@@ -228,8 +236,8 @@ def test_holder_tier_safety_aborts_when_balance_short(monkeypatch):
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
         "--act", "--no-extract", "--enable-holder-tier", "--no-wage",
-        "--start-time", "1778050000",
-        "--end-time",   "1778100000",
+        "--start-height", "10",
+        "--end-height",   "20",
     ])
     assert result.exit_code != 0, result.output
     assert "ABORT" in result.output

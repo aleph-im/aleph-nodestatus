@@ -1,7 +1,8 @@
-version: "3"
 services:
   nodestatus:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     stdin_open: true
     tty: true
     env_file:
@@ -9,4 +10,8 @@ services:
     volumes:
       - ../:/aleph-nodestatus
       - ../logs:/logs
-    command: /bin/bash -c "service cron start && (echo \"*/10 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute -v >> /logs/nodestatus.log\"; echo \"*/30 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits.log\") | crontab - && /bin/sh"
+    # Deploy two instances in production: one with ethereum_pkey = status_sender
+    # (publishes hourly calculation snapshots), one with ethereum_pkey =
+    # distribution_recipient (attempts distribution; cadence guard rate-limits
+    # to the configured min-interval window).
+    command: /bin/bash -c "service cron start && (echo \"*/10 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute -v >> /logs/nodestatus.log\"; echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\"; echo \"0 0 * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"

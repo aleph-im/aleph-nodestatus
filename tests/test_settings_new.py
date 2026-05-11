@@ -35,7 +35,7 @@ def test_feature_flags_defaults():
 
 
 def test_cadence_defaults():
-    assert settings.credit_dist_min_interval_seconds == 10 * 86400
+    assert settings.credit_dist_min_interval_blocks == 10 * 7130
     assert settings.credit_dist_dust_threshold_aleph == 0.01
     assert settings.process_slippage_bps == 200
     assert settings.process_ttl_seconds == 1800

@@ -267,7 +267,7 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 
 
 async def process_credit_distribution(
-    start_time, end_time, *,
+    start_height, end_height, *,
     act=False, dry_run=False, force=False,
     flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
@@ -282,33 +282,42 @@ async def process_credit_distribution(
     from .ethereum import get_eth_account, get_web3, get_token_contract
     from hexbytes import HexBytes
     from eth_account import Account
-    import time as _time
     import json as _json
 
     flags = flags or {}
     dbs = get_dbs()
-    if end_time is None:
-        end_time = _time.time()
+    web3 = get_web3()
 
-    # === Cadence guard ===
-    if start_time is None:
+    if end_height in (None, -1):
+        end_height = web3.eth.block_number
+
+    # === Cadence guard (only fires when actually distributing) ===
+    if start_height in (None, -1):
         last_end, _ = await get_latest_successful_credit_distribution(reward_sender)
         if last_end:
-            if should_skip_run(last_end, _time.time(),
-                               settings.credit_dist_min_interval_seconds,
-                               force):
+            if act and should_skip_run(last_end, end_height,
+                                       settings.credit_dist_min_interval_blocks,
+                                       force):
                 click.echo(
-                    f"Cadence guard: only {(_time.time()-last_end):.0f}s "
-                    f"since last run; skipping (use --force to override)."
+                    f"Cadence guard: only {end_height - last_end} blocks "
+                    f"since last distribution; skipping (use --force to override)."
                 )
                 return
-            start_time = last_end + 1
-            click.echo(f"Resuming from last_end={last_end}; start={start_time}")
+            start_height = last_end + 1
+            click.echo(f"Resuming from last_end={last_end}; start={start_height}")
         else:
-            click.echo("ERROR: --start-time required for first run.")
+            click.echo("ERROR: --start-height required for first run.")
             return
 
-    web3 = get_web3()
+    if end_height <= start_height:
+        raise ValueError(
+            f"end_height ({end_height}) must be greater than start_height "
+            f"({start_height})"
+        )
+
+    start_time = web3.eth.get_block(start_height).timestamp
+    end_time = web3.eth.get_block(end_height).timestamp
+
     admin_address = settings.payment_processor_admin_address
     admin_account = None
     if flags.get("extract") and (act and not dry_run):
@@ -338,20 +347,6 @@ async def process_credit_distribution(
         )
 
     # === Step 2: credit_revenue + holder_tier rewards ===
-    end_block = None
-    if full_resync:
-        end_block = web3.eth.block_number
-        block = web3.eth.get_block(end_block)
-        if block.timestamp > end_time:
-            lo, hi = 0, end_block
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if web3.eth.get_block(mid).timestamp <= end_time:
-                    lo = mid
-                else:
-                    hi = mid - 1
-            end_block = lo
-
     zero_totals = lambda: {"storage_total_aleph": 0,
                             "execution_total_aleph": 0,
                             "dev_fund_total_aleph": 0}
@@ -365,7 +360,7 @@ async def process_credit_distribution(
             full_resync=full_resync,
             include_holder_tier=flags.get("holder_tier", False),
             sender=settings.credit_expense_sender,
-            dbs=dbs, end_height=end_block, web3=web3,
+            dbs=dbs, end_height=end_height, web3=web3,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
@@ -431,6 +426,7 @@ async def process_credit_distribution(
 
     # === Step 5: transfer (or simulate) ===
     is_testnet = PublishMode.is_testnet()
+    transfer_metadata = {"sources": list(by_source.keys()), "targets": []}
     if flags.get("transfer") and act and not is_testnet:
         click.echo("Executing batchTransfer …")
         max_items = settings.ethereum_batch_size
@@ -438,10 +434,7 @@ async def process_credit_distribution(
         for i in range(math.ceil(len(items) / max_items)):
             step = items[max_items*i:max_items*(i+1)]
             click.echo(f"Batch {i+1}: transferring to {len(step)} recipients")
-            await transfer_tokens(
-                dict(step),
-                metadata={"sources": list(by_source.keys())},
-            )
+            await transfer_tokens(dict(step), metadata=transfer_metadata)
     elif not flags.get("transfer"):
         click.echo("--no-transfer / dry-run: skipping batchTransfer")
         n = len(final_rewards)
@@ -455,6 +448,7 @@ async def process_credit_distribution(
     distribution = {
         "incentive": "credits",
         "status": status,
+        "start_height": start_height, "end_height": end_height,
         "start_time": start_time, "end_time": end_time,
         "rewards": final_rewards,
         "rewards_by_source": by_source,
@@ -465,9 +459,9 @@ async def process_credit_distribution(
         "extract": extract_block,
         "feature_flags": flags,
         "tags": [status, "credits", settings.filter_tag],
+        "sources": transfer_metadata["sources"],
+        "targets": transfer_metadata["targets"],
     }
-    if end_block is not None:
-        distribution["end_height"] = end_block
 
     if flags.get("publish") and not dry_run:
         await create_distribution_tx_post(
@@ -477,7 +471,7 @@ async def process_credit_distribution(
         click.echo("--no-publish / dry-run: skipping Aleph post")
         preview = {k: v for k, v in distribution.items()
                     if k != "rewards_by_source"}
-        click.echo(_json.dumps(preview, indent=2, default=str)[:4000])
+        click.echo(_json.dumps(preview, indent=2, default=str))
 
 
 @click.command()
@@ -491,10 +485,10 @@ async def process_credit_distribution(
               help="No post, no transfers; simulate process() via eth_call",
               is_flag=True)
 @click.option("--force", help="Bypass the cadence guard", is_flag=True)
-@click.option("--start-time", "start_time", default=None, type=float,
-              help="Unix seconds, default: resume from last distribution")
-@click.option("--end-time", "end_time", default=None, type=float,
-              help="Unix seconds, default: now")
+@click.option("-s", "--start-height", "start_height", default=-1, type=int,
+              help="Starting block height, default: resume from last distribution")
+@click.option("-e", "--end-height", "end_height", default=-1, type=int,
+              help="Ending block height, default: latest")
 @click.option("--full-resync", is_flag=True,
               help="Replay full state machine from genesis")
 @click.option("--no-extract", "no_extract", is_flag=True,
@@ -516,7 +510,7 @@ async def process_credit_distribution(
 @click.option("--reward-sender", default=None,
               help="Address used to look up the previous distribution")
 def distribute_credits(verbose, act, testnet, dry_run, force,
-                       start_time, end_time, full_resync,
+                       start_height, end_height, full_resync,
                        no_extract, no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
@@ -556,7 +550,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force,
     click.echo(f"Flags: {flags}")
 
     asyncio.run(process_credit_distribution(
-        start_time=start_time, end_time=end_time,
+        start_height=start_height, end_height=end_height,
         act=act, dry_run=dry_run, force=force,
         flags=flags, slippage_bps=slippage_bps,
         reward_sender=reward_sender,
