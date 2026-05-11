@@ -410,8 +410,8 @@ async def process_credit_distribution(
         dust_threshold=settings.credit_dist_dust_threshold_aleph,
     )
 
-    # === Holder-tier safety check ===
-    if flags.get("holder_tier") and holder_rewards:
+    # === Balance safety check (before any real transfer) ===
+    if act and flags.get("transfer") and final_rewards:
         token = get_token_contract(web3)
         bal = token.functions.balanceOf(
             web3.to_checksum_address(settings.distribution_recipient)

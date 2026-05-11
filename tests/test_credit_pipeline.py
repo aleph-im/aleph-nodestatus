@@ -183,9 +183,10 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
         settings.wage_start_date = original
 
 
-def test_holder_tier_safety_aborts_when_balance_short(monkeypatch):
-    """When holder_tier rewards exceed available ALEPH at the recipient,
-    the run aborts with a non-zero exit code.
+def test_balance_safety_aborts_when_short(monkeypatch):
+    """When total rewards exceed the distribution_recipient's ALEPH balance,
+    the run aborts with a non-zero exit code — regardless of which stream
+    (credit_revenue, holder_tier, wage_subsidy) produced the rewards.
     """
     import json as _json
     expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
@@ -236,6 +237,60 @@ def test_holder_tier_safety_aborts_when_balance_short(monkeypatch):
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
         "--act", "--no-extract", "--enable-holder-tier", "--no-wage",
+        "--start-height", "10",
+        "--end-height",   "20",
+    ])
+    assert result.exit_code != 0, result.output
+    assert "ABORT" in result.output
+
+
+def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
+    """The same safety check must fire on a credit-revenue-only run (no
+    holder_tier, no wage) — the previous gate was too narrow.
+    """
+    import json as _json
+    expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
+    snapshot = _json.loads((FIX / "snapshot.json").read_text())
+
+    async def fake_fetch_msgs(*a, **kw):
+        return [expense_msg["message"]]
+
+    async def fake_fetch_snaps(*a, **kw):
+        nodes = {n["hash"]: n for n in snapshot["nodes"]}
+        rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
+        return [(snapshot["height"], nodes, rnodes)]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+
+    import aleph_nodestatus.commands as cmd_module
+    monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+
+    fake_web3 = MagicMock()
+    fake_web3.to_checksum_address = lambda x: x
+    fake_web3.eth.get_balance.return_value = 0
+    fake_web3.eth.block_number = 100
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
+    monkeypatch.setattr(
+        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+    )
+
+    fake_token = MagicMock()
+    fake_token.functions.balanceOf.return_value.call.return_value = 1  # 1 wei
+    monkeypatch.setattr(
+        "aleph_nodestatus.ethereum.get_token_contract",
+        lambda w3: fake_token,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(distribute_credits, [
+        "--act", "--no-extract", "--no-holder-tier", "--no-wage",
         "--start-height", "10",
         "--end-height",   "20",
     ])
