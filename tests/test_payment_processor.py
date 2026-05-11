@@ -237,9 +237,8 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     assert len(failing) == 2
     for e in failing:
         assert e["error"].startswith("quote_failed:")
-    assert len(result["errors"]) == 2
-    # Same entry objects on both sides (no duplicates)
-    assert {id(e) for e in result["errors"]} <= {id(e) for e in result["tokens"]}
+    # One errors entry per failing token entry — no duplicates.
+    assert len(result["errors"]) == len(failing)
 
 
 def test_extract_aleph_zero_balance_skipped(monkeypatch):

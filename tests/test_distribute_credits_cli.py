@@ -38,3 +38,23 @@ def test_cli_help_lists_new_flags():
     assert "--no-transfer" in result.output
     assert "--no-publish" in result.output
     assert "--force" in result.output
+
+
+def test_resolve_feature_flags_holder_tier_requires_credit_revenue(capsys):
+    """holder_tier piggy-backs on credit_revenue's expense fetch; if
+    credit_revenue is disabled, holder_tier must be forced off (and a
+    warning emitted) rather than silently producing an empty stream."""
+    from aleph_nodestatus.commands import _resolve_feature_flags
+
+    flags = _resolve_feature_flags(
+        no_extract=False, no_credit_revenue=True, no_wage=False,
+        enable_holder_tier=True, no_holder_tier=False,
+        no_transfer=False, no_publish=False,
+        act=False, dry_run=False,
+    )
+    out = capsys.readouterr().out
+
+    assert flags["credit_revenue"] is False
+    assert flags["holder_tier"] is False
+    assert "WARNING" in out
+    assert "holder_tier" in out

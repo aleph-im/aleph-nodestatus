@@ -182,6 +182,10 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     async with aiohttp.ClientSession() as session:
         messages = await _fetch_paginated_messages(session, api_server, params)
 
+    # AGGREGATE messages on Aleph wrap their body in two `content` layers:
+    #   msg.content = {"key": "<name>", "content": {<body>}, ...}
+    # The outer layer carries the aggregate name (here "corechannel") and the
+    # inner layer holds the actual node/resource_node lists.
     for msg in messages:
         content = msg.get("content", {})
         if content.get("key") != "corechannel":

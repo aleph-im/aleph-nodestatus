@@ -574,6 +574,9 @@ def _resolve_feature_flags(*, no_extract, no_credit_revenue, no_wage,
     if no_extract:        f["extract"] = False
     if no_credit_revenue: f["credit_revenue"] = False
     if no_wage:           f["wage"] = False
+    # holder_tier overrides are last-wins by design; the CLI already
+    # validates --enable-holder-tier / --no-holder-tier as mutually
+    # exclusive, so this only matters for programmatic callers.
     if enable_holder_tier: f["holder_tier"] = True
     if no_holder_tier:    f["holder_tier"] = False
     if no_transfer:       f["transfer"] = False
@@ -583,6 +586,16 @@ def _resolve_feature_flags(*, no_extract, no_credit_revenue, no_wage,
         f["publish"]  = False
     if not act and not dry_run:
         f["transfer"] = False
+    # holder_tier piggy-backs on the credit_revenue expense-message fetch;
+    # there is no separate pipeline path. If credit_revenue is off, holder_tier
+    # cannot run — make that explicit rather than silently producing an empty
+    # holder_tier stream downstream.
+    if f["holder_tier"] and not f["credit_revenue"]:
+        click.echo(
+            "WARNING: holder_tier requires credit_revenue (same expense "
+            "messages drive both). Forcing holder_tier=False."
+        )
+        f["holder_tier"] = False
     return f
 
 
