@@ -129,3 +129,18 @@ def chunks(data, SIZE=10000):
     it = iter(data)
     for i in range(0, len(data), SIZE):
         yield {k:data[k] for k in islice(it, SIZE)}
+
+
+def get_reward_address(entity, web3=None):
+    """Return the checksummed reward address for a node/entity, falling back
+    to its owner if reward is empty or invalid."""
+    reward = entity.get("reward")
+    if reward and web3 is not None:
+        validator = getattr(web3, "to_checksum_address",
+                            getattr(web3, "toChecksumAddress", None))
+        if validator:
+            try:
+                return validator(reward)
+            except Exception:
+                pass
+    return reward or entity["owner"]

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Tuple
 
 from .settings import settings
+from .utils import get_reward_address
 
 MONTH_SECONDS = 30 * 86400
 
@@ -50,19 +51,6 @@ def compute_period_subsidy(start_time: float, end_time: float) -> float:
 from .distribution import compute_score_multiplier
 
 
-def _get_reward_address(entity, web3=None):
-    reward = entity.get("reward")
-    if reward and web3 is not None:
-        validator = getattr(web3, "to_checksum_address",
-                            getattr(web3, "toChecksumAddress", None))
-        if validator:
-            try:
-                return validator(reward)
-            except Exception:
-                pass
-    return reward or entity["owner"]
-
-
 def split_subsidy(
     period_subsidy: float,
     nodes: dict,
@@ -90,7 +78,7 @@ def split_subsidy(
             continue
         score = compute_score_multiplier(node["score"])
         if score > 0:
-            ccn_weights.append((_get_reward_address(node, web3), score))
+            ccn_weights.append((get_reward_address(node, web3), score))
     total_ccn = sum(s for _, s in ccn_weights)
     if total_ccn > 0:
         for addr, s in ccn_weights:
@@ -104,7 +92,7 @@ def split_subsidy(
             continue
         score = compute_score_multiplier(rnode["score"])
         if score > 0:
-            crn_weights.append((_get_reward_address(rnode, web3), score))
+            crn_weights.append((get_reward_address(rnode, web3), score))
     total_crn = sum(s for _, s in crn_weights)
     if total_crn > 0:
         for addr, s in crn_weights:

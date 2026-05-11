@@ -187,9 +187,10 @@ def extract_aleph(
             "min_out": None, "expected_out": None,
             "tx_hash": None, "simulated_only": False, "error": None,
         }
+        out["tokens"].append(entry)
+
         if balance == 0:
             entry["skipped_reason"] = "zero_balance"
-            out["tokens"].append(entry)
             continue
 
         if token_lc == aleph_address.lower():
@@ -208,7 +209,6 @@ def extract_aleph(
             except Exception as e:
                 entry["error"] = f"quote_failed: {e!r}"
                 out["errors"].append(entry)
-                out["tokens"].append(entry)
                 continue
             entry["expected_out"] = str(expected_out)
             entry["min_out"] = str(min_out)
@@ -222,12 +222,10 @@ def extract_aleph(
         if err:
             entry["error"] = f"simulation_revert: {err}"
             out["errors"].append(entry)
-            out["tokens"].append(entry)
             continue
 
         if dry_run or not transfer_enabled:
             entry["simulated_only"] = True
-            out["tokens"].append(entry)
             continue
 
         try:
@@ -243,7 +241,5 @@ def extract_aleph(
         except Exception as e:
             entry["error"] = f"tx_failed: {e!r}"
             out["errors"].append(entry)
-
-        out["tokens"].append(entry)
 
     return out

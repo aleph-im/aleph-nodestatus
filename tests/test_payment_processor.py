@@ -202,6 +202,46 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
     assert int(usdc_entry["min_out"]) == 9_500_000
 
 
+def test_extract_aleph_quote_failure_appends_once(monkeypatch):
+    """A quote failure produces exactly one entry in tokens and one in errors
+    (not duplicates across both early and final append sites)."""
+    w3 = MagicMock()
+    processor = MagicMock()
+    quoter = MagicMock()
+    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+
+    # quote raises on every call
+    quoter.functions.quoteExactInput.return_value.call.side_effect = \
+        RuntimeError("quoter unavailable")
+
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoter, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+    )
+
+    # 3 configured tokens; the ALEPH entry skips the quote, the other two fail
+    assert len(result["tokens"]) == 3
+    failing = [e for e in result["tokens"] if e["error"]]
+    assert len(failing) == 2
+    for e in failing:
+        assert e["error"].startswith("quote_failed:")
+    assert len(result["errors"]) == 2
+    # Same entry objects on both sides (no duplicates)
+    assert {id(e) for e in result["errors"]} <= {id(e) for e in result["tokens"]}
+
+
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
     w3 = MagicMock()
     processor = MagicMock()

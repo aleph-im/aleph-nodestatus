@@ -14,6 +14,7 @@ from .messages import process_message_history
 from .monitored import process_balances_history
 from .settings import settings, PublishMode
 from .status import NodesStatus, prepare_items
+from .utils import get_reward_address
 
 LOGGER = logging.getLogger(__name__)
 
@@ -204,23 +205,6 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     return snapshots
 
 
-def _get_reward_address(node, web3=None):
-    """Get the reward address for a node, falling back to owner."""
-    reward = node.get("reward")
-    if reward and web3:
-        try:
-            validator = getattr(
-                web3, "to_checksum_address",
-                getattr(web3, "toChecksumAddress", None),
-            )
-            if validator:
-                return validator(reward)
-        except Exception:
-            LOGGER.debug("Bad reward address, defaulting to owner")
-            return node["owner"]
-    return reward or node["owner"]
-
-
 def _distribute_expense(
     expense_type, expense, nodes, resource_nodes, rewards,
     web3=None,
@@ -247,7 +231,7 @@ def _distribute_expense(
             node_id = credit.get("node_id")
             if node_id and node_id in resource_nodes:
                 rnode = resource_nodes[node_id]
-                addr = _get_reward_address(rnode, web3)
+                addr = get_reward_address(rnode, web3)
                 rewards[addr] = (
                     rewards.get(addr, 0) + credit_aleph * crn_share
                 )
@@ -265,7 +249,7 @@ def _distribute_expense(
         if score > 0:
             ccn_weights[node_hash] = {
                 "score": score,
-                "reward_address": _get_reward_address(node, web3),
+                "reward_address": get_reward_address(node, web3),
             }
     total_ccn_score = sum(v["score"] for v in ccn_weights.values())
     ccn_pool = total_aleph * ccn_share
@@ -575,11 +559,12 @@ async def prepare_credit_distribution(
     )
 
 
-def should_skip_run(last_end, now, min_interval, force=False):
+def should_skip_run(last_end_height, current_height, min_interval_blocks,
+                    force=False):
     """Return True if we should skip the run because the min interval
     hasn't elapsed since the last successful distribution."""
     if force:
         return False
-    if not last_end:
+    if not last_end_height:
         return False
-    return (now - last_end) < min_interval
+    return (current_height - last_end_height) < min_interval_blocks
