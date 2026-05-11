@@ -62,7 +62,7 @@ def patched_pipeline(monkeypatch):
     fake_web3.eth.block_number = 100
     fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+        "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
 
     # Track side effects
@@ -152,7 +152,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     fake_web3.eth.block_number = 100
     fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+        "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
 
     monkeypatch.setattr(
@@ -223,20 +223,20 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     fake_web3.eth.block_number = 100
     fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+        "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
 
     # ALEPH balance at the transfer sender: very low — safety must fire
     fake_token = MagicMock()
     fake_token.functions.balanceOf.return_value.call.return_value = 1  # 1 wei
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_token_contract",
+        "aleph_nodestatus.commands.get_token_contract",
         lambda w3: fake_token,
     )
     fake_account = MagicMock()
     fake_account.address = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_eth_account", lambda: fake_account,
+        "aleph_nodestatus.commands.get_eth_account", lambda: fake_account,
     )
 
     runner = CliRunner()
@@ -283,19 +283,19 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     fake_web3.eth.block_number = 100
     fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_web3", lambda: fake_web3,
+        "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
 
     fake_token = MagicMock()
     fake_token.functions.balanceOf.return_value.call.return_value = 1  # 1 wei
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_token_contract",
+        "aleph_nodestatus.commands.get_token_contract",
         lambda w3: fake_token,
     )
     fake_account = MagicMock()
     fake_account.address = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
     monkeypatch.setattr(
-        "aleph_nodestatus.ethereum.get_eth_account", lambda: fake_account,
+        "aleph_nodestatus.commands.get_eth_account", lambda: fake_account,
     )
 
     runner = CliRunner()

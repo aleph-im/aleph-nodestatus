@@ -17,12 +17,17 @@ Note: This skeleton file can be safely removed if not needed!
 
 import argparse
 import asyncio
+import json
 import logging
 import math
+import os
+import shutil
 import sys
 import time as time_mod
 
 import click
+from eth_account import Account
+from hexbytes import HexBytes
 
 from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
@@ -30,8 +35,12 @@ from aleph_nodestatus.sablier import sablier_monitoring_process
 from .balances import do_reset_balances
 from .credit_distribution import (
     CREDIT_DISTRIBUTION_POST_TYPE,
+    compute_rewards,
+    fetch_node_snapshots,
     get_latest_successful_credit_distribution,
     prepare_credit_distribution,
+    should_skip_run,
+    zero_totals,
 )
 from .distribution import (
     create_distribution_tx_post,
@@ -39,15 +48,30 @@ from .distribution import (
     prepare_distribution,
 )
 from .erc20 import erc20_monitoring_process, process_contract_history
-from .ethereum import get_account, get_eth_account, get_web3, transfer_tokens
+from .ethereum import (
+    get_account,
+    get_eth_account,
+    get_token_contract,
+    get_web3,
+    transfer_tokens,
+)
 from .indexer_balance import indexer_monitoring_process
+from .messages import parse_window_size
+from .payment_processor import (
+    extract_aleph,
+    get_processor_contract,
+    get_quoter_contract,
+)
+from .rewards_merge import merge_rewards
 from .settings import settings, PublishMode
 from .solana import solana_monitoring_process
 from .status import process
 from .storage import close_dbs, get_dbs
-
-import os
-import shutil
+from .wage_subsidy import (
+    compute_period_subsidy,
+    compute_subsidy,
+    months_since_start,
+)
 
 
 def _clear_messages_db():
@@ -136,7 +160,6 @@ def main(verbose, testnet, force_resync, window_size):
         _clear_messages_db()
 
     # Parse and validate window size
-    from .messages import parse_window_size
     try:
         window_seconds = parse_window_size(window_size)
         LOGGER.info(f"Using window size: {window_size} ({window_seconds} seconds)")
@@ -271,19 +294,6 @@ async def process_credit_distribution(
     act=False, dry_run=False, force=False,
     flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
-    from .credit_distribution import (
-        compute_rewards, should_skip_run, fetch_node_snapshots, zero_totals,
-    )
-    from .payment_processor import (
-        extract_aleph, get_processor_contract, get_quoter_contract,
-    )
-    from .rewards_merge import merge_rewards
-    from .wage_subsidy import compute_subsidy
-    from .ethereum import get_eth_account, get_web3, get_token_contract
-    from hexbytes import HexBytes
-    from eth_account import Account
-    import json as _json
-
     flags = flags or {}
     dbs = get_dbs()
     web3 = get_web3()
@@ -386,7 +396,6 @@ async def process_credit_distribution(
                 start_time, end_time, nodes, resource_nodes, web3=web3,
             )
         else:
-            from .wage_subsidy import compute_period_subsidy, months_since_start
             period_total = compute_period_subsidy(start_time, end_time)
             wage_totals = {
                 "period_total_aleph": period_total,
@@ -483,7 +492,7 @@ async def process_credit_distribution(
         click.echo("--no-publish / dry-run: skipping Aleph post")
         preview = {k: v for k, v in distribution.items()
                     if k != "rewards_by_source"}
-        click.echo(_json.dumps(preview, indent=2, default=str))
+        click.echo(json.dumps(preview, indent=2, default=str))
 
 
 @click.command()
