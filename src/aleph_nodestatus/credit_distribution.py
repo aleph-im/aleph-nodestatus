@@ -230,6 +230,11 @@ def _distribute_expense(
     dev_fund = total_aleph * dev_share
 
     if expense_type == "execution":
+        # Credits without a node_id, or with a node_id that isn't in the
+        # current resource_nodes snapshot, drop their CRN share (the credit
+        # still contributes to total_aleph and therefore to CCN/staker/dev
+        # pools — only the per-CRN portion is lost). Warn in both cases so
+        # the missing share is visible in logs.
         for credit in expense.get("credits", []):
             credit_aleph = credit["amount"] * credit_price_aleph
             node_id = credit.get("node_id")
@@ -241,7 +246,13 @@ def _distribute_expense(
                 )
             elif node_id:
                 LOGGER.warning(
-                    f"CRN {node_id} not found in resource_nodes, skipping"
+                    f"CRN {node_id} not found in resource_nodes, "
+                    f"dropping {credit_aleph * crn_share:.6f} ALEPH CRN share"
+                )
+            else:
+                LOGGER.warning(
+                    f"Credit missing node_id, dropping "
+                    f"{credit_aleph * crn_share:.6f} ALEPH CRN share"
                 )
 
     # CCN pool (score-weighted)

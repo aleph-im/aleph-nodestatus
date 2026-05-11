@@ -413,16 +413,26 @@ async def process_credit_distribution(
     )
 
     # === Balance safety check (before any real transfer) ===
+    # Check the balance of the actual transfer sender (get_eth_account, derived
+    # from ethereum_pkey), not settings.distribution_recipient. In the intended
+    # deployment they are the same address — but they are independently
+    # configurable settings, and transfer_tokens uses the pkey-derived account.
     if act and flags.get("transfer") and final_rewards:
+        sender = get_eth_account().address
+        if sender.lower() != settings.distribution_recipient.lower():
+            click.echo(
+                f"WARNING: transfer sender {sender} differs from "
+                f"settings.distribution_recipient "
+                f"{settings.distribution_recipient}. Checking sender balance."
+            )
         token = get_token_contract(web3)
         bal = token.functions.balanceOf(
-            web3.to_checksum_address(settings.distribution_recipient)
+            web3.to_checksum_address(sender)
         ).call() / (10 ** settings.ethereum_decimals)
         owed = sum(final_rewards.values())
         if owed > bal + 1e-6:
             click.echo(
-                f"ABORT: owed {owed} ALEPH > balance {bal} at "
-                f"{settings.distribution_recipient}"
+                f"ABORT: owed {owed} ALEPH > balance {bal} at {sender}"
             )
             sys.exit(1)
 
