@@ -500,9 +500,9 @@ async def process_credit_distribution(
 @click.option("--no-wage", "no_wage", is_flag=True,
               help="Skip wage subsidy")
 @click.option("--enable-holder-tier", "enable_holder_tier", is_flag=True,
-              help="Process expense.rewards[] (deprecated branch)")
+              help="Force holder-tier ON (overrides env=False)")
 @click.option("--no-holder-tier", "no_holder_tier", is_flag=True,
-              help="Force holder-tier OFF (overrides env=True)")
+              help="Force holder-tier OFF (overrides env=True, the default)")
 @click.option("--no-transfer", "no_transfer", is_flag=True,
               help="Compute everything but don't broadcast txs")
 @click.option("--no-publish", "no_publish", is_flag=True,

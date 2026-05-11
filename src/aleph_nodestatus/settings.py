@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     credit_dist_extract_enabled: bool        = True
     credit_dist_credit_revenue_enabled: bool = True
     credit_dist_wage_subsidy_enabled: bool   = True
-    credit_dist_holder_tier_enabled: bool    = False
+    credit_dist_holder_tier_enabled: bool    = True
     credit_dist_transfer_enabled: bool       = True
     credit_dist_publish_enabled: bool        = True
 
