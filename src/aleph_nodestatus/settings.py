@@ -153,6 +153,11 @@ class Settings(BaseSettings):
     credit_dist_min_interval_blocks: int = 10 * 7130
     credit_dist_dust_threshold_aleph: float = 0.01
 
+    # Cap on total ALEPH a single --act run can distribute. Aborts before
+    # any balance check or transfer if an upstream bug produces inflated
+    # rewards. Default sized at 2x the maximum monthly wage subsidy.
+    credit_dist_max_total_aleph: float = 2 * 900_000  # 1.8M
+
     # === Feature flags ===
     credit_dist_extract_enabled: bool        = True
     credit_dist_credit_revenue_enabled: bool = True

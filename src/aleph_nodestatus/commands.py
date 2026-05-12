@@ -293,7 +293,7 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 
 async def process_credit_distribution(
     start_height, end_height, *,
-    act=False, dry_run=False, force=False,
+    act=False, dry_run=False, force=False, force_cap=False,
     flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
     flags = flags or {}
@@ -452,6 +452,22 @@ async def process_credit_distribution(
         dust_threshold=settings.credit_dist_dust_threshold_aleph,
     )
 
+    # === Global cap (before balance check) ===
+    # Aborts when upstream math produces inflated rewards, regardless of
+    # whether the sender happens to be flush. Independent of --force
+    # (cadence): an operator must explicitly --force-cap to override.
+    if act and flags.get("transfer") and final_rewards:
+        owed_total = sum(final_rewards.values())
+        if owed_total > settings.credit_dist_max_total_aleph and not force_cap:
+            click.echo(
+                f"ABORT: owed {owed_total:.2f} ALEPH > max_total cap "
+                f"{settings.credit_dist_max_total_aleph}. Inspect upstream "
+                f"inputs (credit_price_aleph, wage integral, holder_tier "
+                f"sums) and rerun with --force-cap to override if "
+                f"intentional."
+            )
+            sys.exit(1)
+
     # === Balance safety check (before any real transfer) ===
     # Check the balance of the actual transfer sender (get_eth_account, derived
     # from ethereum_pkey), not settings.distribution_recipient. In the intended
@@ -537,6 +553,8 @@ async def process_credit_distribution(
               help="No post, no transfers; simulate process() via eth_call",
               is_flag=True)
 @click.option("--force", help="Bypass the cadence guard", is_flag=True)
+@click.option("--force-cap", "force_cap", is_flag=True,
+              help="Bypass the global per-run distribution cap")
 @click.option("-s", "--start-height", "start_height", default=-1, type=int,
               help="Starting block height, default: resume from last distribution")
 @click.option("-e", "--end-height", "end_height", default=-1, type=int,
@@ -561,7 +579,7 @@ async def process_credit_distribution(
               help="Override per-run slippage tolerance")
 @click.option("--reward-sender", default=None,
               help="Address used to look up the previous distribution")
-def distribute_credits(verbose, act, testnet, dry_run, force,
+def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        start_height, end_height, full_resync,
                        no_extract, no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
@@ -603,7 +621,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force,
 
     asyncio.run(process_credit_distribution(
         start_height=start_height, end_height=end_height,
-        act=act, dry_run=dry_run, force=force,
+        act=act, dry_run=dry_run, force=force, force_cap=force_cap,
         flags=flags, slippage_bps=slippage_bps,
         reward_sender=reward_sender,
         full_resync=full_resync,
