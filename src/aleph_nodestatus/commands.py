@@ -303,18 +303,38 @@ async def process_credit_distribution(
     if end_height in (None, -1):
         end_height = web3.eth.block_number
 
-    # === Cadence guard (only fires when actually distributing) ===
+    # === Cadence guard ===
+    # Fires unconditionally when --act is set, regardless of how start_height
+    # was derived. Without this, an operator supplying --start-height N bypasses
+    # the rate-limit silently and (combined with C1's partial-failure cursor)
+    # creates a path to double distribution.
+    # last_end has dual semantics here: None means "not yet fetched", 0 means
+    # "fetched and no prior distribution exists" (the function returns 0 in that
+    # case). Both are falsy, so the inner truthy guards below correctly skip
+    # advancing the cursor — but the memoization check at the cursor-derivation
+    # step uses `is None` specifically to distinguish "not yet fetched" from
+    # "fetched, no prior run", which avoids a redundant network call.
+    last_end = None
+    if act:
+        last_end, _, _ = await get_latest_successful_credit_distribution(
+            reward_sender
+        )
+        if last_end and should_skip_run(
+            last_end, end_height,
+            settings.credit_dist_min_interval_blocks, force,
+        ):
+            click.echo(
+                f"Cadence guard: only {end_height - last_end} blocks "
+                f"since last distribution. Skipping; use --force to override."
+            )
+            return
+
     if start_height in (None, -1):
-        last_end, _, _ = await get_latest_successful_credit_distribution(reward_sender)
+        if last_end is None:
+            last_end, _, _ = await get_latest_successful_credit_distribution(
+                reward_sender
+            )
         if last_end:
-            if act and should_skip_run(last_end, end_height,
-                                       settings.credit_dist_min_interval_blocks,
-                                       force):
-                click.echo(
-                    f"Cadence guard: only {end_height - last_end} blocks "
-                    f"since last distribution; skipping (use --force to override)."
-                )
-                return
             start_height = last_end + 1
             click.echo(f"Resuming from last_end={last_end}; start={start_height}")
         else:
