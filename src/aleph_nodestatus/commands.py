@@ -305,7 +305,7 @@ async def process_credit_distribution(
 
     # === Cadence guard (only fires when actually distributing) ===
     if start_height in (None, -1):
-        last_end, _ = await get_latest_successful_credit_distribution(reward_sender)
+        last_end, _, _ = await get_latest_successful_credit_distribution(reward_sender)
         if last_end:
             if act and should_skip_run(last_end, end_height,
                                        settings.credit_dist_min_interval_blocks,

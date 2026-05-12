@@ -38,12 +38,24 @@ def _shares_for(expense_type):
 
 
 async def get_latest_successful_credit_distribution(sender=None):
-    """Find the last credit distribution that had successful transfers.
+    """Find the last credit distribution that had ALL transfers succeed.
 
-    Queries posts from both status_sender (calculation publisher) and
-    distribution_recipient (distribution publisher) so either cron deployment
-    can discover the most recent successful distribution regardless of which
-    address signed it.
+    Returns:
+        (end_height, content, all_success):
+            end_height — the post's end_height, or 0 if no fully-successful
+                         distribution exists.
+            content    — the post.content dict, or None.
+            all_success — True when a fully-successful distribution post
+                          was found; False when none was found (whether
+                          because no posts exist, all candidates failed,
+                          or candidates were partial-failures and got
+                          skipped+warned). Partial-failure posts are
+                          logged at WARNING level so the operator
+                          investigates before re-running.
+
+    In the documented two-instance deployment, only `distribution_recipient`
+    publishes status='distribution'; `status_sender` is queried defensively
+    to handle single-instance / dev setups.
     """
     if sender is None:
         senders = [settings.status_sender, settings.distribution_recipient]
@@ -72,20 +84,38 @@ async def get_latest_successful_credit_distribution(sender=None):
         if end_height is None:
             continue
 
-        successful = False
-        for target in post.content.get("targets", []):
-            if target["success"]:
-                successful = True
-                break
+        # A distribution post with no targets is malformed (transfer was never
+        # attempted, or the post-publish bookkeeping failed). Treat as if the
+        # post does not exist for cursor purposes — neither advance nor warn.
+        targets = post.content.get("targets", [])
+        if not targets:
+            continue
+        flags = [bool(t.get("success")) for t in targets]
+        any_success = any(flags)
+        all_success = all(flags)
 
-        if successful and end_height >= current_end_height:
+        if any_success and not all_success:
+            LOGGER.warning(
+                "Partial-failure distribution post at end_height=%d "
+                "(succeeded=%d/%d targets); refusing to advance the resume "
+                "cursor. Operator action required: investigate the failed "
+                "batches in the Aleph audit post and supply an explicit "
+                "--start-height for the next run.",
+                end_height, sum(flags), len(flags),
+            )
+            continue
+
+        # `>=` lets the last all-success post at any given end_height win
+        # (last-seen wins). The Aleph API does not document a strict
+        # ordering for these posts; if two genuinely tie, we treat them as
+        # interchangeable since they refer to the same height window.
+        if all_success and end_height >= current_end_height:
             current_post = post
             current_end_height = end_height
 
     if current_post is not None:
-        return current_end_height, current_post.content
-    else:
-        return 0, None
+        return current_end_height, current_post.content, True
+    return 0, None, False
 
 
 async def _fetch_paginated_messages(session, api_server, params, max_retries=3,
