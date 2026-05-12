@@ -61,6 +61,8 @@ from .payment_processor import (
     extract_aleph,
     get_processor_contract,
     get_quoter_contract,
+    get_v2_router_contract,
+    get_v4_quoter_contract,
 )
 from .rewards_merge import merge_rewards
 from .settings import settings, PublishMode
@@ -343,9 +345,13 @@ async def process_credit_distribution(
     extract_block = {"tokens": [], "errors": []}
     if flags.get("extract"):
         processor = get_processor_contract(web3)
-        quoter = get_quoter_contract(web3)
+        quoters = {
+            "v2": get_v2_router_contract(web3),
+            "v3": get_quoter_contract(web3),
+            "v4": get_v4_quoter_contract(web3),
+        }
         extract_block = extract_aleph(
-            web3, processor, quoter,
+            web3, processor, quoters,
             account=admin_account,
             from_address=admin_address,
             dry_run=dry_run or not flags.get("transfer"),

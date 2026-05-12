@@ -21,17 +21,35 @@ def apply_slippage(amount: int, slippage_bps: int) -> int:
     return amount * (10_000 - slippage_bps) // 10_000
 
 
-def quote_amount_out(quoter, swap_config: dict, amount_in: int) -> int:
-    """Return expected output for a swap, in wei of the destination token."""
+def quote_amount_out(quoters: dict, swap_config: dict, amount_in: int,
+                     token_in: str = None) -> int:
+    """Return expected output for a swap, in wei of the destination token.
+
+    quoters: dict with keys "v2", "v3", "v4" mapping to contract objects
+             (may be None for versions not yet instantiated).
+    token_in: checksummed address of the input token; required for V4.
+    """
     v = swap_config.get("v")
     if v == 3:
+        quoter = quoters.get("v3")
+        if quoter is None:
+            raise ValueError("V3 quoter contract not available")
         path = swap_config["v3"]
         result = quoter.functions.quoteExactInput(path, amount_in).call()
         return result[0] if isinstance(result, (list, tuple)) else result
     if v == 2:
-        raise NotImplementedError("Quoter for V2 path not yet supported")
+        router = quoters.get("v2")
+        if router is None:
+            raise ValueError("V2 router contract not available")
+        amounts = router.functions.getAmountsOut(amount_in, swap_config["v2"]).call()
+        return amounts[-1]
     if v == 4:
-        raise NotImplementedError("Quoter for V4 path not yet supported")
+        quoter = quoters.get("v4")
+        if quoter is None:
+            raise ValueError("V4 quoter contract not available")
+        params = (token_in, swap_config["v4"], amount_in)
+        result = quoter.functions.quoteExactInput(params).call()
+        return result[0] if isinstance(result, (list, tuple)) else result
     raise ValueError(f"Unknown swap version: {v}")
 
 
@@ -53,6 +71,26 @@ def get_quoter_contract(w3):
     return w3.eth.contract(
         address=w3.to_checksum_address(settings.uniswap_v3_quoter_address),
         abi=_load_abi("UniswapV3QuoterV2"),
+    )
+
+
+def get_v4_quoter_contract(w3):
+    addr = settings.uniswap_v4_quoter_address
+    if not addr:
+        return None
+    return w3.eth.contract(
+        address=w3.to_checksum_address(addr),
+        abi=_load_abi("UniswapV4Quoter"),
+    )
+
+
+def get_v2_router_contract(w3):
+    addr = settings.uniswap_v2_router_address
+    if not addr:
+        return None
+    return w3.eth.contract(
+        address=w3.to_checksum_address(addr),
+        abi=_load_abi("UniswapV2Router"),
     )
 
 
@@ -160,7 +198,7 @@ def _aleph_token_address():
 
 
 def extract_aleph(
-    w3, processor, quoter, account,
+    w3, processor, quoters: dict, account,
     from_address: str,
     dry_run: bool = False,
     transfer_enabled: bool = True,
@@ -202,10 +240,10 @@ def extract_aleph(
                     w3.to_checksum_address(token)
                 ).call()
                 cfg = _swap_config_to_dict(swap_config)
-                if cfg["v"] != 3:
-                    entry["skipped_reason"] = f"swap_v{cfg['v']}_not_supported"
-                    continue
-                expected_out = quote_amount_out(quoter, cfg, balance)
+                expected_out = quote_amount_out(
+                    quoters, cfg, balance,
+                    token_in=w3.to_checksum_address(token),
+                )
                 min_out = apply_slippage(
                     expected_out, effective_slippage
                 )
