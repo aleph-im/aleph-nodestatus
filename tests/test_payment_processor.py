@@ -21,28 +21,60 @@ def test_apply_slippage_max_10000_rejects():
 
 
 def test_quote_amount_out_v3_calls_quoter():
-    quoter = MagicMock()
-    quoter.functions.quoteExactInput.return_value.call.return_value = (
+    v3_quoter = MagicMock()
+    v3_quoter.functions.quoteExactInput.return_value.call.return_value = (
         9_999_999, [0], [0], 0
     )
+    quoters = {"v2": None, "v3": v3_quoter, "v4": None}
     swap_config = {"v": 3, "v3": b"\x01\x02"}
-    out = quote_amount_out(quoter, swap_config, amount_in=1_000_000)
+    out = quote_amount_out(quoters, swap_config, amount_in=1_000_000)
     assert out == 9_999_999
-    quoter.functions.quoteExactInput.assert_called_once_with(b"\x01\x02", 1_000_000)
+    v3_quoter.functions.quoteExactInput.assert_called_once_with(
+        b"\x01\x02", 1_000_000,
+    )
 
 
-def test_quote_amount_out_v2_uses_v2_path(monkeypatch):
-    quoter = MagicMock()
-    swap_config = {"v": 2, "v2": ["0xA", "0xB"]}
-    with pytest.raises(NotImplementedError, match="V2"):
-        quote_amount_out(quoter, swap_config, amount_in=1_000_000)
+def test_quote_amount_out_v2_uses_v2_router():
+    """V2 path delegates to the router's `getAmountsOut` and returns the
+    last hop's output."""
+    v2_router = MagicMock()
+    v2_router.functions.getAmountsOut.return_value.call.return_value = [
+        1_000_000, 500_000, 2_500,
+    ]
+    quoters = {"v2": v2_router, "v3": None, "v4": None}
+    path = ["0x" + "a" * 40, "0x" + "b" * 40, "0x" + "c" * 40]
+    swap_config = {"v": 2, "v2": path}
+    out = quote_amount_out(quoters, swap_config, amount_in=1_000_000)
+    assert out == 2_500
+    v2_router.functions.getAmountsOut.assert_called_once_with(1_000_000, path)
 
 
-def test_quote_amount_out_v4_raises():
-    quoter = MagicMock()
+def test_quote_amount_out_v4_uses_v4_quoter():
+    """V4 path calls `quoteExactInput` with the (token_in, path, amount_in)
+    tuple required by Uniswap V4."""
+    v4_quoter = MagicMock()
+    v4_quoter.functions.quoteExactInput.return_value.call.return_value = (
+        9_000_000, 0,
+    )
+    quoters = {"v2": None, "v3": None, "v4": v4_quoter}
+    token_in = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
     swap_config = {"v": 4, "v4": []}
-    with pytest.raises(NotImplementedError, match="V4"):
-        quote_amount_out(quoter, swap_config, amount_in=1_000_000)
+    out = quote_amount_out(
+        quoters, swap_config, amount_in=1_000_000, token_in=token_in,
+    )
+    assert out == 9_000_000
+    v4_quoter.functions.quoteExactInput.assert_called_once_with(
+        (token_in, [], 1_000_000),
+    )
+
+
+def test_quote_amount_out_missing_quoter_raises():
+    """When the configured swap version has no matching quoter instance,
+    quote_amount_out raises a clear ValueError rather than silently
+    returning a MagicMock."""
+    quoters = {"v2": None, "v3": None, "v4": None}
+    with pytest.raises(ValueError, match="V3"):
+        quote_amount_out(quoters, {"v": 3, "v3": b""}, amount_in=1)
 
 
 from aleph_nodestatus.payment_processor import simulate_process
@@ -167,15 +199,28 @@ def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
         assert entry["simulated_only"] is True
 
 
+def _mk_quoters_v3(call_return_value=None, call_side_effect=None):
+    """Build the {v2, v3, v4} dict that extract_aleph expects, with the V3
+    quoter configured. V2/V4 entries are None — fine for ALEPH-tracked
+    tokens that all use V3 paths."""
+    v3 = MagicMock()
+    if call_side_effect is not None:
+        v3.functions.quoteExactInput.return_value.call.side_effect = (
+            call_side_effect
+        )
+    else:
+        v3.functions.quoteExactInput.return_value.call.return_value = (
+            call_return_value
+        )
+    return {"v2": None, "v3": v3, "v4": None}
+
+
 def test_extract_aleph_slippage_bps_override(monkeypatch):
     """Per-run slippage_bps override is passed to apply_slippage, not mutated."""
     w3 = MagicMock()
     processor = MagicMock()
-    quoter = MagicMock()
     processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
-    quoter.functions.quoteExactInput.return_value.call.return_value = (
-        10_000_000, [0], [0], 0
-    )
+    quoters = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
     monkeypatch.setattr(
@@ -192,7 +237,7 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
     original = settings.process_slippage_bps
 
     result = extract_aleph(
-        w3, processor, quoter, account=None,
+        w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
         slippage_bps=500,   # 5% — different from default
@@ -210,12 +255,10 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     (not duplicates across both early and final append sites)."""
     w3 = MagicMock()
     processor = MagicMock()
-    quoter = MagicMock()
     processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
-
-    # quote raises on every call
-    quoter.functions.quoteExactInput.return_value.call.side_effect = \
-        RuntimeError("quoter unavailable")
+    quoters = _mk_quoters_v3(
+        call_side_effect=RuntimeError("quoter unavailable"),
+    )
 
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
@@ -229,7 +272,7 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     )
 
     result = extract_aleph(
-        w3, processor, quoter, account=None,
+        w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
     )
