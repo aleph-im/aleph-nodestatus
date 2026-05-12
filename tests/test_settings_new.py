@@ -1,3 +1,5 @@
+import pytest
+
 from aleph_nodestatus.settings import settings
 
 
@@ -37,5 +39,37 @@ def test_feature_flags_defaults():
 def test_cadence_defaults():
     assert settings.credit_dist_min_interval_blocks == 10 * 7130
     assert settings.credit_dist_dust_threshold_aleph == 0.01
-    assert settings.process_slippage_bps == 200
+    assert settings.process_slippage_bps == 100
     assert settings.process_ttl_seconds == 1800
+
+
+def test_process_ttl_seconds_rejects_above_3600():
+    """M5: pydantic validator must reject TTL > 3600 (on-chain contract bound).
+
+    The module-level ``settings = Settings()`` runs on reload, so the
+    ValidationError surfaces there rather than in a separate Settings() call.
+    """
+    import importlib
+    import os
+    os.environ["process_ttl_seconds"] = "4000"
+    try:
+        from aleph_nodestatus import settings as settings_module
+        with pytest.raises(Exception):  # pydantic.ValidationError or ValueError
+            importlib.reload(settings_module)
+    finally:
+        del os.environ["process_ttl_seconds"]
+        importlib.reload(settings_module)
+
+
+def test_process_ttl_seconds_accepts_3600_exactly():
+    import importlib
+    import os
+    os.environ["process_ttl_seconds"] = "3600"
+    try:
+        from aleph_nodestatus import settings as settings_module
+        importlib.reload(settings_module)
+        s = settings_module.Settings()
+        assert s.process_ttl_seconds == 3600
+    finally:
+        del os.environ["process_ttl_seconds"]
+        importlib.reload(settings_module)

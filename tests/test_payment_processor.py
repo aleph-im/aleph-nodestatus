@@ -91,6 +91,7 @@ def test_execute_process_signs_and_sends(monkeypatch):
 
     fake_built = {"chainId": 1, "nonce": 7}
     processor = MagicMock()
+    processor.functions.process.return_value.estimate_gas.return_value = 200_000
     processor.functions.process.return_value.build_transaction.return_value = fake_built
 
     acct = MagicMock()
@@ -114,6 +115,8 @@ def test_execute_process_signs_and_sends(monkeypatch):
     processor.functions.process.assert_called_once_with(
         "0xUSDC", 1_000_000, 999_000, 1800
     )
+    build_tx_call_args = processor.functions.process.return_value.build_transaction.call_args
+    assert build_tx_call_args[0][0]["gas"] == 250_000  # 200_000 * 5 // 4
 
 
 from aleph_nodestatus.payment_processor import extract_aleph

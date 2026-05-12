@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from pydantic import BaseSettings
+from pydantic import BaseSettings, validator
 
 
 class Settings(BaseSettings):
@@ -126,9 +126,20 @@ class Settings(BaseSettings):
     uniswap_v3_quoter_address: str = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
     uniswap_v4_quoter_address: str = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203"
     uniswap_v2_router_address: str = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-    process_slippage_bps: int = 200          # 2%
-    process_min_token_value_usd: float = 50
-    process_ttl_seconds: int = 1800          # must be <= 3600
+    process_slippage_bps: int = 100          # 1%; see docs/operations/slippage.md
+    process_ttl_seconds: int = 1800
+    process_gas_ceiling: int = 1_500_000
+
+    @validator("process_ttl_seconds", allow_reuse=True)
+    def _ttl_within_contract_bound(cls, v):
+        # AlephPaymentProcessor's process() enforces ttl <= 3600 on-chain.
+        if v > 3600:
+            raise ValueError(
+                f"process_ttl_seconds must be <= 3600 (contract bound), got {v}"
+            )
+        if v <= 0:
+            raise ValueError(f"process_ttl_seconds must be positive, got {v}")
+        return v
 
     # === Wage subsidy ===
     wage_start_date: str = "2026-04-01T00:00:00+00:00"
