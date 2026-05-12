@@ -80,7 +80,7 @@ def simulate_process(
     try:
         w3.eth.call({
             "from": from_address,
-            "to": settings.payment_processor_address,
+            "to": w3.to_checksum_address(settings.payment_processor_address),
             "data": data,
         })
         return None
@@ -202,6 +202,9 @@ def extract_aleph(
                     w3.to_checksum_address(token)
                 ).call()
                 cfg = _swap_config_to_dict(swap_config)
+                if cfg["v"] != 3:
+                    entry["skipped_reason"] = f"swap_v{cfg['v']}_not_supported"
+                    continue
                 expected_out = quote_amount_out(quoter, cfg, balance)
                 min_out = apply_slippage(
                     expected_out, effective_slippage
