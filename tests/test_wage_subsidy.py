@@ -96,7 +96,7 @@ def test_split_subsidy_three_equal_pools():
                     resource_nodes=["r1"]),
     }
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
-    rewards, unallocated = split_subsidy(900.0, nodes, rnodes)
+    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes)
     assert rewards["0xCCN1"] == pytest.approx(300.0)
     assert rewards["0xCRN1"] == pytest.approx(300.0)
     assert rewards["0xS1"]   == pytest.approx(150.0)
@@ -105,13 +105,13 @@ def test_split_subsidy_three_equal_pools():
 
 
 def test_split_subsidy_zero_subsidy_returns_empty():
-    rewards, unallocated = split_subsidy(0.0, {}, {})
+    rewards, unallocated, _ = split_subsidy(0.0, {}, {})
     assert rewards == {}
     assert unallocated == 0.0
 
 
 def test_split_subsidy_no_active_ccns_records_unallocated():
-    rewards, unallocated = split_subsidy(900.0, {}, {})
+    rewards, unallocated, _ = split_subsidy(900.0, {}, {})
     assert rewards == {}
     assert unallocated == pytest.approx(900.0)
 
@@ -122,7 +122,7 @@ def test_split_subsidy_no_linked_crn_only_crn_pool_unallocated():
                     stakers={"0xS1": 100}),
     }
     rnodes = {}
-    rewards, unallocated = split_subsidy(900.0, nodes, rnodes)
+    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes)
     assert rewards["0xCCN1"] == pytest.approx(300.0)
     assert rewards["0xS1"]   == pytest.approx(300.0)
     assert "0xCRN1" not in rewards
@@ -135,12 +135,40 @@ def test_split_subsidy_score_weighted_ccn():
         "n2": _node("n2", "active", 0.5, "0xCCN2", stakers={"0xS2": 1}),
     }
     rnodes = {}
-    rewards, _ = split_subsidy(600.0, nodes, rnodes)
+    rewards, _, _ = split_subsidy(600.0, nodes, rnodes)
     assert rewards["0xCCN1"] == pytest.approx(200 * 1.0 / 1.5)
     assert rewards["0xCCN2"] == pytest.approx(200 * 0.5 / 1.5)
 
 
 from aleph_nodestatus.wage_subsidy import compute_subsidy
+
+
+def test_split_subsidy_detailed_attributes_each_role():
+    """The detailed return tracks each address's CCN/CRN/staker share so the
+    audit post can attribute every ALEPH to its role pool."""
+    nodes = {
+        "n1": _node("n1", "active", 0.9, "0xCCN1",
+                    stakers={"0xS1": 100}, resource_nodes=["r1"]),
+    }
+    rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+    _, _, detailed = split_subsidy(900.0, nodes, rnodes)
+    assert detailed["0xCCN1"] == {"ccn": pytest.approx(300.0)}
+    assert detailed["0xCRN1"] == {"crn": pytest.approx(300.0)}
+    assert detailed["0xS1"]   == {"staker": pytest.approx(300.0)}
+
+
+def test_split_subsidy_detailed_sums_to_per_address_total():
+    """Per-address detailed components must sum to the same per-address total
+    that `rewards` reports — invariant the audit post relies on."""
+    nodes = {
+        "n1": _node("n1", "active", 0.9, "0xA",
+                    stakers={"0xA": 100}, resource_nodes=["r1"]),
+    }
+    # 0xA is both a CCN reward address and a staker — same address, two roles.
+    rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+    rewards, _, detailed = split_subsidy(900.0, nodes, rnodes)
+    assert sum(detailed["0xA"].values()) == pytest.approx(rewards["0xA"])
+    assert set(detailed["0xA"].keys()) == {"ccn", "staker"}
 
 
 def test_compute_subsidy_returns_rewards_totals_unallocated():
@@ -151,7 +179,7 @@ def test_compute_subsidy_returns_rewards_totals_unallocated():
                           stakers={"0xS1": 1}, resource_nodes=["r1"])}
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
 
-    rewards, totals = compute_subsidy(start, end, nodes, rnodes)
+    rewards, totals, _ = compute_subsidy(start, end, nodes, rnodes)
 
     period_total = 825_000
     assert totals["period_total_aleph"] == pytest.approx(period_total)

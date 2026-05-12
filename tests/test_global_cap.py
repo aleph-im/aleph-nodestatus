@@ -30,9 +30,10 @@ def _patch_orchestrator(monkeypatch, final_rewards):
     )
     monkeypatch.setattr(
         cmd, "merge_rewards",
-        lambda sources, dust_threshold: (
+        lambda sources, details=None, dust_threshold=0.01: (
             final_rewards,
             {name: dict(d) for name, d in sources.items()},
+            {},
         ),
     )
     return web3_mock

@@ -45,7 +45,7 @@ def reward_set(draw):
 @hyp_settings(max_examples=200, deadline=None)
 def test_merge_rewards_is_order_independent(reward_dict):
     """Shuffling the per-source iteration order must not change final output."""
-    final_a, _ = merge_rewards(reward_dict, dust_threshold=0.01)
+    final_a, _, _ = merge_rewards(reward_dict, dust_threshold=0.01)
 
     shuffled = dict(list(reward_dict.items()))
     items = list(shuffled.items())
@@ -58,7 +58,7 @@ def test_merge_rewards_is_order_independent(reward_dict):
         random.shuffle(inner)
         shuffled[k] = dict(inner)
 
-    final_b, _ = merge_rewards(shuffled, dust_threshold=0.01)
+    final_b, _, _ = merge_rewards(shuffled, dust_threshold=0.01)
 
     assert set(final_a.keys()) == set(final_b.keys())
     for addr in final_a:

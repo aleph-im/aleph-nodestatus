@@ -1,7 +1,7 @@
 import asyncio
 import bisect
 import logging
-from collections import deque
+from collections import defaultdict, deque
 
 import aiohttp
 from aleph.sdk.client import AlephHttpClient
@@ -210,6 +210,7 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
 
 def _distribute_expense(
     expense_type, expense, nodes, resource_nodes, rewards,
+    detailed=None,
     web3=None,
     *,
     ccn_share: float,
@@ -220,7 +221,17 @@ def _distribute_expense(
     """Distribute a single expense entry. Pure function: shares are explicit.
 
     Returns (storage_aleph, execution_aleph, dev_fund_aleph).
+    Side effects (in-place mutation):
+      - `rewards`: addr → total_amount, accumulated.
+      - `detailed` (optional): addr → {component_key: amount}, where
+        component_key is one of "storage_ccn", "storage_staker",
+        "execution_ccn", "execution_crn", "execution_staker", depending on
+        expense_type and which pool the share came from.
     """
+    if detailed is None:
+        # Throwaway accumulator when caller doesn't need per-component output.
+        detailed = defaultdict(lambda: defaultdict(float))
+
     credit_price_aleph = expense.get("credit_price_aleph", 0)
     total_aleph = sum(
         credit["amount"] * credit_price_aleph
@@ -240,9 +251,9 @@ def _distribute_expense(
             if node_id and node_id in resource_nodes:
                 rnode = resource_nodes[node_id]
                 addr = get_reward_address(rnode, web3)
-                rewards[addr] = (
-                    rewards.get(addr, 0) + credit_aleph * crn_share
-                )
+                share = credit_aleph * crn_share
+                rewards[addr] = rewards.get(addr, 0) + share
+                detailed[addr]["execution_crn"] += share
             elif node_id:
                 LOGGER.warning(
                     f"CRN {node_id} not found in resource_nodes, "
@@ -268,11 +279,12 @@ def _distribute_expense(
     total_ccn_score = sum(v["score"] for v in ccn_weights.values())
     ccn_pool = total_aleph * ccn_share
     if total_ccn_score > 0 and ccn_pool > 0:
+        ccn_key = f"{expense_type}_ccn"
         for info in ccn_weights.values():
-            rewards[info["reward_address"]] = (
-                rewards.get(info["reward_address"], 0)
-                + ccn_pool * info["score"] / total_ccn_score
-            )
+            addr = info["reward_address"]
+            share = ccn_pool * info["score"] / total_ccn_score
+            rewards[addr] = rewards.get(addr, 0) + share
+            detailed[addr][ccn_key] += share
 
     # Staker pool
     all_stakers = {}
@@ -284,10 +296,11 @@ def _distribute_expense(
     total_staked = sum(all_stakers.values())
     staker_pool = total_aleph * staker_share
     if total_staked > 0 and staker_pool > 0:
+        staker_key = f"{expense_type}_staker"
         for addr, staked in all_stakers.items():
-            rewards[addr] = (
-                rewards.get(addr, 0) + staker_pool * staked / total_staked
-            )
+            share = staker_pool * staked / total_staked
+            rewards[addr] = rewards.get(addr, 0) + share
+            detailed[addr][staker_key] += share
 
     if expense_type == "storage":
         return total_aleph, 0, dev_fund
@@ -362,15 +375,26 @@ def _validate_rewards_aggregates(expense):
             )
 
 
-def _apply_expense_to(rewards, totals, exp_type, expense,
+def _apply_expense_to(rewards, totals, detailed, exp_type, expense,
                       nodes, resource_nodes, web3):
     s, e, d = _distribute_expense(
         exp_type, expense, nodes, resource_nodes, rewards,
-        web3=web3, **_shares_for(exp_type),
+        detailed=detailed, web3=web3, **_shares_for(exp_type),
     )
     totals["storage_total_aleph"]   += s
     totals["execution_total_aleph"] += e
     totals["dev_fund_total_aleph"]  += d
+
+
+def _empty_detailed():
+    """Defaultdict shape that _distribute_expense / _apply_expense_to mutate."""
+    return defaultdict(lambda: defaultdict(float))
+
+
+def _detailed_to_plain(detailed):
+    """Convert a defaultdict-of-defaultdict into a plain dict-of-dict so it
+    serialises cleanly and round-trips through JSON."""
+    return {addr: dict(comps) for addr, comps in detailed.items()}
 
 
 async def compute_rewards(
@@ -382,7 +406,13 @@ async def compute_rewards(
 
     Returns:
         {"credit_revenue": (rewards_dict, totals_dict),
-         "holder_tier":    (rewards_dict, totals_dict)}
+         "holder_tier":    (rewards_dict, totals_dict),
+         "detailed": {"credit_revenue": {addr: {component: amount}},
+                      "holder_tier":    {addr: {component: amount}}}}
+
+    The `detailed` key carries per-account, per-component (storage_ccn,
+    storage_staker, execution_ccn, execution_crn, execution_staker) shares
+    so the audit post can attribute every ALEPH to its source pool.
     """
     api_server = PublishMode.get_publish_api_server()
     sender = sender or settings.credit_expense_sender
@@ -393,6 +423,7 @@ async def compute_rewards(
         return {
             "credit_revenue": ({}, zero_totals()),
             "holder_tier":    ({}, zero_totals()),
+            "detailed": {"credit_revenue": {}, "holder_tier": {}},
         }
 
     if web3 is None:
@@ -444,6 +475,8 @@ async def _compute_rewards_snapshots(
 
     credit_rewards, credit_totals = {}, zero_totals()
     holder_rewards, holder_totals = {}, zero_totals()
+    credit_detailed = _empty_detailed()
+    holder_detailed = _empty_detailed()
 
     for msg in msgs:
         height, exp_type, expense = _parse_message(msg)
@@ -454,7 +487,7 @@ async def _compute_rewards_snapshots(
         _, nodes, resource_nodes = snapshots[idx]
 
         _apply_expense_to(
-            credit_rewards, credit_totals, exp_type,
+            credit_rewards, credit_totals, credit_detailed, exp_type,
             _project_expense(expense, "credits"),
             nodes, resource_nodes, web3,
         )
@@ -462,7 +495,7 @@ async def _compute_rewards_snapshots(
         if include_holder_tier and expense.get("rewards"):
             _validate_rewards_aggregates(expense)
             _apply_expense_to(
-                holder_rewards, holder_totals, exp_type,
+                holder_rewards, holder_totals, holder_detailed, exp_type,
                 _project_expense(expense, "rewards"),
                 nodes, resource_nodes, web3,
             )
@@ -470,6 +503,10 @@ async def _compute_rewards_snapshots(
     return {
         "credit_revenue": (credit_rewards, credit_totals),
         "holder_tier":    (holder_rewards, holder_totals),
+        "detailed": {
+            "credit_revenue": _detailed_to_plain(credit_detailed),
+            "holder_tier":    _detailed_to_plain(holder_detailed),
+        },
     }
 
 
@@ -515,6 +552,8 @@ async def _compute_rewards_full_resync(
 
     credit_rewards, credit_totals = {}, zero_totals()
     holder_rewards, holder_totals = {}, zero_totals()
+    credit_detailed = _empty_detailed()
+    holder_detailed = _empty_detailed()
     idx = 0
     nodes = resource_nodes = None
 
@@ -523,12 +562,14 @@ async def _compute_rewards_full_resync(
             break
         while idx < len(parsed) and parsed[idx][0] <= height:
             _, exp_type, expense = parsed[idx]
-            _apply_expense_to(credit_rewards, credit_totals, exp_type,
+            _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
+                              exp_type,
                               _project_expense(expense, "credits"),
                               nodes, resource_nodes, web3)
             if include_holder_tier and expense.get("rewards"):
                 _validate_rewards_aggregates(expense)
-                _apply_expense_to(holder_rewards, holder_totals, exp_type,
+                _apply_expense_to(holder_rewards, holder_totals,
+                                  holder_detailed, exp_type,
                                   _project_expense(expense, "rewards"),
                                   nodes, resource_nodes, web3)
             idx += 1
@@ -543,12 +584,14 @@ async def _compute_rewards_full_resync(
         if end_height is not None and h > end_height:
             idx += 1
             continue
-        _apply_expense_to(credit_rewards, credit_totals, exp_type,
+        _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
+                          exp_type,
                           _project_expense(expense, "credits"),
                           nodes, resource_nodes, web3)
         if include_holder_tier and expense.get("rewards"):
             _validate_rewards_aggregates(expense)
-            _apply_expense_to(holder_rewards, holder_totals, exp_type,
+            _apply_expense_to(holder_rewards, holder_totals, holder_detailed,
+                              exp_type,
                               _project_expense(expense, "rewards"),
                               nodes, resource_nodes, web3)
         idx += 1
@@ -559,6 +602,10 @@ async def _compute_rewards_full_resync(
     return {
         "credit_revenue": (credit_rewards, credit_totals),
         "holder_tier":    (holder_rewards, holder_totals),
+        "detailed": {
+            "credit_revenue": _detailed_to_plain(credit_detailed),
+            "holder_tier":    _detailed_to_plain(holder_detailed),
+        },
     }
 
 

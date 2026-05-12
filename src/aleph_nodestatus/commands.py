@@ -384,6 +384,7 @@ async def process_credit_distribution(
     streams = {
         "credit_revenue": ({}, zero_totals()),
         "holder_tier":    ({}, zero_totals()),
+        "detailed": {"credit_revenue": {}, "holder_tier": {}},
     }
     if flags.get("credit_revenue"):
         streams = await compute_rewards(
@@ -396,9 +397,13 @@ async def process_credit_distribution(
 
     credit_rewards, credit_totals = streams["credit_revenue"]
     holder_rewards, holder_totals = streams["holder_tier"]
+    revenue_detailed = streams.get(
+        "detailed", {"credit_revenue": {}, "holder_tier": {}},
+    )
 
     # === Step 3: wage subsidy ===
     wage_rewards = {}
+    wage_detailed = {}
     wage_totals = {
         "period_total_aleph": 0,
         "unallocated_aleph": 0,
@@ -416,7 +421,7 @@ async def process_credit_distribution(
             # wage subsidy is a CCN/CRN/staker pool split, not a per-block
             # reward, so the latest snapshot is treated as authoritative.
             _, nodes, resource_nodes = snapshots[-1]
-            wage_rewards, wage_totals = compute_subsidy(
+            wage_rewards, wage_totals, wage_detailed = compute_subsidy(
                 start_time, end_time, nodes, resource_nodes, web3=web3,
             )
         else:
@@ -438,10 +443,18 @@ async def process_credit_distribution(
             )
 
     # === Step 4: merge + dust filter ===
-    final_rewards, by_source = merge_rewards(
+    # `by_address_detailed` inverts the per-source breakdowns so each
+    # surviving recipient address carries its full {source: {component: amount}}
+    # attribution. Sums per address equal final_rewards[addr] by construction.
+    final_rewards, by_source, by_address_detailed = merge_rewards(
         {"credit_revenue": credit_rewards,
          "holder_tier":    holder_rewards,
          "wage_subsidy":   wage_rewards},
+        details={
+            "credit_revenue": revenue_detailed.get("credit_revenue", {}),
+            "holder_tier":    revenue_detailed.get("holder_tier", {}),
+            "wage_subsidy":   wage_detailed,
+        },
         dust_threshold=settings.credit_dist_dust_threshold_aleph,
     )
 
@@ -513,6 +526,7 @@ async def process_credit_distribution(
         "start_time": start_time, "end_time": end_time,
         "rewards": final_rewards,
         "rewards_by_source": by_source,
+        "rewards_detailed": by_address_detailed,
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
@@ -586,7 +600,7 @@ async def process_credit_distribution(
 @click.option("--no-wage", "no_wage", is_flag=True,
               help="Skip wage subsidy")
 @click.option("--enable-holder-tier", "enable_holder_tier", is_flag=True,
-              help="Force holder-tier ON (overrides env=False)")
+              help="Force holder-tier ON (overrides env if disabled)")
 @click.option("--no-holder-tier", "no_holder_tier", is_flag=True,
               help="Force holder-tier OFF (overrides env=True, the default)")
 @click.option("--no-transfer", "no_transfer", is_flag=True,

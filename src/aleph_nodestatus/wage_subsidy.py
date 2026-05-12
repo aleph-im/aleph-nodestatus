@@ -4,6 +4,7 @@ The curve is W0·(1 - t/T) ALEPH per month, where t is months since
 settings.wage_start_date and T = settings.wage_duration_months.
 """
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Tuple
 
@@ -54,20 +55,25 @@ def split_subsidy(
     nodes: dict,
     resource_nodes: dict,
     web3=None,
-) -> Tuple[Dict[str, float], float]:
+) -> Tuple[Dict[str, float], float, Dict[str, Dict[str, float]]]:
     """Split a period's wage subsidy across CCN / CRN / staker pools.
 
-    Returns (rewards_by_address, unallocated_aleph).
+    Returns (rewards_by_address, unallocated_aleph, detailed_by_address).
+    `detailed_by_address` maps address → {"ccn"|"crn"|"staker": amount} so
+    consumers can attribute each address's wage payout to its role(s).
     Each pool with zero eligible recipients contributes to unallocated.
     """
     if period_subsidy <= 0:
-        return {}, 0.0
+        return {}, 0.0, {}
 
     ccn_pool    = period_subsidy * settings.wage_ccn_share
     crn_pool    = period_subsidy * settings.wage_crn_share
     staker_pool = period_subsidy * settings.wage_staker_share
 
     rewards: Dict[str, float] = {}
+    detailed: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
     unallocated = 0.0
 
     ccn_weights = []
@@ -80,7 +86,9 @@ def split_subsidy(
     total_ccn = sum(s for _, s in ccn_weights)
     if total_ccn > 0:
         for addr, s in ccn_weights:
-            rewards[addr] = rewards.get(addr, 0.0) + ccn_pool * s / total_ccn
+            share = ccn_pool * s / total_ccn
+            rewards[addr] = rewards.get(addr, 0.0) + share
+            detailed[addr]["ccn"] += share
     else:
         unallocated += ccn_pool
 
@@ -94,7 +102,9 @@ def split_subsidy(
     total_crn = sum(s for _, s in crn_weights)
     if total_crn > 0:
         for addr, s in crn_weights:
-            rewards[addr] = rewards.get(addr, 0.0) + crn_pool * s / total_crn
+            share = crn_pool * s / total_crn
+            rewards[addr] = rewards.get(addr, 0.0) + share
+            detailed[addr]["crn"] += share
     else:
         unallocated += crn_pool
 
@@ -107,11 +117,13 @@ def split_subsidy(
     total_stake = sum(all_stakers.values())
     if total_stake > 0:
         for addr, amt in all_stakers.items():
-            rewards[addr] = rewards.get(addr, 0.0) + staker_pool * amt / total_stake
+            share = staker_pool * amt / total_stake
+            rewards[addr] = rewards.get(addr, 0.0) + share
+            detailed[addr]["staker"] += share
     else:
         unallocated += staker_pool
 
-    return rewards, unallocated
+    return rewards, unallocated, {a: dict(d) for a, d in detailed.items()}
 
 
 def compute_subsidy(
@@ -120,15 +132,18 @@ def compute_subsidy(
     nodes: dict,
     resource_nodes: dict,
     web3=None,
-) -> Tuple[Dict[str, float], dict]:
+) -> Tuple[Dict[str, float], dict, Dict[str, Dict[str, float]]]:
     """Compute the wage subsidy for [start_time, end_time] and split it.
 
-    Returns (rewards_by_address, totals) where totals contains:
-        period_total_aleph, unallocated_aleph, start_t_months, end_t_months,
-        split={ccn, crn, stakers}.
+    Returns (rewards_by_address, totals, detailed_by_address) where:
+      - totals contains period_total_aleph, unallocated_aleph,
+        start_t_months, end_t_months, split={ccn, crn, stakers}.
+      - detailed_by_address maps address → {"ccn"|"crn"|"staker": amount}.
     """
     period_total = compute_period_subsidy(start_time, end_time)
-    rewards, unallocated = split_subsidy(period_total, nodes, resource_nodes, web3)
+    rewards, unallocated, detailed = split_subsidy(
+        period_total, nodes, resource_nodes, web3,
+    )
 
     totals = {
         "start_t_months":     months_since_start(start_time),
@@ -141,4 +156,4 @@ def compute_subsidy(
             "stakers": period_total * settings.wage_staker_share,
         },
     }
-    return rewards, totals
+    return rewards, totals, detailed
