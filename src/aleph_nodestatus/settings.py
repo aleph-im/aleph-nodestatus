@@ -124,7 +124,7 @@ class Settings(BaseSettings):
 
     # Slippage / quoter
     uniswap_v3_quoter_address: str = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
-    uniswap_v4_quoter_address: str = "0x52Bd3a3D8f43Bd6cf0B0dd0a7Fe3B3dBe7D3B32f"
+    uniswap_v4_quoter_address: str = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203"
     uniswap_v2_router_address: str = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
     process_slippage_bps: int = 200          # 2%
     process_min_token_value_usd: float = 50
