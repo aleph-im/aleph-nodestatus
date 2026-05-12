@@ -59,7 +59,7 @@ async def test_explicit_start_height_inside_cadence_window_aborts(
     last_end = 1_999_000  # within default min_interval_blocks of current 2_000_000
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution",
-        AsyncMock(return_value=(last_end, {"end_height": last_end}, True)),
+        AsyncMock(return_value=(last_end, {"end_height": last_end})),
     )
 
     await cmd.process_credit_distribution(
@@ -86,7 +86,7 @@ async def test_explicit_start_height_with_force_proceeds(
     last_end = 1_999_000
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution",
-        AsyncMock(return_value=(last_end, {"end_height": last_end}, True)),
+        AsyncMock(return_value=(last_end, {"end_height": last_end})),
     )
 
     web3_mock = patch_orchestrator_deps
@@ -112,7 +112,7 @@ async def test_calculation_mode_ignores_cadence(
     import aleph_nodestatus.commands as cmd
 
     last_end = 1_999_000
-    mock_fn = AsyncMock(return_value=(last_end, {"end_height": last_end}, True))
+    mock_fn = AsyncMock(return_value=(last_end, {"end_height": last_end}))
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution", mock_fn,
     )
@@ -138,11 +138,11 @@ async def test_act_with_no_prior_distribution_and_default_start_height_errors(
     the 'first run' error rather than silently deriving a wrong start_height.
 
     Covers the path where get_latest_successful_credit_distribution returns
-    (0, None, False) under act=True and the memoization correctly short-circuits
+    (0, None) under act=True and the memoization correctly short-circuits
     the second fetch (last_end is 0 after the act branch, not None)."""
     import aleph_nodestatus.commands as cmd
 
-    mock_fn = AsyncMock(return_value=(0, None, False))
+    mock_fn = AsyncMock(return_value=(0, None))
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution", mock_fn,
     )

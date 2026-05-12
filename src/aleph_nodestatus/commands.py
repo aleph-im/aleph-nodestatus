@@ -302,7 +302,7 @@ async def process_credit_distribution(
     # "fetched, no prior run", which avoids a redundant network call.
     last_end = None
     if act:
-        last_end, _, _ = await get_latest_successful_credit_distribution(
+        last_end, _ = await get_latest_successful_credit_distribution(
             reward_sender
         )
         if last_end and should_skip_run(
@@ -317,7 +317,7 @@ async def process_credit_distribution(
 
     if start_height in (None, -1):
         if last_end is None:
-            last_end, _, _ = await get_latest_successful_credit_distribution(
+            last_end, _ = await get_latest_successful_credit_distribution(
                 reward_sender
             )
         if last_end:
@@ -533,6 +533,31 @@ async def process_credit_distribution(
         preview = {k: v for k, v in distribution.items()
                     if k != "rewards_by_source"}
         click.echo(json.dumps(preview, indent=2, default=str))
+
+    # === Step 7: failed-batch summary ===
+    # Surface failed batches at run end so operators don't have to scroll
+    # through per-batch echo lines to find them. Failed recipients must be
+    # retransferred manually and the audit post AMENDed.
+    if flags.get("transfer") and act and not is_testnet:
+        failed = [
+            (i, t) for i, t in enumerate(transfer_metadata["targets"])
+            if not t.get("success")
+        ]
+        if failed:
+            click.echo(
+                f"\n=== {len(failed)} batch(es) failed — "
+                f"manual action required ==="
+            )
+            for i, t in failed:
+                click.echo(
+                    f"  Batch {i+1}: {len(t['targets'])} recipients, "
+                    f"{t['total']} ALEPH, tx={t.get('tx') or 'none'}"
+                )
+            click.echo(
+                "Manually retransfer the failed recipients (see the "
+                "published distribution post for recipient lists), then "
+                "AMEND the post to mark them success=true."
+            )
 
 
 @click.command()

@@ -40,7 +40,7 @@ async def test_extract_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(cmd, "get_v4_quoter_contract", lambda w3: MagicMock())
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution",
-        AsyncMock(return_value=(0, None, False)),
+        AsyncMock(return_value=(0, None)),
     )
 
     # Track whether a concurrent task gets scheduled while extract is running.

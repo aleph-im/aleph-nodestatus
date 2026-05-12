@@ -26,7 +26,7 @@ def _patch_orchestrator(monkeypatch, final_rewards):
     monkeypatch.setattr(cmd, "get_dbs", lambda: {})
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution",
-        AsyncMock(return_value=(0, None, False)),
+        AsyncMock(return_value=(0, None)),
     )
     monkeypatch.setattr(
         cmd, "merge_rewards",
