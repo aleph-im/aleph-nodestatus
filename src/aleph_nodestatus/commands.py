@@ -362,6 +362,10 @@ async def process_credit_distribution(
         admin_address = admin_account.address
 
     # === Step 1: extract ALEPH from the processor ===
+    # extract_aleph is synchronous (web3.py is sync-native) and the receipt
+    # wait can take up to 300s per token. We run it on a worker thread so the
+    # asyncio event loop remains responsive for any concurrent coroutines
+    # sharing this loop.
     extract_block = {"tokens": [], "errors": []}
     if flags.get("extract"):
         processor = get_processor_contract(web3)
@@ -370,7 +374,8 @@ async def process_credit_distribution(
             "v3": get_quoter_contract(web3),
             "v4": get_v4_quoter_contract(web3),
         }
-        extract_block = extract_aleph(
+        extract_block = await asyncio.to_thread(
+            extract_aleph,
             web3, processor, quoters,
             account=admin_account,
             from_address=admin_address,
