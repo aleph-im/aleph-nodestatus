@@ -7,6 +7,7 @@ settings.wage_start_date and T = settings.wage_duration_months.
 from datetime import datetime
 from typing import Dict, Tuple
 
+from .distribution import compute_score_multiplier
 from .settings import settings
 from .utils import get_reward_address
 
@@ -46,9 +47,6 @@ def compute_period_subsidy(start_time: float, end_time: float) -> float:
     if t2 <= t1:
         return 0.0
     return wage_integral(t2) - wage_integral(t1)
-
-
-from .distribution import compute_score_multiplier
 
 
 def split_subsidy(

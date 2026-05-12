@@ -1,19 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-This is a skeleton file that can serve as a starting point for a Python
-console script. To run this script uncomment the following lines in the
-[options.entry_points] section in setup.cfg:
-
-    console_scripts =
-         fibonacci = aleph_nodestatus.skeleton:run
-
-Then run `python setup.py install` which will install the command `fibonacci`
-inside your current environment.
-Besides console scripts, the header (i.e. until _logger...) of this file can
-also be used as template for Python modules.
-
-Note: This skeleton file can be safely removed if not needed!
-"""
+"""CLI entrypoints for nodestatus monitoring, distribution, and credit rewards."""
 
 import argparse
 import asyncio
@@ -38,7 +23,6 @@ from .credit_distribution import (
     compute_rewards,
     fetch_node_snapshots,
     get_latest_successful_credit_distribution,
-    prepare_credit_distribution,
     should_skip_run,
     zero_totals,
 )
@@ -230,6 +214,7 @@ async def process_distribution(start_height, end_height, act=False, reward_sende
     print(f"Total rewards: {total_rewards:,.2f} ALEPH")
     print(f"{'='*60}\n")
 
+    transfer_metadata = {"targets": []}
     if act and not is_testnet:
         print("Executing actual token transfers...")
         max_items = settings.ethereum_batch_size
@@ -238,8 +223,9 @@ async def process_distribution(start_height, end_height, act=False, reward_sende
         for i in range(math.ceil(len(distribution_list) / max_items)):
             step_items = distribution_list[max_items * i : max_items * (i + 1)]
             print(f"Batch {i+1}: transferring to {len(step_items)} recipients")
-            await transfer_tokens(dict(step_items), metadata=distribution)
+            await transfer_tokens(dict(step_items), metadata=transfer_metadata)
 
+    distribution["targets"] = transfer_metadata["targets"]
     await create_distribution_tx_post(distribution)
 
 
@@ -361,6 +347,13 @@ async def process_credit_distribution(
         admin_account = Account.from_key(HexBytes(pk))
         admin_address = admin_account.address
 
+    # Step ordering note: extract runs BEFORE the balance check. The reasoning
+    # is that the extract step IS the top-up mechanism for the distribution
+    # account — extracting first ensures balance reflects the post-extract
+    # state. The trade-off: if extract partially fails and the post-extract
+    # balance is still short, we've burned gas without a distribution. This
+    # is acceptable for the current cadence (daily) but should be revisited
+    # if a pre-flight balance check becomes cheap to compute.
     # === Step 1: extract ALEPH from the processor ===
     # extract_aleph is synchronous (web3.py is sync-native) and the receipt
     # wait can take up to 300s per token. We run it on a worker thread so the
@@ -642,9 +635,11 @@ def _resolve_feature_flags(*, no_extract, no_credit_revenue, no_wage,
     if no_extract:        f["extract"] = False
     if no_credit_revenue: f["credit_revenue"] = False
     if no_wage:           f["wage"] = False
-    # holder_tier overrides are last-wins by design; the CLI already
-    # validates --enable-holder-tier / --no-holder-tier as mutually
-    # exclusive, so this only matters for programmatic callers.
+    # holder_tier overrides are last-wins. Order matters only for
+    # programmatic callers — the CLI rejects mutual exclusivity at parse
+    # time. no_holder_tier wins last because accidentally enabling
+    # holder_tier (over-distribution) is worse than accidentally disabling
+    # it (under-distribution, recoverable on the next run).
     if enable_holder_tier: f["holder_tier"] = True
     if no_holder_tier:    f["holder_tier"] = False
     if no_transfer:       f["transfer"] = False

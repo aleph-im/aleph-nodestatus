@@ -593,22 +593,6 @@ async def _compute_rewards_full_resync(
     }
 
 
-async def prepare_credit_distribution(
-    dbs, end_height, start_time, end_time, full_resync=False
-):
-    result = await compute_rewards(
-        start_time, end_time, full_resync=full_resync,
-        include_holder_tier=False, dbs=dbs, end_height=end_height,
-    )
-    rewards, totals = result["credit_revenue"]
-    return (
-        rewards,
-        totals["storage_total_aleph"],
-        totals["execution_total_aleph"],
-        totals["dev_fund_total_aleph"],
-    )
-
-
 def should_skip_run(last_end_height, current_height, min_interval_blocks,
                     force=False):
     """Return True if we should skip the run because the min interval
