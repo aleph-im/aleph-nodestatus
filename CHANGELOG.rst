@@ -5,6 +5,19 @@ Changelog
 Version 0.2
 ===========
 
+Migration
+---------
+
+- ``docker-compose.yml`` now defines two services: ``nodestatus-calc`` and
+  ``nodestatus-dist``. Operators must create two env files,
+  ``docker/.env.calc`` and ``docker/.env.dist``, each setting ``ethereum_pkey``
+  to the appropriate role's key. See ``docker/.env.calc.example`` and
+  ``docker/.env.dist.example`` for templates. The previous single
+  ``docker/.env`` is no longer referenced by any service; existing operators
+  should split its contents into the two new files and delete the old one.
+  Single-instance dev/staging deployments can run
+  ``docker compose up nodestatus-calc`` only.
+
 - New ``nodestatus-distribute-credits`` flow:
 
   - Calls ``AlephPaymentProcessor.process()`` per token (USDC, ETH, ALEPH)

@@ -1,17 +1,29 @@
 services:
-  nodestatus:
+  # Hourly calculation snapshots. ethereum_pkey here must be status_sender's.
+  nodestatus-calc:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     stdin_open: true
     tty: true
     env_file:
-      - .env
+      - .env.calc
     volumes:
       - ../:/aleph-nodestatus
       - ../logs:/logs
-    # Deploy two instances in production: one with ethereum_pkey = status_sender
-    # (publishes hourly calculation snapshots), one with ethereum_pkey =
-    # distribution_recipient (attempts distribution; cadence guard rate-limits
-    # to the configured min-interval window).
-    command: /bin/bash -c "service cron start && (echo \"*/10 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute -v >> /logs/nodestatus.log\"; echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\"; echo \"0 0 * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"
+    command: /bin/bash -c "service cron start && (echo \"*/10 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute -v >> /logs/nodestatus.log\"; echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\") | crontab - && /bin/sh"
+
+  # Daily distribution. ethereum_pkey here must be distribution_recipient's
+  # and the address must hold >= the expected daily ALEPH outflow.
+  nodestatus-dist:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env.dist
+    volumes:
+      - ../:/aleph-nodestatus
+      - ../logs:/logs
+    command: /bin/bash -c "service cron start && (echo \"0 0 * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"
