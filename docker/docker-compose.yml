@@ -1,5 +1,9 @@
 services:
-  # Hourly calculation snapshots. ethereum_pkey here must be status_sender's.
+  # Hourly calculation snapshots for the new credit-rewards flow.
+  # ethereum_pkey here must be status_sender's.
+  # The legacy `nodestatus-distribute` (staking-rewards) calc cron was
+  # removed: the credits flow replaces the staking flow entirely under v2
+  # tokenomics, so the two are mutually exclusive.
   nodestatus-calc:
     build:
       context: ..
@@ -11,7 +15,7 @@ services:
     volumes:
       - ../:/aleph-nodestatus
       - ../logs:/logs
-    command: /bin/bash -c "service cron start && (echo \"*/10 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute -v >> /logs/nodestatus.log\"; echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\") | crontab - && /bin/sh"
+    command: /bin/bash -c "service cron start && echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\" | crontab - && /bin/sh"
 
   # Daily distribution. ethereum_pkey here must be distribution_recipient's
   # and the address must hold >= the expected daily ALEPH outflow.
