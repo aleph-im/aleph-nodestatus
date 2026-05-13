@@ -20,6 +20,11 @@ LOGGER = logging.getLogger(__name__)
 
 CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 
+# Sentinel key used in `unallocated_crn_by_node_id` for execution credits that
+# arrived without a `node_id` field. Distinct from a real node hash so
+# downstream tooling can pick it out.
+UNALLOCATED_MISSING_NODE_ID = "__missing_node_id__"
+
 
 def _shares_for(expense_type):
     if expense_type == "storage":
@@ -211,6 +216,7 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
 def _distribute_expense(
     expense_type, expense, nodes, resource_nodes, rewards,
     detailed=None,
+    unallocated=None,
     web3=None,
     *,
     ccn_share: float,
@@ -227,10 +233,18 @@ def _distribute_expense(
         component_key is one of "storage_ccn", "storage_staker",
         "execution_ccn", "execution_crn", "execution_staker", depending on
         expense_type and which pool the share came from.
+      - `unallocated` (optional): node_id → ALEPH dropped because the
+        execution credit referenced a CRN absent from the current snapshot,
+        or carried no `node_id` at all (bucketed under
+        `UNALLOCATED_MISSING_NODE_ID`). Only the per-CRN slice is lost; the
+        same credit still contributes to CCN/staker/dev pools.
     """
     if detailed is None:
         # Throwaway accumulator when caller doesn't need per-component output.
         detailed = defaultdict(lambda: defaultdict(float))
+    if unallocated is None:
+        # Throwaway accumulator when caller doesn't need drop tracking.
+        unallocated = defaultdict(float)
 
     credit_price_aleph = expense.get("credit_price_aleph", 0)
     total_aleph = sum(
@@ -244,26 +258,31 @@ def _distribute_expense(
         # current resource_nodes snapshot, drop their CRN share (the credit
         # still contributes to total_aleph and therefore to CCN/staker/dev
         # pools — only the per-CRN portion is lost). Warn in both cases so
-        # the missing share is visible in logs.
+        # the missing share is visible in logs and accumulate the dropped
+        # amount into `unallocated` so it surfaces in the audit post.
         for credit in expense.get("credits", []):
             credit_aleph = credit["amount"] * credit_price_aleph
             node_id = credit.get("node_id")
+            share = credit_aleph * crn_share
             if node_id and node_id in resource_nodes:
                 rnode = resource_nodes[node_id]
                 addr = get_reward_address(rnode, web3)
-                share = credit_aleph * crn_share
                 rewards[addr] = rewards.get(addr, 0) + share
                 detailed[addr]["execution_crn"] += share
             elif node_id:
                 LOGGER.warning(
                     f"CRN {node_id} not found in resource_nodes, "
-                    f"dropping {credit_aleph * crn_share:.6f} ALEPH CRN share"
+                    f"dropping {share:.6f} ALEPH CRN share"
                 )
+                if share > 0:
+                    unallocated[node_id] += share
             else:
                 LOGGER.warning(
                     f"Credit missing node_id, dropping "
-                    f"{credit_aleph * crn_share:.6f} ALEPH CRN share"
+                    f"{share:.6f} ALEPH CRN share"
                 )
+                if share > 0:
+                    unallocated[UNALLOCATED_MISSING_NODE_ID] += share
 
     # CCN pool (score-weighted)
     ccn_weights = {}
@@ -354,7 +373,9 @@ def _project_expense(expense, src_key):
 def zero_totals():
     return {"storage_total_aleph": 0,
             "execution_total_aleph": 0,
-            "dev_fund_total_aleph": 0}
+            "dev_fund_total_aleph": 0,
+            "unallocated_crn_aleph": 0,
+            "unallocated_crn_by_node_id": {}}
 
 
 def _validate_rewards_aggregates(expense):
@@ -375,11 +396,12 @@ def _validate_rewards_aggregates(expense):
             )
 
 
-def _apply_expense_to(rewards, totals, detailed, exp_type, expense,
+def _apply_expense_to(rewards, totals, detailed, unallocated, exp_type, expense,
                       nodes, resource_nodes, web3):
     s, e, d = _distribute_expense(
         exp_type, expense, nodes, resource_nodes, rewards,
-        detailed=detailed, web3=web3, **_shares_for(exp_type),
+        detailed=detailed, unallocated=unallocated,
+        web3=web3, **_shares_for(exp_type),
     )
     totals["storage_total_aleph"]   += s
     totals["execution_total_aleph"] += e
@@ -389,6 +411,18 @@ def _apply_expense_to(rewards, totals, detailed, exp_type, expense,
 def _empty_detailed():
     """Defaultdict shape that _distribute_expense / _apply_expense_to mutate."""
     return defaultdict(lambda: defaultdict(float))
+
+
+def _empty_unallocated():
+    """Defaultdict for tracking ALEPH dropped on a per-node_id basis."""
+    return defaultdict(float)
+
+
+def _fold_unallocated(totals, unallocated):
+    """Stamp the per-node_id unallocated dict into `totals` for the audit
+    post. Idempotent: callers may invoke at any time."""
+    totals["unallocated_crn_aleph"]      = sum(unallocated.values())
+    totals["unallocated_crn_by_node_id"] = dict(unallocated)
 
 
 def _detailed_to_plain(detailed):
@@ -477,6 +511,8 @@ async def _compute_rewards_snapshots(
     holder_rewards, holder_totals = {}, zero_totals()
     credit_detailed = _empty_detailed()
     holder_detailed = _empty_detailed()
+    credit_unallocated = _empty_unallocated()
+    holder_unallocated = _empty_unallocated()
 
     for msg in msgs:
         height, exp_type, expense = _parse_message(msg)
@@ -487,7 +523,8 @@ async def _compute_rewards_snapshots(
         _, nodes, resource_nodes = snapshots[idx]
 
         _apply_expense_to(
-            credit_rewards, credit_totals, credit_detailed, exp_type,
+            credit_rewards, credit_totals, credit_detailed, credit_unallocated,
+            exp_type,
             _project_expense(expense, "credits"),
             nodes, resource_nodes, web3,
         )
@@ -495,10 +532,14 @@ async def _compute_rewards_snapshots(
         if include_holder_tier and expense.get("rewards"):
             _validate_rewards_aggregates(expense)
             _apply_expense_to(
-                holder_rewards, holder_totals, holder_detailed, exp_type,
+                holder_rewards, holder_totals, holder_detailed,
+                holder_unallocated, exp_type,
                 _project_expense(expense, "rewards"),
                 nodes, resource_nodes, web3,
             )
+
+    _fold_unallocated(credit_totals, credit_unallocated)
+    _fold_unallocated(holder_totals, holder_unallocated)
 
     return {
         "credit_revenue": (credit_rewards, credit_totals),
@@ -554,6 +595,8 @@ async def _compute_rewards_full_resync(
     holder_rewards, holder_totals = {}, zero_totals()
     credit_detailed = _empty_detailed()
     holder_detailed = _empty_detailed()
+    credit_unallocated = _empty_unallocated()
+    holder_unallocated = _empty_unallocated()
     idx = 0
     nodes = resource_nodes = None
 
@@ -563,13 +606,13 @@ async def _compute_rewards_full_resync(
         while idx < len(parsed) and parsed[idx][0] <= height:
             _, exp_type, expense = parsed[idx]
             _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
-                              exp_type,
+                              credit_unallocated, exp_type,
                               _project_expense(expense, "credits"),
                               nodes, resource_nodes, web3)
             if include_holder_tier and expense.get("rewards"):
                 _validate_rewards_aggregates(expense)
                 _apply_expense_to(holder_rewards, holder_totals,
-                                  holder_detailed, exp_type,
+                                  holder_detailed, holder_unallocated, exp_type,
                                   _project_expense(expense, "rewards"),
                                   nodes, resource_nodes, web3)
             idx += 1
@@ -585,19 +628,22 @@ async def _compute_rewards_full_resync(
             idx += 1
             continue
         _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
-                          exp_type,
+                          credit_unallocated, exp_type,
                           _project_expense(expense, "credits"),
                           nodes, resource_nodes, web3)
         if include_holder_tier and expense.get("rewards"):
             _validate_rewards_aggregates(expense)
             _apply_expense_to(holder_rewards, holder_totals, holder_detailed,
-                              exp_type,
+                              holder_unallocated, exp_type,
                               _project_expense(expense, "rewards"),
                               nodes, resource_nodes, web3)
         idx += 1
 
     if nodes is None:
         raise ValueError("No node state available")
+
+    _fold_unallocated(credit_totals, credit_unallocated)
+    _fold_unallocated(holder_totals, holder_unallocated)
 
     return {
         "credit_revenue": (credit_rewards, credit_totals),
