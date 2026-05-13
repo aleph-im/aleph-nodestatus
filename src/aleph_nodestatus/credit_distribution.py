@@ -2,6 +2,7 @@ import asyncio
 import bisect
 import logging
 from collections import defaultdict, deque
+from typing import TypedDict
 
 import aiohttp
 from aleph.sdk.client import AlephHttpClient
@@ -26,15 +27,25 @@ CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 UNALLOCATED_MISSING_NODE_ID = "__missing_node_id__"
 
 
-def _shares_for(expense_type):
+class _Shares(TypedDict):
+    """Reward-pool fractions for a single expense type. Splatted into
+    `_distribute_expense` as kwargs; the TypedDict gives the call site a
+    checked shape without forcing a refactor of the splat pattern."""
+    ccn_share:    float
+    staker_share: float
+    crn_share:    float
+    dev_share:    float
+
+
+def _shares_for(expense_type: str) -> _Shares:
     if expense_type == "storage":
-        return dict(
+        return _Shares(
             ccn_share=settings.credit_storage_ccn_share,
             staker_share=settings.credit_storage_staker_share,
             crn_share=0.0,
             dev_share=settings.credit_dev_fund_share,
         )
-    return dict(
+    return _Shares(
         ccn_share=settings.credit_execution_ccn_share,
         staker_share=settings.credit_execution_staker_share,
         crn_share=settings.credit_execution_crn_share,

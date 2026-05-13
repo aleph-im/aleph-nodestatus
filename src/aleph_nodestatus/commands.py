@@ -294,12 +294,9 @@ async def process_credit_distribution(
     # was derived. Without this, an operator supplying --start-height N bypasses
     # the rate-limit silently and (combined with C1's partial-failure cursor)
     # creates a path to double distribution.
-    # last_end has dual semantics here: None means "not yet fetched", 0 means
-    # "fetched and no prior distribution exists" (the function returns 0 in that
-    # case). Both are falsy, so the inner truthy guards below correctly skip
-    # advancing the cursor — but the memoization check at the cursor-derivation
-    # step uses `is None` specifically to distinguish "not yet fetched" from
-    # "fetched, no prior run", which avoids a redundant network call.
+    #
+    # Fetch the last distribution once and reuse for both the cadence guard
+    # and the cursor derivation below (one posts-API round-trip per run).
     last_end = None
     if act:
         last_end, _ = await get_latest_successful_credit_distribution(
