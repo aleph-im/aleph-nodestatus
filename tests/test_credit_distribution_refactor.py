@@ -504,6 +504,85 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     assert holder["0xCRN1"] == pytest.approx(0.30)
 
 
+def test_full_resync_tail_loop_applies_post_yield_expenses(monkeypatch):
+    """Regression cover for the tail loop in
+    `_compute_rewards_full_resync`: expenses with confirmation height
+    *above* the state machine's last yield (but still inside `end_height`)
+    must be applied against the terminal snapshot. A bug in the tail
+    loop would silently drop them.
+
+    Setup: state machine yields ONCE at height=100 then drains. Two
+    expenses — one at height 50 (consumed by the main async-for loop)
+    and one at height 150 (only the tail loop can pick it up).
+    """
+    nodes = {"ccn1": _node("ccn1", 0.9, {"0xS1": 100},
+                            resource_nodes=["r1"])}
+    rnodes = {"r1": _rnode("r1", 0.9, "0xCRN1")}
+
+    class FakeNodesStatus:
+        async def process(self, iterators):
+            yield 100, nodes, rnodes
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.NodesStatus",
+        FakeNodesStatus,
+    )
+    # Iterators are passed positionally and never iterated by our fake
+    # state machine — stub the four producers to no-op so construction
+    # doesn't touch any leveldb.
+    for sym in ("process_contract_history",
+                "process_balances_history",
+                "process_message_history"):
+        monkeypatch.setattr(
+            f"aleph_nodestatus.credit_distribution.{sym}",
+            lambda *a, **kw: iter([]),
+        )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.prepare_items",
+        lambda name, it: it,
+    )
+
+    def _msg(item_hash, eth_height, amount):
+        return {
+            "item_hash": item_hash,
+            "confirmations": [{"chain": "ETH", "height": eth_height}],
+            "content": {"content": {
+                "tags": ["credit_expense", "type_execution"],
+                "expense": {
+                    "credit_price_aleph": 0.001,
+                    "credits": [{"amount": amount, "node_id": "r1"}],
+                },
+            }},
+        }
+
+    async def fake_fetch_msgs(*a, **kw):
+        # Height 50 is consumed by the main loop (before/at the yield),
+        # height 150 is past the last yield and can only land via the tail.
+        return [_msg("h_main", 50,  1000),
+                _msg("h_tail", 150, 2000)]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+
+    result = asyncio.run(compute_rewards(
+        start_time=1.0, end_time=200.0,
+        full_resync=True,
+        include_holder_tier=False,
+        end_height=200,
+        dbs={"erc20": None, "balances": None,
+             "messages": None, "scores": None},
+    ))
+
+    credit, totals = result["credit_revenue"]
+    # Total execution = 1.0 + 2.0 = 3.0 ALEPH. If the tail loop were
+    # dropping h_tail, this would be 1.0.
+    assert totals["execution_total_aleph"] == pytest.approx(3.0)
+    # CRN gets 60% of both credits' total = 1.8 ALEPH.
+    assert credit["0xCRN1"] == pytest.approx(3.0 * 0.60)
+
+
 def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
     """compute_rewards returns a top-level 'detailed' key with per-account
     component breakdowns for credit_revenue and holder_tier streams."""

@@ -165,13 +165,8 @@ def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
                                            # `token_lc == aleph_address.lower()`
                                            # comparison resolves correctly
                                            # under the mocked w3.
-    processor = MagicMock()
-    quoter = MagicMock()
-
-    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
-    quoter.functions.quoteExactInput.return_value.call.return_value = (
-        10_000, [0], [0], 0
-    )
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
 
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
@@ -192,7 +187,7 @@ def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
     )
 
     result = extract_aleph(
-        w3, processor, quoter, account=None,
+        w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
     )
@@ -219,13 +214,30 @@ def _mk_quoters_v3(call_return_value=None, call_side_effect=None):
     return {"v2": None, "v3": v3, "v4": None}
 
 
+def _mk_extract_processor(is_stable=False, dev_pct=5, swap_config_version=3):
+    """Build a MagicMock processor pre-wired with the three view calls
+    that extract_aleph makes: getSwapConfig, developersPercentage,
+    isStableToken. Defaults exercise the non-stable path (dev cut off);
+    pass `is_stable=True` to drive the production-style stable-token
+    branch with an explicit dev_pct."""
+    proc = MagicMock()
+    proc.functions.getSwapConfig.return_value.call.return_value = (
+        _mk_swap_config(swap_config_version)
+    )
+    proc.functions.developersPercentage.return_value.call.return_value = dev_pct
+    proc.functions.isStableToken.return_value.call.return_value = is_stable
+    return proc
+
+
 def test_extract_aleph_slippage_bps_override(monkeypatch):
-    """Per-run slippage_bps override is passed to apply_slippage, not mutated."""
+    """Per-run slippage_bps override is passed to apply_slippage, not mutated.
+    Also drives the stable-token dev-cut path with realistic values
+    (dev_pct=5, isStableToken=True) so the quote happens on the post-deduction
+    amount rather than the full balance."""
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
-    processor = MagicMock()
-    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
-    quoters = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
+    processor = _mk_extract_processor(is_stable=True, dev_pct=5)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
     monkeypatch.setattr(
@@ -250,8 +262,14 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
 
     # Side-effect free: settings unchanged
     assert settings.process_slippage_bps == original
-    # USDC entry uses 5% slippage: min_out = 10_000_000 * 9500 / 10000 = 9_500_000
     usdc_entry = next(e for e in result["tokens"] if e["symbol"] == "USDC")
+    # The contract deducts 5% of `amount_in` BEFORE swapping; we should
+    # have quoted on the post-deduction amount (1_000_000 × 95 / 100).
+    assert usdc_entry["amount_in"]      == "1000000"
+    assert usdc_entry["swap_amount_in"] == "950000"
+    # min_out = expected_out × (1 - 5%) = 10_000_000 × 0.95 = 9_500_000.
+    # (The mock quoter returns 10M regardless of input, so this asserts the
+    # slippage math, not the quote math.)
     assert int(usdc_entry["min_out"]) == 9_500_000
 
 
@@ -260,8 +278,7 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     (not duplicates across both early and final append sites)."""
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
-    processor = MagicMock()
-    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+    processor = _mk_extract_processor(is_stable=False)
     quoters = _mk_quoters_v3(
         call_side_effect=RuntimeError("quoter unavailable"),
     )
@@ -296,9 +313,8 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
-    processor = MagicMock()
-    quoter = MagicMock()
-    processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 0
     w3.eth.get_balance.return_value = 0
@@ -312,7 +328,7 @@ def test_extract_aleph_zero_balance_skipped(monkeypatch):
     )
 
     result = extract_aleph(
-        w3, processor, quoter, account=None,
+        w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
     )

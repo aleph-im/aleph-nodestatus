@@ -214,6 +214,11 @@ def _swap_config_to_dict(swap_config_tuple):
     `abi/*.json` are the source of truth — update both together.
     """
     v, t, v2, v3, v4 = swap_config_tuple
+    # Early surface for an unexpected version — `quote_amount_out` would
+    # raise later anyway, but failing at the parse boundary makes ABI
+    # drift obvious without descending into the quoter dispatch.
+    if v not in (2, 3, 4):
+        raise ValueError(f"unexpected swap version from getSwapConfig: {v}")
     return {"v": v, "t": t, "v2": list(v2), "v3": bytes(v3), "v4": list(v4)}
 
 
@@ -301,6 +306,12 @@ def extract_aleph(
                 )
                 is_stable = False
             if is_stable and dev_pct > 0:
+                # Integer floor-division. For balances < 100/dev_pct wei
+                # this truncates the swap_amount to 0 (e.g., balance=1
+                # USDC-wei with dev_pct=5 yields 0). Such balances are
+                # economically meaningless — USDC has 6 decimals so 1 wei
+                # is $0.000001 — and the contract's own ZeroAmount check
+                # would revert downstream, so we just accept the floor.
                 swap_amount = balance * (100 - dev_pct) // 100
             else:
                 swap_amount = balance
