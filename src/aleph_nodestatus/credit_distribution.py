@@ -21,10 +21,11 @@ LOGGER = logging.getLogger(__name__)
 
 CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 
-# Sentinel key used in `unallocated_crn_by_node_id` for execution credits that
-# arrived without a `node_id` field. Distinct from a real node hash so
-# downstream tooling can pick it out.
+# Sentinel keys used in `unallocated_*_by_id` for drops that don't map to a
+# real node hash. Distinct from valid node hashes so downstream tooling can
+# pick them out.
 UNALLOCATED_MISSING_NODE_ID = "__missing_node_id__"
+UNALLOCATED_NO_ACTIVE_CCNS  = "__no_active_ccns__"
 
 
 class _Shares(TypedDict):
@@ -224,6 +225,16 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     return snapshots
 
 
+def _build_crn_to_ccn_map(nodes):
+    """Reverse-index: CRN hash → CCN hash, derived from each CCN's
+    `resource_nodes` list."""
+    m = {}
+    for ccn_hash, ccn in nodes.items():
+        for crn_hash in ccn.get("resource_nodes", []):
+            m[crn_hash] = ccn_hash
+    return m
+
+
 def _distribute_expense(
     expense_type, expense, nodes, resource_nodes, rewards,
     detailed=None,
@@ -240,22 +251,32 @@ def _distribute_expense(
     Returns (storage_aleph, execution_aleph, dev_fund_aleph).
     Side effects (in-place mutation):
       - `rewards`: addr → total_amount, accumulated.
-      - `detailed` (optional): addr → {component_key: amount}, where
-        component_key is one of "storage_ccn", "storage_staker",
-        "execution_ccn", "execution_crn", "execution_staker", depending on
-        expense_type and which pool the share came from.
-      - `unallocated` (optional): node_id → ALEPH dropped because the
-        execution credit referenced a CRN absent from the current snapshot,
-        or carried no `node_id` at all (bucketed under
-        `UNALLOCATED_MISSING_NODE_ID`). Only the per-CRN slice is lost; the
-        same credit still contributes to CCN/staker/dev pools.
+      - `detailed` (optional): addr → {component_key: amount}.
+      - `unallocated` (optional): three buckets ("crn"/"ccn"/"staker"),
+        each keyed by the most specific id available (CRN node_id, CCN
+        hash, or a sentinel). Accumulates shares the formula assigned to
+        a pool but couldn't pay out.
+
+    Distribution rules:
+      execution credits — per-credit attribution of all three pools:
+        - CRN share → the CRN identified by credit.node_id.
+        - CCN share → the CCN linked to that CRN (via the CCN's
+          `resource_nodes` list).
+        - Staker share → the linked CCN's stakers, proportional to their
+          stake on THAT CCN.
+        Missing/orphan/inactive links push the corresponding share to
+        `unallocated`.
+
+      storage credits — pool-level attribution:
+        - CCN share → split across active CCNs by score multiplier.
+        - Staker share → sliced per-CCN by the same score weight; within
+          each CCN, distributed to its stakers proportional to their
+          stake on that CCN (NOT the global staker network).
     """
     if detailed is None:
-        # Throwaway accumulator when caller doesn't need per-component output.
         detailed = defaultdict(lambda: defaultdict(float))
     if unallocated is None:
-        # Throwaway accumulator when caller doesn't need drop tracking.
-        unallocated = defaultdict(float)
+        unallocated = _empty_unallocated()
 
     credit_price_aleph = expense.get("credit_price_aleph", 0)
     total_aleph = sum(
@@ -265,77 +286,149 @@ def _distribute_expense(
     dev_fund = total_aleph * dev_share
 
     if expense_type == "execution":
-        # Credits without a node_id, or with a node_id that isn't in the
-        # current resource_nodes snapshot, drop their CRN share (the credit
-        # still contributes to total_aleph and therefore to CCN/staker/dev
-        # pools — only the per-CRN portion is lost). Warn in both cases so
-        # the missing share is visible in logs and accumulate the dropped
-        # amount into `unallocated` so it surfaces in the audit post.
-        for credit in expense.get("credits", []):
-            credit_aleph = credit["amount"] * credit_price_aleph
-            node_id = credit.get("node_id")
-            share = credit_aleph * crn_share
-            if node_id and node_id in resource_nodes:
-                rnode = resource_nodes[node_id]
-                addr = get_reward_address(rnode, web3)
-                rewards[addr] = rewards.get(addr, 0) + share
-                detailed[addr]["execution_crn"] += share
-            elif node_id:
-                LOGGER.warning(
-                    f"CRN {node_id} not found in resource_nodes, "
-                    f"dropping {share:.6f} ALEPH CRN share"
-                )
-                if share > 0:
-                    unallocated[node_id] += share
-            else:
-                LOGGER.warning(
-                    f"Credit missing node_id, dropping "
-                    f"{share:.6f} ALEPH CRN share"
-                )
-                if share > 0:
-                    unallocated[UNALLOCATED_MISSING_NODE_ID] += share
+        _distribute_execution_credits(
+            expense, credit_price_aleph, nodes, resource_nodes,
+            rewards, detailed, unallocated, web3,
+            ccn_share=ccn_share, staker_share=staker_share,
+            crn_share=crn_share,
+        )
+        return 0, total_aleph, dev_fund
 
-    # CCN pool (score-weighted)
+    _distribute_storage_pools(
+        total_aleph, nodes, rewards, detailed, unallocated, web3,
+        ccn_share=ccn_share, staker_share=staker_share,
+    )
+    return total_aleph, 0, dev_fund
+
+
+def _distribute_execution_credits(
+    expense, credit_price_aleph, nodes, resource_nodes,
+    rewards, detailed, unallocated, web3,
+    *, ccn_share, staker_share, crn_share,
+):
+    """Per-credit execution attribution: CRN → linked CCN → linked-CCN
+    stakers. Each missing link drops the relevant share to `unallocated`."""
+    crn_to_ccn = _build_crn_to_ccn_map(nodes)
+
+    for credit in expense.get("credits", []):
+        credit_aleph  = credit["amount"] * credit_price_aleph
+        node_id       = credit.get("node_id")
+        crn_amount    = credit_aleph * crn_share
+        ccn_amount    = credit_aleph * ccn_share
+        staker_amount = credit_aleph * staker_share
+        id_key        = node_id or UNALLOCATED_MISSING_NODE_ID
+
+        # 1) CRN share — to the CRN that hosted the workload.
+        if node_id and node_id in resource_nodes:
+            rnode = resource_nodes[node_id]
+            crn_addr = get_reward_address(rnode, web3)
+            rewards[crn_addr] = rewards.get(crn_addr, 0) + crn_amount
+            detailed[crn_addr]["execution_crn"] += crn_amount
+        else:
+            LOGGER.warning(
+                f"CRN {id_key} not resolved, "
+                f"dropping {crn_amount:.6f} ALEPH CRN share"
+            )
+            if crn_amount > 0:
+                unallocated["crn"][id_key] += crn_amount
+
+        # 2) CCN + staker shares — to the CCN linked to that CRN and its
+        #    stakers, respectively. Both are gated on the linked CCN being
+        #    findable AND active; otherwise the entire 15% + 20% goes to
+        #    unallocated under the same id_key.
+        linked_ccn_hash = crn_to_ccn.get(node_id) if node_id else None
+        linked_ccn = nodes.get(linked_ccn_hash) if linked_ccn_hash else None
+        if linked_ccn and linked_ccn.get("status") == "active":
+            # CCN share
+            ccn_addr = get_reward_address(linked_ccn, web3)
+            rewards[ccn_addr] = rewards.get(ccn_addr, 0) + ccn_amount
+            detailed[ccn_addr]["execution_ccn"] += ccn_amount
+
+            # Staker share — only stakers OF THIS CCN, weighted by their
+            # stake on this CCN. Stake amounts on other CCNs are ignored.
+            stakers = linked_ccn.get("stakers", {})
+            total_stake = sum(stakers.values())
+            if total_stake > 0:
+                for staker_addr, stake in stakers.items():
+                    share = staker_amount * stake / total_stake
+                    rewards[staker_addr] = rewards.get(staker_addr, 0) + share
+                    detailed[staker_addr]["execution_staker"] += share
+            elif staker_amount > 0:
+                LOGGER.warning(
+                    f"Linked CCN {linked_ccn_hash} has no stakers, "
+                    f"dropping {staker_amount:.6f} ALEPH staker share"
+                )
+                unallocated["staker"][linked_ccn_hash] += staker_amount
+        else:
+            LOGGER.warning(
+                f"Linked CCN for {id_key} not found/inactive, "
+                f"dropping {ccn_amount + staker_amount:.6f} ALEPH "
+                f"(CCN + staker shares)"
+            )
+            if ccn_amount > 0:
+                unallocated["ccn"][id_key] += ccn_amount
+            if staker_amount > 0:
+                unallocated["staker"][id_key] += staker_amount
+
+
+def _distribute_storage_pools(
+    total_aleph, nodes, rewards, detailed, unallocated, web3,
+    *, ccn_share, staker_share,
+):
+    """Storage-only distribution:
+        - CCN pool: split across active CCNs weighted by score multiplier.
+        - Staker pool: sliced per-CCN by the same score weight, then split
+          among that CCN's stakers proportional to their stake on it.
+    A CCN with no stakers loses its staker sub-pool to `unallocated`."""
     ccn_weights = {}
-    for node_hash, node in nodes.items():
+    for ccn_hash, node in nodes.items():
         if node["status"] != "active":
             continue
         score = compute_score_multiplier(node["score"])
         if score > 0:
-            ccn_weights[node_hash] = {
-                "score": score,
+            ccn_weights[ccn_hash] = {
+                "score":          score,
                 "reward_address": get_reward_address(node, web3),
+                "stakers":        node.get("stakers", {}),
             }
+
     total_ccn_score = sum(v["score"] for v in ccn_weights.values())
-    ccn_pool = total_aleph * ccn_share
-    if total_ccn_score > 0 and ccn_pool > 0:
-        ccn_key = f"{expense_type}_ccn"
-        for info in ccn_weights.values():
-            addr = info["reward_address"]
-            share = ccn_pool * info["score"] / total_ccn_score
-            rewards[addr] = rewards.get(addr, 0) + share
-            detailed[addr][ccn_key] += share
-
-    # Staker pool
-    all_stakers = {}
-    for node in nodes.values():
-        if node["status"] != "active":
-            continue
-        for addr, amount in node["stakers"].items():
-            all_stakers[addr] = all_stakers.get(addr, 0) + amount
-    total_staked = sum(all_stakers.values())
+    ccn_pool    = total_aleph * ccn_share
     staker_pool = total_aleph * staker_share
-    if total_staked > 0 and staker_pool > 0:
-        staker_key = f"{expense_type}_staker"
-        for addr, staked in all_stakers.items():
-            share = staker_pool * staked / total_staked
-            rewards[addr] = rewards.get(addr, 0) + share
-            detailed[addr][staker_key] += share
 
-    if expense_type == "storage":
-        return total_aleph, 0, dev_fund
-    else:
-        return 0, total_aleph, dev_fund
+    if total_ccn_score == 0:
+        # No active CCNs with score > 0 — both pools are unrecoverable.
+        if ccn_pool > 0:
+            unallocated["ccn"][UNALLOCATED_NO_ACTIVE_CCNS] += ccn_pool
+        if staker_pool > 0:
+            unallocated["staker"][UNALLOCATED_NO_ACTIVE_CCNS] += staker_pool
+        return
+
+    for ccn_hash, info in ccn_weights.items():
+        weight_ratio = info["score"] / total_ccn_score
+
+        # CCN reward (unchanged: score-weighted slice of the CCN pool).
+        if ccn_pool > 0:
+            ccn_amount = ccn_pool * weight_ratio
+            ccn_addr   = info["reward_address"]
+            rewards[ccn_addr] = rewards.get(ccn_addr, 0) + ccn_amount
+            detailed[ccn_addr]["storage_ccn"] += ccn_amount
+
+        # Per-CCN staker sub-pool. Stakers of this CCN share it
+        # proportional to their stake on THIS CCN. A staker on multiple
+        # CCNs accumulates one share per CCN; cross-CCN aggregation no
+        # longer happens.
+        if staker_pool > 0:
+            ccn_staker_pool = staker_pool * weight_ratio
+            stakers         = info["stakers"]
+            total_stake     = sum(stakers.values())
+            if total_stake > 0:
+                for staker_addr, stake in stakers.items():
+                    share = ccn_staker_pool * stake / total_stake
+                    rewards[staker_addr] = rewards.get(staker_addr, 0) + share
+                    detailed[staker_addr]["storage_staker"] += share
+            elif ccn_staker_pool > 0:
+                unallocated["staker"][ccn_hash] += ccn_staker_pool
 
 
 async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
@@ -382,11 +475,23 @@ def _project_expense(expense, src_key):
 
 
 def zero_totals():
-    return {"storage_total_aleph": 0,
-            "execution_total_aleph": 0,
-            "dev_fund_total_aleph": 0,
-            "unallocated_crn_aleph": 0,
-            "unallocated_crn_by_node_id": {}}
+    return {"storage_total_aleph":          0,
+            "execution_total_aleph":        0,
+            "dev_fund_total_aleph":         0,
+            # Unallocated tracking — share that the formula computed but
+            # couldn't pay out (missing/invalid node_id, no linked CCN,
+            # inactive linked CCN, CCN with no stakers, no active CCNs).
+            # Three buckets by which share kind was dropped. Each `*_by_id`
+            # dict's keys are the most specific identifier available (CRN
+            # node_id, CCN hash, or a sentinel like
+            # UNALLOCATED_MISSING_NODE_ID or UNALLOCATED_NO_ACTIVE_CCNS).
+            "unallocated_aleph":            0,
+            "unallocated_crn_aleph":        0,
+            "unallocated_crn_by_node_id":   {},
+            "unallocated_ccn_aleph":        0,
+            "unallocated_ccn_by_id":        {},
+            "unallocated_staker_aleph":     0,
+            "unallocated_staker_by_id":     {}}
 
 
 def _validate_rewards_aggregates(expense):
@@ -425,15 +530,29 @@ def _empty_detailed():
 
 
 def _empty_unallocated():
-    """Defaultdict for tracking ALEPH dropped on a per-node_id basis."""
-    return defaultdict(float)
+    """Three buckets keyed by which share kind was dropped: 'crn', 'ccn',
+    'staker'. Each is a defaultdict[float] indexed by the most specific
+    identifier available (CRN node_id, CCN hash, or a sentinel)."""
+    return {
+        "crn":    defaultdict(float),
+        "ccn":    defaultdict(float),
+        "staker": defaultdict(float),
+    }
 
 
 def _fold_unallocated(totals, unallocated):
-    """Stamp the per-node_id unallocated dict into `totals` for the audit
+    """Stamp the three per-id unallocated dicts into `totals` for the audit
     post. Idempotent: callers may invoke at any time."""
-    totals["unallocated_crn_aleph"]      = sum(unallocated.values())
-    totals["unallocated_crn_by_node_id"] = dict(unallocated)
+    crn_total    = sum(unallocated["crn"].values())
+    ccn_total    = sum(unallocated["ccn"].values())
+    staker_total = sum(unallocated["staker"].values())
+    totals["unallocated_crn_aleph"]      = crn_total
+    totals["unallocated_crn_by_node_id"] = dict(unallocated["crn"])
+    totals["unallocated_ccn_aleph"]      = ccn_total
+    totals["unallocated_ccn_by_id"]      = dict(unallocated["ccn"])
+    totals["unallocated_staker_aleph"]   = staker_total
+    totals["unallocated_staker_by_id"]   = dict(unallocated["staker"])
+    totals["unallocated_aleph"]          = crn_total + ccn_total + staker_total
 
 
 def _detailed_to_plain(detailed):
