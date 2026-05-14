@@ -94,13 +94,13 @@ __license__ = "mit"
 
 LOGGER = logging.getLogger(__name__)
 
-# First Ethereum mainnet block at or after 2026-04-01 00:00:00 UTC — the
+# First Ethereum mainnet block at or after 2026-05-01 00:00:00 UTC — the
 # start of the new credit-distribution tokenomics. Hardcoded so the floor
 # never drifts and we don't have to mix dates with block heights at runtime.
-# Verified: block 24_781_026 ts=1_775_001_599 (still in 2026-03-31),
-#           block 24_781_027 ts=1_775_001_611 (first block past the boundary).
-# Refresh via etherscan: first block with timestamp >= 1_775_001_600.
-CREDIT_DIST_FLOOR_HEIGHT = 24_781_027
+# Verified: block 24_996_367 ts=1_777_593_599 (still in 2026-04-30),
+#           block 24_996_368 ts=1_777_593_611 (first block past the boundary).
+# Refresh via etherscan: first block with timestamp >= 1_777_593_600.
+CREDIT_DIST_FLOOR_HEIGHT = 24_996_368
 
 
 def setup_logging(verbose):

@@ -166,7 +166,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     # Set a wage_start_date that overlaps the test window
     from aleph_nodestatus.settings import settings
     original = settings.wage_start_date
-    settings.wage_start_date = "2026-04-01T00:00:00+00:00"
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
 
     try:
         runner = CliRunner()

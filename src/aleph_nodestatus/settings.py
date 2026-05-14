@@ -142,7 +142,7 @@ class Settings(BaseSettings):
         return v
 
     # === Wage subsidy ===
-    wage_start_date: str = "2026-04-01T00:00:00+00:00"
+    wage_start_date: str = "2026-05-01T00:00:00+00:00"
     wage_duration_months: int = 6
     wage_initial_monthly_aleph: int = 900_000
     wage_ccn_share: float = 1/3
