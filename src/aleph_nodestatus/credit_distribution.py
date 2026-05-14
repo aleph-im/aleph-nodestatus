@@ -1,12 +1,11 @@
-import asyncio
 import bisect
 import logging
 from collections import defaultdict, deque
 from typing import TypedDict
 
-import aiohttp
 from aleph.sdk.client import AlephHttpClient
-from aleph.sdk.query.filters import PostFilter
+from aleph.sdk.query.filters import MessageFilter, PostFilter
+from aleph_message.models import MessageType
 
 from .distribution import compute_score_multiplier
 from .erc20 import process_contract_history
@@ -74,104 +73,71 @@ async def get_latest_successful_credit_distribution(sender=None):
     else:
         senders = [sender]
 
-    async with AlephHttpClient(
-        api_server=PublishMode.get_publish_api_server()
-    ) as client:
-        posts = await client.get_posts(
-            post_filter=PostFilter(
-                types=[CREDIT_DISTRIBUTION_POST_TYPE],
-                addresses=senders,
-            )
-        )
+    post_filter = PostFilter(
+        types=[CREDIT_DISTRIBUTION_POST_TYPE],
+        addresses=senders,
+    )
 
     current_post = None
     current_end_height = 0
-    for post in posts.posts:
-        if post.content.get("status") != "distribution":
-            continue
+    async with AlephHttpClient(
+        api_server=PublishMode.get_publish_api_server()
+    ) as client:
+        # Iterator auto-paginates so we don't drop older distributions
+        # once the post history grows past one page.
+        async for post in client.get_posts_iterator(post_filter=post_filter):
+            content = post.content or {}
+            if content.get("status") != "distribution":
+                continue
 
-        end_height = post.content.get("end_height")
-        if end_height is None:
-            continue
+            end_height = content.get("end_height")
+            if end_height is None:
+                continue
 
-        if any(t.get("success") for t in post.content.get("targets", [])):
-            if end_height >= current_end_height:
-                current_post = post
-                current_end_height = end_height
+            if any(t.get("success") for t in content.get("targets", [])):
+                if end_height >= current_end_height:
+                    current_post = post
+                    current_end_height = end_height
 
     if current_post is not None:
         return current_end_height, current_post.content
     return 0, None
 
 
-async def _fetch_paginated_messages(session, api_server, params, max_retries=3,
-                                     retry_delay=5):
-    """Fetch paginated messages from the Aleph API with retry logic."""
-    seen_hashes = set()
-    messages = []
+async def _iter_messages_dedup(client, message_filter):
+    """Wrap the SDK's async message iterator with item_hash dedup.
 
-    while True:
-        data = None
-        for attempt in range(max_retries):
-            try:
-                async with session.get(
-                    f"{api_server}/api/v0/messages.json",
-                    params=params,
-                    timeout=60,
-                ) as resp:
-                    if resp.status != 200:
-                        LOGGER.warning(
-                            f"API error {resp.status} (attempt {attempt + 1}/{max_retries})"
-                        )
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(retry_delay)
-                            continue
-                        raise Exception(
-                            f"API error {resp.status} fetching messages"
-                        )
-                    data = await resp.json()
-                    break
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                LOGGER.warning(
-                    f"Network error: {e} (attempt {attempt + 1}/{max_retries})"
-                )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                else:
-                    raise
-
-        page_messages = data.get("messages", [])
-
-        if not page_messages:
-            break
-
-        for msg in page_messages:
-            if msg["item_hash"] not in seen_hashes:
-                seen_hashes.add(msg["item_hash"])
-                messages.append(msg)
-
-        total = data.get("pagination_total", 0)
-        per_page = data.get("pagination_per_page", 500)
-        if params["page"] * per_page >= total:
-            break
-        params["page"] += 1
-
-    return messages
+    The SDK's `get_messages_iterator` auto-paginates: in 1.4.0 it walks
+    pages by offset and the docstring warns it "might return duplicates";
+    in 2.3.2+ (PR #282 of aleph-sdk-python) it walks via cursor and the
+    duplicates disappear. Dedup is cheap insurance across both versions.
+    """
+    seen = set()
+    async for msg in client.get_messages_iterator(message_filter=message_filter):
+        h = msg.item_hash
+        if h in seen:
+            continue
+        seen.add(h)
+        # Serialise to a dict so downstream parsers consume the same
+        # shape regardless of pydantic version under the SDK.
+        yield msg.dict()
 
 
 def _extract_eth_height(msg):
-    """Extract the earliest ETH confirmation height from a message."""
+    """Extract the earliest ETH confirmation height from a message dict."""
     height = None
-    for conf in msg.get("confirmations", []):
-        if conf["chain"] == "ETH":
-            if height is None or conf["height"] < height:
-                height = conf["height"]
+    for conf in msg.get("confirmations") or []:
+        if conf.get("chain") == "ETH":
+            ch = conf.get("height")
+            if ch is not None and (height is None or ch < height):
+                height = ch
     return height
 
 
 async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     """
-    Fetch historical corechannel aggregate snapshots for the period.
+    Fetch historical corechannel aggregate snapshots for the period via
+    the SDK's auto-paginated message iterator.
 
     Fetches from 1 day before start_time to ensure we have a snapshot
     before the first expense.
@@ -183,42 +149,36 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
         sender = settings.status_sender
 
     snapshots = []
-
-    params = {
-        "msgType": "AGGREGATE",
-        "addresses": sender,
-        "startDate": int(start_time - 86400),
-        "endDate": int(end_time),
-        "pagination": 500,
-        "page": 1,
-        "sort_order": "1",
-        "sort_by": "tx-time",
-    }
-
-    async with aiohttp.ClientSession() as session:
-        messages = await _fetch_paginated_messages(session, api_server, params)
+    # SDK 1.4.0 rejects bare `int` in start_date/end_date; cast to float.
+    message_filter = MessageFilter(
+        message_types=[MessageType.aggregate],
+        addresses=[sender],
+        start_date=float(start_time - 86400),
+        end_date=float(end_time),
+    )
 
     # AGGREGATE messages on Aleph wrap their body in two `content` layers:
-    #   msg.content = {"key": "<name>", "content": {<body>}, ...}
+    #   msg["content"] = {"key": "<name>", "content": {<body>}, ...}
     # The outer layer carries the aggregate name (here "corechannel") and the
     # inner layer holds the actual node/resource_node lists.
-    for msg in messages:
-        content = msg.get("content", {})
-        if content.get("key") != "corechannel":
-            continue
+    async with AlephHttpClient(api_server=api_server) as client:
+        async for msg in _iter_messages_dedup(client, message_filter):
+            content = msg.get("content") or {}
+            if content.get("key") != "corechannel":
+                continue
 
-        height = _extract_eth_height(msg)
-        if height is None:
-            continue
+            height = _extract_eth_height(msg)
+            if height is None:
+                continue
 
-        inner = content.get("content", {})
-        nodes_list = inner.get("nodes", [])
-        resource_nodes_list = inner.get("resource_nodes", [])
+            inner = content.get("content") or {}
+            nodes_list          = inner.get("nodes", [])
+            resource_nodes_list = inner.get("resource_nodes", [])
 
-        nodes_dict = {node["hash"]: node for node in nodes_list}
-        resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
+            nodes_dict          = {n["hash"]: n  for n  in nodes_list}
+            resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
 
-        snapshots.append((height, nodes_dict, resource_nodes_dict))
+            snapshots.append((height, nodes_dict, resource_nodes_dict))
 
     snapshots.sort(key=lambda x: x[0])
     LOGGER.info(f"Fetched {len(snapshots)} node status snapshots")
@@ -432,21 +392,25 @@ def _distribute_storage_pools(
 
 
 async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
-    """Single paginated fetch of aleph_credit_expense messages."""
-    params = {
-        "msgType": "POST",
-        "contentTypes": "aleph_credit_expense",
-        "startDate": int(start_time),
-        "endDate": int(end_time),
-        "pagination": 500,
-        "page": 1,
-        "sort_order": "1",
-        "sort_by": "tx-time",
-    }
-    if sender:
-        params["addresses"] = sender
-    async with aiohttp.ClientSession() as session:
-        return await _fetch_paginated_messages(session, api_server, params)
+    """Fetch aleph_credit_expense POST messages via the SDK iterator.
+
+    Returns a list of message dicts. The shape mirrors the raw API
+    response, so the downstream parser (`_parse_message`) consumes
+    the same keys as before the SDK migration.
+    """
+    # SDK 1.4.0 rejects bare `int` in start_date/end_date; cast to float.
+    message_filter = MessageFilter(
+        message_types=[MessageType.post],
+        content_types=["aleph_credit_expense"],
+        addresses=[sender] if sender else None,
+        start_date=float(start_time),
+        end_date=float(end_time),
+    )
+    messages = []
+    async with AlephHttpClient(api_server=api_server) as client:
+        async for msg in _iter_messages_dedup(client, message_filter):
+            messages.append(msg)
+    return messages
 
 
 def _parse_message(msg):
