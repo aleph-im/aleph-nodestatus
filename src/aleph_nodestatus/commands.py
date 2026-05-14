@@ -570,6 +570,15 @@ async def process_credit_distribution(
             click.echo(f"Batch {i+1}: would transfer to {count} recipients")
 
     # === Step 6: publish ===
+    # `rewards_detailed` (per-account × per-source × per-component
+    # breakdown) is intentionally NOT in the published distribution.
+    # The post aggregates over whatever arbitrary window the operator
+    # ran with (--start-height → now), so a per-account breakdown at
+    # that granularity isn't useful for end consumers and bloats the
+    # payload. A dedicated service will expose this view later with
+    # proper time-window filtering (1D/1W/1M); out of scope for this
+    # PR. The dry-run preview below still prints it as a separate
+    # payload for local debugging.
     status = "distribution" if act else "calculation"
     distribution = {
         "incentive": "credits",
@@ -578,7 +587,6 @@ async def process_credit_distribution(
         "start_time": start_time, "end_time": end_time,
         "rewards": final_rewards,
         "rewards_by_source": by_source,
-        "rewards_detailed": by_address_detailed,
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
@@ -599,6 +607,13 @@ async def process_credit_distribution(
         preview = {k: v for k, v in distribution.items()
                     if k != "rewards_by_source"}
         click.echo(json.dumps(preview, indent=2, default=str))
+        if dry_run:
+            click.echo(
+                "\n=== rewards_detailed (dry-run debug; not published) ==="
+            )
+            click.echo(
+                json.dumps(by_address_detailed, indent=2, default=str)
+            )
 
     # === Step 7: failed-batch summary ===
     # Surface failed batches at run end so operators don't have to scroll
