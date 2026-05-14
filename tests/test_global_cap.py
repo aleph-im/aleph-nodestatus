@@ -46,6 +46,9 @@ async def test_run_above_cap_aborts(monkeypatch, capsys):
             for i in range(1)}
     _patch_orchestrator(monkeypatch, huge)
 
+    capsys.readouterr()   # drain any output produced by the orchestrator
+                          # patch setup so the post-raise assertion below
+                          # only inspects this run's stderr/stdout
     with pytest.raises(SystemExit) as exc:
         await cmd.process_credit_distribution(
             start_height=1_000_000, end_height=2_000_000,

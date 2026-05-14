@@ -161,6 +161,10 @@ def _mk_swap_config(v, t="0x000000000000000000000000000000000000abCd"):
 
 def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
     w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x   # identity, so the ALEPH-token
+                                           # `token_lc == aleph_address.lower()`
+                                           # comparison resolves correctly
+                                           # under the mocked w3.
     processor = MagicMock()
     quoter = MagicMock()
 
@@ -218,6 +222,7 @@ def _mk_quoters_v3(call_return_value=None, call_side_effect=None):
 def test_extract_aleph_slippage_bps_override(monkeypatch):
     """Per-run slippage_bps override is passed to apply_slippage, not mutated."""
     w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
     processor = MagicMock()
     processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
     quoters = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
@@ -254,6 +259,7 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     """A quote failure produces exactly one entry in tokens and one in errors
     (not duplicates across both early and final append sites)."""
     w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
     processor = MagicMock()
     processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)
     quoters = _mk_quoters_v3(
@@ -289,6 +295,7 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
 
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
     w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
     processor = MagicMock()
     quoter = MagicMock()
     processor.functions.getSwapConfig.return_value.call.return_value = _mk_swap_config(3)

@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time as time_mod
+from decimal import Decimal
 
 import click
 from eth_account import Account
@@ -485,11 +486,20 @@ async def process_credit_distribution(
                 f"{settings.distribution_recipient}. Checking sender balance."
             )
         token = get_token_contract(web3)
-        bal = token.functions.balanceOf(
+        # Decimal comparison to avoid float accumulation pulling `owed`
+        # slightly under `bal` (or vice versa) at large totals — the
+        # previous 1e-6 epsilon worked for current scale but doesn't
+        # generalise once the wage subsidy ramps and per-run totals
+        # reach the 1M+ ALEPH range.
+        bal_wei = token.functions.balanceOf(
             web3.to_checksum_address(sender)
-        ).call() / (10 ** settings.ethereum_decimals)
-        owed = sum(final_rewards.values())
-        if owed > bal + 1e-6:
+        ).call()
+        bal  = Decimal(bal_wei) / Decimal(10 ** settings.ethereum_decimals)
+        owed = sum(
+            (Decimal(str(v)) for v in final_rewards.values()),
+            Decimal("0"),
+        )
+        if owed > bal:
             click.echo(
                 f"ABORT: owed {owed} ALEPH > balance {bal} at {sender}"
             )

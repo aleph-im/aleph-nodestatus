@@ -95,6 +95,14 @@ async def get_latest_successful_credit_distribution(sender=None):
                 continue
 
             if any(t.get("success") for t in content.get("targets", [])):
+                # `>=` (not `>`) so that an AMEND publishing a later
+                # post with the same end_height overrides the prior
+                # pick rather than being ignored. The iterator yields
+                # posts in API-defined order, so the AMEND wins iff
+                # it is yielded after the original — true for the
+                # default sort (newest first ⇒ amend appears first
+                # and is replaced by older same-height entries until
+                # the most-recent one is reached).
                 if end_height >= current_end_height:
                     current_post = post
                     current_end_height = end_height
@@ -414,7 +422,12 @@ async def _fetch_expense_messages(api_server, start_time, end_time, sender=None)
 
 
 def _parse_message(msg):
-    """Return (height, expense_type, expense_dict) or (None, None, None)."""
+    """Return (height, expense_type, expense_dict) or (None, None, None).
+
+    Logs a WARNING when an expense payload is present but carries neither
+    `type_storage` nor `type_execution` — these messages are silently
+    skipped so a missed tag at the indexer side surfaces during debugging.
+    """
     height = _extract_eth_height(msg)
     if height is None:
         return None, None, None
@@ -427,6 +440,10 @@ def _parse_message(msg):
         return height, "storage", expense
     if "type_execution" in tags:
         return height, "execution", expense
+    LOGGER.warning(
+        f"Credit expense at height {height} has neither type_storage nor "
+        f"type_execution tag (tags={tags}); skipping"
+    )
     return None, None, None
 
 
@@ -719,6 +736,10 @@ async def _compute_rewards_full_resync(
     while idx < len(parsed) and nodes is not None:
         h, exp_type, expense = parsed[idx]
         if end_height is not None and h > end_height:
+            # Beyond the run's upper bound — skip rather than apply
+            # against the stale terminal snapshot. `parsed` may still
+            # contain even later items, so advance idx and keep
+            # scanning instead of breaking out of the loop.
             idx += 1
             continue
         _apply_expense_to(credit_rewards, credit_totals, credit_detailed,

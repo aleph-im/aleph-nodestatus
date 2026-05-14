@@ -231,7 +231,14 @@ def extract_aleph(
     )
     out = {"tokens": [], "errors": []}
 
-    for symbol, token in settings.process_tokens:
+    for symbol, raw_token in settings.process_tokens:
+        # Checksum once at the loop head so every downstream call
+        # (getSwapConfig, quote_amount_out, simulate_process,
+        # execute_process, the audit-post entry) sees the same
+        # EIP-55 canonical form. web3.py would normalise per-call,
+        # but doing it here removes a class of "is this the same
+        # address?" foot-guns.
+        token = w3.to_checksum_address(raw_token)
         token_lc = token.lower()
         contract_address = settings.payment_processor_address
         balance = _balance_of(w3, contract_address, token)
@@ -252,13 +259,11 @@ def extract_aleph(
             expected_out = balance
         else:
             try:
-                swap_config = processor.functions.getSwapConfig(
-                    w3.to_checksum_address(token)
-                ).call()
+                swap_config = processor.functions.getSwapConfig(token).call()
                 cfg = _swap_config_to_dict(swap_config)
                 expected_out = quote_amount_out(
                     quoters, cfg, balance,
-                    token_in=w3.to_checksum_address(token),
+                    token_in=token,
                 )
                 min_out = apply_slippage(
                     expected_out, effective_slippage
