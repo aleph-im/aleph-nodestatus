@@ -458,13 +458,13 @@ def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
     assert credit_totals["storage_total_aleph"] == 0
 
 
-def test_compute_rewards_holder_tier_processes_rewards_field(monkeypatch):
+def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     expense = {
         "credit_price_aleph": 0.001,
         "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
-        "rewards": [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
-        "rewards_amount": 500,
-        "rewards_count": 1,
+        "hold":    [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
+        "hold_amount": 500,
+        "hold_count": 1,
     }
     msg = {
         "item_hash": "h1",
@@ -510,7 +510,7 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
     expense = {
         "credit_price_aleph": 0.001,
         "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
-        "rewards": [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
+        "hold":    [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
     }
     msg = {
         "item_hash": "h1",
@@ -554,11 +554,11 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
     assert "execution_crn" in hol_detailed["0xCRN1"]
 
 
-def test_compute_rewards_holder_tier_off_ignores_rewards_field(monkeypatch):
+def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
     expense = {
         "credit_price_aleph": 0.001,
         "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
-        "rewards": [{"amount": 500,  "node_id": "r1", "address": "0xH1"}],
+        "hold":    [{"amount": 500,  "node_id": "r1", "address": "0xH1"}],
     }
     msg = {
         "item_hash": "h1",

@@ -190,8 +190,10 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     """
     import json as _json
     expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
-    # Inject rewards[] into the fixture so holder_tier path produces rewards
-    expense_msg["message"]["content"]["content"]["expense"]["rewards"] = [
+    # Inject hold[] into the fixture so the holder_tier path produces rewards.
+    # (Renamed from `rewards[]` to `hold[]` after the indexer's pricing bug
+    # fix; `hold[]` is the canonical holder-tier array going forward.)
+    expense_msg["message"]["content"]["content"]["expense"]["hold"] = [
         {"amount": 10_000_000, "node_id": "test-crn-1",
          "address": "0xH1"},
     ]

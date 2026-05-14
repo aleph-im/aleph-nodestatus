@@ -500,20 +500,30 @@ def zero_totals():
             "unallocated_staker_by_id":     {}}
 
 
-def _validate_rewards_aggregates(expense):
-    declared_count = expense.get("rewards_count")
-    declared_amount = expense.get("rewards_amount")
-    rewards = expense.get("rewards", [])
-    if declared_count is not None and declared_count != len(rewards):
+def _validate_hold_aggregates(expense):
+    """Cross-check declared `hold_count` / `hold_amount` aggregates against
+    the actual contents of `expense.hold[]`.
+
+    NOTE: this used to consume `expense.rewards[]` plus the matching
+    `rewards_count` / `rewards_amount` aggregates. The indexer reshaped
+    the holder-tier payload after a pricing bug in `rewards[]`: the new
+    payload lives under `hold[]` (with `hold_count` / `hold_amount`) and
+    now ships for both storage and execution expenses. The old `rewards`
+    array is no longer read by this pipeline.
+    """
+    declared_count = expense.get("hold_count")
+    declared_amount = expense.get("hold_amount")
+    hold = expense.get("hold", [])
+    if declared_count is not None and declared_count != len(hold):
         LOGGER.warning(
-            f"rewards_count mismatch: declared={declared_count}, "
-            f"actual={len(rewards)}"
+            f"hold_count mismatch: declared={declared_count}, "
+            f"actual={len(hold)}"
         )
     if declared_amount is not None:
-        actual = sum(r.get("amount", 0) for r in rewards)
+        actual = sum(h.get("amount", 0) for h in hold)
         if abs(actual - declared_amount) > 1:
             LOGGER.warning(
-                f"rewards_amount mismatch: declared={declared_amount}, "
+                f"hold_amount mismatch: declared={declared_amount}, "
                 f"actual={actual}"
             )
 
@@ -665,12 +675,12 @@ async def _compute_rewards_snapshots(
             nodes, resource_nodes, web3,
         )
 
-        if include_holder_tier and expense.get("rewards"):
-            _validate_rewards_aggregates(expense)
+        if include_holder_tier and expense.get("hold"):
+            _validate_hold_aggregates(expense)
             _apply_expense_to(
                 holder_rewards, holder_totals, holder_detailed,
                 holder_unallocated, exp_type,
-                _project_expense(expense, "rewards"),
+                _project_expense(expense, "hold"),
                 nodes, resource_nodes, web3,
             )
 
@@ -745,11 +755,11 @@ async def _compute_rewards_full_resync(
                               credit_unallocated, exp_type,
                               _project_expense(expense, "credits"),
                               nodes, resource_nodes, web3)
-            if include_holder_tier and expense.get("rewards"):
-                _validate_rewards_aggregates(expense)
+            if include_holder_tier and expense.get("hold"):
+                _validate_hold_aggregates(expense)
                 _apply_expense_to(holder_rewards, holder_totals,
                                   holder_detailed, holder_unallocated, exp_type,
-                                  _project_expense(expense, "rewards"),
+                                  _project_expense(expense, "hold"),
                                   nodes, resource_nodes, web3)
             idx += 1
 
@@ -771,11 +781,11 @@ async def _compute_rewards_full_resync(
                           credit_unallocated, exp_type,
                           _project_expense(expense, "credits"),
                           nodes, resource_nodes, web3)
-        if include_holder_tier and expense.get("rewards"):
-            _validate_rewards_aggregates(expense)
+        if include_holder_tier and expense.get("hold"):
+            _validate_hold_aggregates(expense)
             _apply_expense_to(holder_rewards, holder_totals, holder_detailed,
                               holder_unallocated, exp_type,
-                              _project_expense(expense, "rewards"),
+                              _project_expense(expense, "hold"),
                               nodes, resource_nodes, web3)
         idx += 1
 
