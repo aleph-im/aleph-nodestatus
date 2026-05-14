@@ -94,6 +94,14 @@ __license__ = "mit"
 
 LOGGER = logging.getLogger(__name__)
 
+# First Ethereum mainnet block at or after 2026-04-01 00:00:00 UTC — the
+# start of the new credit-distribution tokenomics. Hardcoded so the floor
+# never drifts and we don't have to mix dates with block heights at runtime.
+# Verified: block 24_781_026 ts=1_775_001_599 (still in 2026-03-31),
+#           block 24_781_027 ts=1_775_001_611 (first block past the boundary).
+# Refresh via etherscan: first block with timestamp >= 1_775_001_600.
+CREDIT_DIST_FLOOR_HEIGHT = 24_781_027
+
 
 def setup_logging(verbose):
     """Setup basic logging
@@ -322,8 +330,22 @@ async def process_credit_distribution(
             start_height = last_end + 1
             click.echo(f"Resuming from last_end={last_end}; start={start_height}")
         else:
-            click.echo("ERROR: --start-height required for first run.")
-            return
+            start_height = CREDIT_DIST_FLOOR_HEIGHT
+            click.echo(
+                f"No prior distribution; starting at floor "
+                f"{CREDIT_DIST_FLOOR_HEIGHT}"
+            )
+
+    # Hard floor: any resolved start_height below the launch block would replay
+    # pre-launch expenses. Explicit values are an operator error; resumed
+    # values lower than the floor mean the prior cursor predates the launch.
+    if start_height < CREDIT_DIST_FLOOR_HEIGHT:
+        click.echo(
+            f"ERROR: start_height {start_height} is below floor "
+            f"{CREDIT_DIST_FLOOR_HEIGHT}. Pass --start-height >= "
+            f"{CREDIT_DIST_FLOOR_HEIGHT}."
+        )
+        sys.exit(2)
 
     if end_height <= start_height:
         raise ValueError(

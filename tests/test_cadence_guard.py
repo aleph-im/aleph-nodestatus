@@ -38,7 +38,12 @@ def test_no_last_end_does_not_skip():
 
 @pytest.fixture
 def patch_orchestrator_deps(monkeypatch):
-    """Patch external deps so process_credit_distribution can be exercised in-process."""
+    """Patch external deps so process_credit_distribution can be exercised in-process.
+
+    Pins CREDIT_DIST_FLOOR_HEIGHT to 0 so cadence-specific tests can keep
+    using their pre-existing block numbers without tripping the floor guard;
+    the floor's own behavior is covered in test_since_floor.py.
+    """
     import aleph_nodestatus.commands as cmd
 
     web3_mock = MagicMock()
@@ -46,6 +51,7 @@ def patch_orchestrator_deps(monkeypatch):
     web3_mock.eth.get_block.return_value = MagicMock(timestamp=1_700_000_000)
     monkeypatch.setattr(cmd, "get_web3", lambda: web3_mock)
     monkeypatch.setattr(cmd, "get_dbs", lambda: {})
+    monkeypatch.setattr(cmd, "CREDIT_DIST_FLOOR_HEIGHT", 0)
     return web3_mock
 
 
@@ -131,15 +137,14 @@ async def test_calculation_mode_ignores_cadence(
 
 
 @pytest.mark.asyncio
-async def test_act_with_no_prior_distribution_and_default_start_height_errors(
+async def test_act_with_no_prior_distribution_uses_floor_default(
     patch_orchestrator_deps, capsys, monkeypatch,
 ):
-    """C2: --act, no --start-height, and no prior distribution must abort with
-    the 'first run' error rather than silently deriving a wrong start_height.
+    """C2: --act with no --start-height and no prior distribution falls back
+    to CREDIT_DIST_FLOOR_HEIGHT as the start, instead of erroring out.
 
-    Covers the path where get_latest_successful_credit_distribution returns
-    (0, None) under act=True and the memoization correctly short-circuits
-    the second fetch (last_end is 0 after the act branch, not None)."""
+    Also covers memoization: get_latest_successful_credit_distribution is
+    fetched once (in the cadence branch) and reused for the cursor branch."""
     import aleph_nodestatus.commands as cmd
 
     mock_fn = AsyncMock(return_value=(0, None))
@@ -154,6 +159,6 @@ async def test_act_with_no_prior_distribution_and_default_start_height_errors(
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out
-    assert "--start-height required for first run" in out
+    assert "starting at floor" in out
     # Memoization must have prevented a second fetch.
     assert mock_fn.call_count == 1

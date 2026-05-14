@@ -34,6 +34,8 @@ async def test_extract_does_not_block_event_loop(monkeypatch):
     web3_mock.eth.get_block.return_value = MagicMock(timestamp=1_700_000_000)
     monkeypatch.setattr(cmd, "get_web3", lambda: web3_mock)
     monkeypatch.setattr(cmd, "get_dbs", lambda: {})
+    # Sidestep the launch-block floor — this test uses fictitious block numbers.
+    monkeypatch.setattr(cmd, "CREDIT_DIST_FLOOR_HEIGHT", 0)
     monkeypatch.setattr(cmd, "get_processor_contract", lambda w3: MagicMock())
     monkeypatch.setattr(cmd, "get_quoter_contract", lambda w3: MagicMock())
     monkeypatch.setattr(cmd, "get_v2_router_contract", lambda w3: MagicMock())

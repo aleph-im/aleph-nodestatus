@@ -54,6 +54,8 @@ def patched_pipeline(monkeypatch):
     # Stub get_dbs so we don't open the on-disk LevelDB.
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+    # Sidestep the launch-block floor — fixtures use small synthetic heights.
+    monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
 
     # Stub web3 — no live RPC available in the test env.
     fake_web3 = MagicMock()
@@ -145,6 +147,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
 
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+    monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
 
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x
@@ -218,6 +221,7 @@ def test_balance_safety_aborts_when_short(monkeypatch):
 
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+    monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
 
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x
@@ -278,6 +282,7 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
 
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
+    monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
 
     fake_web3 = MagicMock()
     fake_web3.to_checksum_address = lambda x: x

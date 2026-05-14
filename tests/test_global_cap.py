@@ -24,6 +24,9 @@ def _patch_orchestrator(monkeypatch, final_rewards):
     web3_mock.eth.get_block.return_value = MagicMock(timestamp=1_700_000_000)
     monkeypatch.setattr(cmd, "get_web3", lambda: web3_mock)
     monkeypatch.setattr(cmd, "get_dbs", lambda: {})
+    # Sidestep the launch-block floor — these tests use fictitious block numbers
+    # to exercise the cap logic independently of the floor.
+    monkeypatch.setattr(cmd, "CREDIT_DIST_FLOOR_HEIGHT", 0)
     monkeypatch.setattr(
         cmd, "get_latest_successful_credit_distribution",
         AsyncMock(return_value=(0, None)),
