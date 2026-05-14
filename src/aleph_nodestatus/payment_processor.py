@@ -242,6 +242,22 @@ def extract_aleph(
     )
     out = {"tokens": [], "errors": []}
 
+    # Read protocol-wide percentages once. For stable tokens the contract
+    # takes `developersPercentage` of the input BEFORE swapping (see
+    # AlephPaymentProcessor.process(), branch `isStable && !ALEPH`), so we
+    # must quote on the reduced amount or our min_out becomes ~dev_pct%
+    # higher than what the swap can actually produce, triggering
+    # V4TooLittleReceived. Non-stable tokens swap the full amount; the
+    # dev cut comes off the ALEPH side and doesn't affect min_out.
+    try:
+        dev_pct = int(processor.functions.developersPercentage().call())
+    except Exception as e:
+        LOGGER.warning(
+            "Failed to read developersPercentage; assuming 0%% adjustment: %r",
+            e,
+        )
+        dev_pct = 0
+
     for symbol, raw_token in settings.process_tokens:
         # Checksum once at the loop head so every downstream call
         # (getSwapConfig, quote_amount_out, simulate_process,
@@ -256,6 +272,7 @@ def extract_aleph(
         entry = {
             "symbol": symbol, "token": token,
             "amount_in": str(balance), "skipped_reason": None,
+            "swap_amount_in": None,
             "min_out": None, "expected_out": None,
             "tx_hash": None, "simulated_only": False, "error": None,
         }
@@ -269,11 +286,30 @@ def extract_aleph(
             min_out = 0
             expected_out = balance
         else:
+            # Quote against the amount the contract will *actually* swap.
+            # For stables that's `balance × (100 - dev_pct) / 100` because
+            # the dev cut is removed from the input pre-swap; for the rest
+            # it's the full balance.
+            try:
+                is_stable = bool(
+                    processor.functions.isStableToken(token).call()
+                )
+            except Exception as e:
+                LOGGER.warning(
+                    "Failed to read isStableToken(%s); assuming non-stable: %r",
+                    symbol, e,
+                )
+                is_stable = False
+            if is_stable and dev_pct > 0:
+                swap_amount = balance * (100 - dev_pct) // 100
+            else:
+                swap_amount = balance
+            entry["swap_amount_in"] = str(swap_amount)
             try:
                 swap_config = processor.functions.getSwapConfig(token).call()
                 cfg = _swap_config_to_dict(swap_config)
                 expected_out = quote_amount_out(
-                    quoters, cfg, balance,
+                    quoters, cfg, swap_amount,
                     token_in=token,
                 )
                 min_out = apply_slippage(
@@ -281,8 +317,8 @@ def extract_aleph(
                 )
             except Exception as e:
                 LOGGER.exception(
-                    "Quote failed for token %s (balance %d): %r",
-                    symbol, balance, e,
+                    "Quote failed for token %s (balance=%d, swap_amount=%d): %r",
+                    symbol, balance, swap_amount, e,
                 )
                 entry["error"] = f"quote_failed: {e!r}"
                 out["errors"].append(entry)
