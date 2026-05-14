@@ -345,6 +345,29 @@ async def process_credit_distribution(
         admin_account = Account.from_key(HexBytes(pk))
         admin_address = admin_account.address
 
+        # Pre-flight ETH balance check on the admin address. extract_aleph
+        # broadcasts up to one process() tx per configured token; if the
+        # signer runs out of ETH mid-loop, partial extraction succeeds
+        # silently while later tokens fail with a generic tx_failed error
+        # buried in the audit post. Warn loudly here so ops can top up
+        # before the quote/simulate work is wasted.
+        admin_eth_wei = web3.eth.get_balance(admin_address)
+        gas_headroom = (
+            settings.process_gas_ceiling
+            * int(web3.to_wei(50, "gwei"))     # generous max_fee estimate
+            * len(settings.process_tokens)
+        )
+        if admin_eth_wei < gas_headroom:
+            LOGGER.warning(
+                "Admin %s has %.4f ETH; recommended >= %.4f ETH to cover "
+                "~%d process() transactions at 50 gwei. Extract may fail "
+                "partway if gas runs out.",
+                admin_address,
+                admin_eth_wei / 1e18,
+                gas_headroom / 1e18,
+                len(settings.process_tokens),
+            )
+
     # Step ordering note: extract runs BEFORE the balance check. The reasoning
     # is that the extract step IS the top-up mechanism for the distribution
     # account — extracting first ensures balance reflects the post-extract
@@ -407,7 +430,7 @@ async def process_credit_distribution(
         "unallocated_aleph": 0,
         "start_t_months": 0,
         "end_t_months": 0,
-        "split": {"ccn": 0, "crn": 0, "stakers": 0},
+        "split": {"ccn": 0, "crn": 0, "staker": 0},
     }
     if flags.get("wage"):
         api_server = PublishMode.get_publish_api_server()
@@ -430,9 +453,9 @@ async def process_credit_distribution(
                 "start_t_months":     months_since_start(start_time),
                 "end_t_months":       months_since_start(end_time),
                 "split": {
-                    "ccn":     period_total * settings.wage_ccn_share,
-                    "crn":     period_total * settings.wage_crn_share,
-                    "stakers": period_total * settings.wage_staker_share,
+                    "ccn":    period_total * settings.wage_ccn_share,
+                    "crn":    period_total * settings.wage_crn_share,
+                    "staker": period_total * settings.wage_staker_share,
                 },
             }
             LOGGER.warning(
@@ -607,9 +630,13 @@ async def process_credit_distribution(
 @click.option("--no-wage", "no_wage", is_flag=True,
               help="Skip wage subsidy")
 @click.option("--enable-holder-tier", "enable_holder_tier", is_flag=True,
-              help="Force holder-tier ON (overrides env if disabled)")
+              help="Force holder-tier ON (overrides env if disabled). "
+                   "Mutually exclusive with --no-holder-tier; if both are "
+                   "set programmatically, --no-holder-tier wins.")
 @click.option("--no-holder-tier", "no_holder_tier", is_flag=True,
-              help="Force holder-tier OFF (overrides env=True, the default)")
+              help="Force holder-tier OFF (overrides env=True, the default). "
+                   "Wins over --enable-holder-tier when both are set, since "
+                   "over-distribution is worse than under-distribution.")
 @click.option("--no-transfer", "no_transfer", is_flag=True,
               help="Compute everything but don't broadcast txs")
 @click.option("--no-publish", "no_publish", is_flag=True,

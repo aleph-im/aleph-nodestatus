@@ -188,5 +188,5 @@ def test_compute_subsidy_returns_rewards_totals_unallocated():
     assert totals["end_t_months"]       == pytest.approx(1.0)
     assert totals["split"]["ccn"]       == pytest.approx(period_total / 3)
     assert totals["split"]["crn"]       == pytest.approx(period_total / 3)
-    assert totals["split"]["stakers"]   == pytest.approx(period_total / 3)
+    assert totals["split"]["staker"]    == pytest.approx(period_total / 3)
     assert sum(rewards.values()) == pytest.approx(period_total)

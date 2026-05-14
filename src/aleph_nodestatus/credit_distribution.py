@@ -456,16 +456,41 @@ def _project_expense(expense, src_key):
 
 
 def zero_totals():
+    """Initial accumulator for credit_revenue / holder_tier totals.
+
+    Unallocated tracking — three buckets for ALEPH the formula computed
+    but couldn't pay out. Keys in the `*_by_id` dicts come from the most
+    specific identifier available at the drop site, and that depends on
+    *which* link failed:
+
+      - `unallocated_crn_by_node_id` — always keyed by CRN node_id (or
+        UNALLOCATED_MISSING_NODE_ID for credits that arrived without
+        one). The dropped share is the CRN slice of that credit.
+
+      - `unallocated_ccn_by_id` — keyed by the CRN node_id when the
+        linked CCN can't be found at all (no reverse-link or sentinel
+        for missing node_id), or by UNALLOCATED_NO_ACTIVE_CCNS for the
+        storage path when no CCN is eligible. Never keyed by CCN hash
+        directly: if we found the CCN hash, we could pay it.
+
+      - `unallocated_staker_by_id` — DUAL-KEYED depending on failure:
+            * CRN node_id (or UNALLOCATED_MISSING_NODE_ID) when the
+              linked CCN couldn't be resolved at all — same key as the
+              corresponding ccn drop entry.
+            * CCN hash when the linked CCN was found and active but has
+              zero stakers (execution path), OR when an otherwise-paid
+              CCN has no stakers (storage path).
+            * UNALLOCATED_NO_ACTIVE_CCNS for the storage path when no
+              CCN is eligible at all.
+
+    Operators reading the audit post: an entry in `unallocated_staker_by_id`
+    that ALSO appears in `unallocated_ccn_by_id` is a CRN-side miss
+    (linked CCN unresolved); an entry that DOESN'T is a CCN-side miss
+    (linked CCN resolved but has no stakers).
+    """
     return {"storage_total_aleph":          0,
             "execution_total_aleph":        0,
             "dev_fund_total_aleph":         0,
-            # Unallocated tracking — share that the formula computed but
-            # couldn't pay out (missing/invalid node_id, no linked CCN,
-            # inactive linked CCN, CCN with no stakers, no active CCNs).
-            # Three buckets by which share kind was dropped. Each `*_by_id`
-            # dict's keys are the most specific identifier available (CRN
-            # node_id, CCN hash, or a sentinel like
-            # UNALLOCATED_MISSING_NODE_ID or UNALLOCATED_NO_ACTIVE_CCNS).
             "unallocated_aleph":            0,
             "unallocated_crn_aleph":        0,
             "unallocated_crn_by_node_id":   {},

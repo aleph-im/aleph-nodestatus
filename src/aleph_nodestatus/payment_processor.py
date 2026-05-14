@@ -201,7 +201,18 @@ def _balance_of(w3, contract_address, token_address):
 
 
 def _swap_config_to_dict(swap_config_tuple):
-    """Map ABI-decoded tuple to a dict the quoter helper understands."""
+    """Map ABI-decoded tuple to a dict the quoter helper understands.
+
+    `v4` is a tuple of `PathKey` structs as decoded from the on-chain
+    ABI; `list(v4)` keeps each inner struct as a positional tuple
+    whose field order MUST stay in sync with the V4 quoter's
+    `PathKey` definition (intermediateCurrency, fee, tickSpacing,
+    hooks, hookData at the time of writing). If the on-chain struct
+    is ever reshaped, the entries we forward to
+    `v4_quoter.quoteExactInput` will silently misalign. The
+    AlephPaymentProcessor and UniswapV4Quoter ABIs vendored in
+    `abi/*.json` are the source of truth — update both together.
+    """
     v, t, v2, v3, v4 = swap_config_tuple
     return {"v": v, "t": t, "v2": list(v2), "v3": bytes(v3), "v4": list(v4)}
 

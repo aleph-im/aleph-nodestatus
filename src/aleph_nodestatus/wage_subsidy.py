@@ -150,10 +150,13 @@ def compute_subsidy(
         "end_t_months":       months_since_start(end_time),
         "period_total_aleph": period_total,
         "unallocated_aleph":  unallocated,
+        # Keys here mirror the per-address `detailed[addr]` component
+        # keys ("ccn"/"crn"/"staker") so operators don't have to
+        # mentally translate between the two views in the audit post.
         "split": {
-            "ccn":     period_total * settings.wage_ccn_share,
-            "crn":     period_total * settings.wage_crn_share,
-            "stakers": period_total * settings.wage_staker_share,
+            "ccn":    period_total * settings.wage_ccn_share,
+            "crn":    period_total * settings.wage_crn_share,
+            "staker": period_total * settings.wage_staker_share,
         },
     }
     return rewards, totals, detailed
