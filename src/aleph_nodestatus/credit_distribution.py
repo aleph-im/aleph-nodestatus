@@ -501,29 +501,28 @@ def zero_totals():
 
 
 def _validate_hold_aggregates(expense):
-    """Cross-check declared `hold_count` / `hold_amount` aggregates against
-    the actual contents of `expense.hold[]`.
+    """Cross-check the declared hold aggregates against `expense.hold[]`.
 
-    NOTE: this used to consume `expense.rewards[]` plus the matching
-    `rewards_count` / `rewards_amount` aggregates. The indexer reshaped
-    the holder-tier payload after a pricing bug in `rewards[]`: the new
-    payload lives under `hold[]` (with `hold_count` / `hold_amount`) and
-    now ships for both storage and execution expenses. The old `rewards`
-    array is no longer read by this pipeline.
+    Reads from `expense.stats.hold` (the canonical shape introduced in
+    2026-05 by aleph-api-credit) when present, otherwise falls back to
+    the legacy top-level `hold_count` / `hold_amount` keys still
+    present on pre-migration messages.
     """
-    declared_count = expense.get("hold_count")
-    declared_amount = expense.get("hold_amount")
+    stats_hold = (expense.get("stats") or {}).get("hold") or {}
+    declared_count = stats_hold.get("count", expense.get("hold_count"))
+    declared_amount = stats_hold.get("amount", expense.get("hold_amount"))
+
     hold = expense.get("hold", [])
     if declared_count is not None and declared_count != len(hold):
         LOGGER.warning(
-            f"hold_count mismatch: declared={declared_count}, "
+            f"hold count mismatch: declared={declared_count}, "
             f"actual={len(hold)}"
         )
     if declared_amount is not None:
         actual = sum(h.get("amount", 0) for h in hold)
         if abs(actual - declared_amount) > 1:
             LOGGER.warning(
-                f"hold_amount mismatch: declared={declared_amount}, "
+                f"hold amount mismatch: declared={declared_amount}, "
                 f"actual={actual}"
             )
 
