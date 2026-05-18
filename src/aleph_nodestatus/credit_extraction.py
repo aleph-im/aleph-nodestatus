@@ -14,6 +14,9 @@ import asyncio
 import logging
 from typing import Optional
 
+from eth_account import Account
+from hexbytes import HexBytes
+
 from .ethereum import get_web3
 from .payment_processor import (
     extract_aleph,
@@ -34,6 +37,18 @@ async def process_credit_extraction(
     """Run one extract pass. Returns the dict produced by extract_aleph."""
     web3 = get_web3()
 
+    admin_account = None
+    admin_address = settings.payment_processor_admin_address
+    if act and not dry_run and transfer:
+        pk = settings.payment_processor_admin_pkey or settings.ethereum_pkey
+        if not settings.payment_processor_admin_pkey:
+            LOGGER.warning(
+                "payment_processor_admin_pkey not set; falling back to "
+                "ethereum_pkey"
+            )
+        admin_account = Account.from_key(HexBytes(pk))
+        admin_address = admin_account.address
+
     processor = get_processor_contract(web3)
     quoters = {
         "v2": get_v2_router_contract(web3),
@@ -44,8 +59,8 @@ async def process_credit_extraction(
     extract_block = await asyncio.to_thread(
         extract_aleph,
         web3, processor, quoters,
-        account=None,
-        from_address=settings.payment_processor_admin_address,
+        account=admin_account,
+        from_address=admin_address,
         dry_run=dry_run or not transfer,
         transfer_enabled=transfer,
         slippage_bps=(
