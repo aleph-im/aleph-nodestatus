@@ -31,14 +31,30 @@ async def test_process_credit_extraction_calls_extract_aleph(monkeypatch):
     captured = {}
     def fake_extract_aleph(w3, processor, quoters, **kwargs):
         captured.update(kwargs)
-        return {"tokens": [{"symbol": "ALEPH"}], "errors": []}
+        return {
+            "tokens": [{
+                "symbol": "ALEPH", "token": "0xB", "amount_in": "0",
+                "swap_amount_in": None, "min_out": None, "expected_out": None,
+                "tx_hash": None, "simulated_only": False,
+                "skipped_reason": "zero_balance", "error": None,
+            }],
+            "errors": [],
+        }
     monkeypatch.setattr(ce, "extract_aleph", fake_extract_aleph)
 
     result = await ce.process_credit_extraction(
         act=False, dry_run=False, transfer=False,
     )
 
-    assert result == {"tokens": [{"symbol": "ALEPH"}], "errors": []}
+    assert result == {
+        "tokens": [{
+            "symbol": "ALEPH", "token": "0xB", "amount_in": "0",
+            "swap_amount_in": None, "min_out": None, "expected_out": None,
+            "tx_hash": None, "simulated_only": False,
+            "skipped_reason": "zero_balance", "error": None,
+        }],
+        "errors": [],
+    }
     # calculation-only path: dry_run forwarded as True (because transfer=False)
     assert captured["dry_run"] is True
     assert captured["transfer_enabled"] is False
@@ -158,3 +174,46 @@ async def test_eth_preflight_skipped_in_dry_run(monkeypatch, caplog):
         await ce.process_credit_extraction(act=False, dry_run=True, transfer=False)
 
     assert not any("recommended" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_stdout_summary_per_token(monkeypatch, capsys):
+    """Each token entry produces one summary line; final tally reports errors."""
+    import aleph_nodestatus.credit_extraction as ce
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+
+    def fake_extract_aleph(*a, **kw):
+        return {
+            "tokens": [
+                {"symbol": "USDC", "token": "0xA", "amount_in": "1000",
+                 "swap_amount_in": "950", "min_out": "9000",
+                 "expected_out": "9500", "tx_hash": "0xdeadbeef",
+                 "simulated_only": False, "skipped_reason": None, "error": None},
+                {"symbol": "ETH",  "token": "0x0", "amount_in": "0",
+                 "swap_amount_in": None, "min_out": None, "expected_out": None,
+                 "tx_hash": None, "simulated_only": False,
+                 "skipped_reason": "zero_balance", "error": None},
+                {"symbol": "ALEPH","token": "0xB", "amount_in": "500",
+                 "swap_amount_in": None, "min_out": None, "expected_out": None,
+                 "tx_hash": None, "simulated_only": False,
+                 "skipped_reason": None, "error": "tx_failed: boom"},
+            ],
+            "errors": [{"symbol": "ALEPH"}],
+        }
+    monkeypatch.setattr(ce, "extract_aleph", fake_extract_aleph)
+
+    await ce.process_credit_extraction(act=False, dry_run=True, transfer=False)
+
+    out = capsys.readouterr().out
+    assert "USDC" in out and "0xdeadbeef" in out
+    assert "ETH"  in out and "zero_balance" in out
+    assert "ALEPH" in out and "tx_failed" in out
+    assert "1 error" in out

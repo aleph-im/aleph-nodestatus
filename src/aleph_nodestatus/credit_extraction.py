@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Optional
 
+import click
+
 from eth_account import Account
 from hexbytes import HexBytes
 
@@ -85,4 +87,22 @@ async def process_credit_extraction(
             else settings.process_slippage_bps
         ),
     )
+    _print_summary(extract_block)
     return extract_block
+
+
+def _print_summary(extract_block: dict) -> None:
+    click.echo("=== Extract summary ===")
+    for entry in extract_block.get("tokens", []):
+        line = f"  {entry['symbol']:6} balance={entry['amount_in']}"
+        if entry.get("skipped_reason"):
+            line += f" skipped={entry['skipped_reason']}"
+        elif entry.get("error"):
+            line += f" ERROR={entry['error']}"
+        elif entry.get("simulated_only"):
+            line += f" simulated_only min_out={entry['min_out']}"
+        else:
+            line += f" tx_hash={entry['tx_hash']}"
+        click.echo(line)
+    n_err = len(extract_block.get("errors", []))
+    click.echo(f"  {n_err} error(s)" if n_err else "  no errors")
