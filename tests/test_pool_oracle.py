@@ -381,3 +381,50 @@ def test_check_swap_price_deviation_v4_exceeds_threshold(monkeypatch):
     result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
     assert result.ok is False
     assert result.reason == "price_deviation"
+
+
+def test_v2_spot_from_reserves(monkeypatch):
+    """V2 pair.getReserves() with token_a being token0:
+    spot_B_per_A = (reserve1 / 10^dec1) / (reserve0 / 10^dec0)."""
+    import aleph_nodestatus.pool_oracle as po
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+
+    pair = MagicMock()
+    # USDC is token0 (lower hex). Reserve0=10_000 USDC (10_000 × 10^6),
+    # Reserve1=4 WETH (4 × 10^18). Spot WETH per USDC = (4 / 10000) = 0.0004.
+    pair.functions.getReserves.return_value.call.return_value = (
+        10_000 * 10 ** 6, 4 * 10 ** 18, 1_700_000_000,
+    )
+    w3 = MagicMock()
+    w3.eth.contract.return_value = pair
+
+    monkeypatch.setattr(po, "_erc20_decimals",
+                        lambda w3_, addr: 6 if addr.lower() == USDC.lower() else 18)
+
+    spot = po._v2_spot(w3, USDC, WETH, pair_address="0xpair")
+    assert abs(spot - 0.0004) < 1e-9
+
+
+def test_check_swap_price_deviation_v2_dispatch(monkeypatch):
+    """V2 path goes through the dispatch correctly."""
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): "0xfeed_usdc", WETH.lower(): "0xfeed_eth",
+    })
+    monkeypatch.setattr(po, "_v2_spot",
+                        lambda w3, t_a, t_b, pair_address: 1 / 2500.0)
+    monkeypatch.setattr(po, "_read_chainlink_price",
+        lambda w3, feed: {"0xfeed_usdc": (1.0, None),
+                          "0xfeed_eth":  (2500.0, None)}[feed.lower()])
+    monkeypatch.setattr(po, "_v2_pair_address",
+                        lambda w3, t_a, t_b: "0xfakepair")
+
+    cfg = {"v": 2, "t": WETH, "v2": [USDC, WETH], "v3": b"", "v4": []}
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is True
