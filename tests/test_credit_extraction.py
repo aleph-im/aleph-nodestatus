@@ -205,6 +205,11 @@ async def test_stdout_summary_per_token(monkeypatch, capsys):
                  "swap_amount_in": None, "min_out": None, "expected_out": None,
                  "tx_hash": None, "simulated_only": False,
                  "skipped_reason": None, "error": "tx_failed: boom"},
+                {"symbol": "DAI",  "token": "0xC", "amount_in": "2000",
+                 "swap_amount_in": "1900", "min_out": "1800",
+                 "expected_out": "1850", "tx_hash": None,
+                 "simulated_only": True,
+                 "skipped_reason": None, "error": None},
             ],
             "errors": [{"symbol": "ALEPH"}],
         }
@@ -216,4 +221,5 @@ async def test_stdout_summary_per_token(monkeypatch, capsys):
     assert "USDC" in out and "0xdeadbeef" in out
     assert "ETH"  in out and "zero_balance" in out
     assert "ALEPH" in out and "tx_failed" in out
+    assert "DAI" in out and "simulated_only" in out and "1800" in out
     assert "1 error" in out

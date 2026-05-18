@@ -56,7 +56,7 @@ async def test_run_above_cap_aborts(monkeypatch, capsys):
         await cmd.process_credit_distribution(
             start_height=1_000_000, end_height=2_000_000,
             act=True, dry_run=False, force=False, force_cap=False,
-            flags={"extract": False, "credit_revenue": True, "wage": False,
+            flags={"credit_revenue": True, "wage": False,
                    "holder_tier": False, "transfer": True, "publish": False},
         )
     assert exc.value.code == 1
@@ -81,7 +81,7 @@ async def test_run_above_cap_with_force_cap_proceeds(monkeypatch, capsys):
     await cmd.process_credit_distribution(
         start_height=1_000_000, end_height=2_000_000,
         act=True, dry_run=False, force=False, force_cap=True,
-        flags={"extract": False, "credit_revenue": True, "wage": False,
+        flags={"credit_revenue": True, "wage": False,
                "holder_tier": False, "transfer": True, "publish": False},
     )
     assert "max_total cap" not in capsys.readouterr().out
@@ -98,7 +98,7 @@ async def test_calculation_mode_ignores_cap(monkeypatch, capsys):
     await cmd.process_credit_distribution(
         start_height=1_000_000, end_height=2_000_000,
         act=False, dry_run=False, force=False, force_cap=False,
-        flags={"extract": False, "credit_revenue": True, "wage": False,
+        flags={"credit_revenue": True, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     assert "max_total cap" not in capsys.readouterr().out

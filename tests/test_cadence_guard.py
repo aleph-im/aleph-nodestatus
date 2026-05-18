@@ -71,7 +71,7 @@ async def test_explicit_start_height_inside_cadence_window_aborts(
     await cmd.process_credit_distribution(
         start_height=1_000_000, end_height=2_000_000,
         act=True, dry_run=False, force=False,
-        flags={"extract": False, "credit_revenue": False, "wage": False,
+        flags={"credit_revenue": False, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out
@@ -99,7 +99,7 @@ async def test_explicit_start_height_with_force_proceeds(
     await cmd.process_credit_distribution(
         start_height=1_000_000, end_height=2_000_000,
         act=True, dry_run=False, force=True,
-        flags={"extract": False, "credit_revenue": False, "wage": False,
+        flags={"credit_revenue": False, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out
@@ -126,7 +126,7 @@ async def test_calculation_mode_ignores_cadence(
     await cmd.process_credit_distribution(
         start_height=1_000_000, end_height=2_000_000,
         act=False, dry_run=False, force=False,
-        flags={"extract": False, "credit_revenue": False, "wage": False,
+        flags={"credit_revenue": False, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out
@@ -155,7 +155,7 @@ async def test_act_with_no_prior_distribution_uses_floor_default(
     await cmd.process_credit_distribution(
         start_height=-1, end_height=2_000_000,
         act=True, dry_run=False, force=False,
-        flags={"extract": False, "credit_revenue": False, "wage": False,
+        flags={"credit_revenue": False, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out

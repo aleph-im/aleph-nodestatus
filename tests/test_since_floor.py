@@ -47,7 +47,7 @@ async def test_explicit_start_below_floor_aborts(
         await cmd.process_credit_distribution(
             start_height=1_000, end_height=100_000,
             act=False, dry_run=False, force=False,
-            flags={"extract": False, "credit_revenue": False, "wage": False,
+            flags={"credit_revenue": False, "wage": False,
                    "holder_tier": False, "transfer": False, "publish": False},
         )
     assert exc.value.code == 2
@@ -71,7 +71,7 @@ async def test_no_prior_distribution_starts_at_floor(
     await cmd.process_credit_distribution(
         start_height=-1, end_height=100_000,
         act=False, dry_run=False, force=False,
-        flags={"extract": False, "credit_revenue": False, "wage": False,
+        flags={"credit_revenue": False, "wage": False,
                "holder_tier": False, "transfer": False, "publish": False},
     )
     out = capsys.readouterr().out
@@ -95,7 +95,7 @@ async def test_derived_start_below_floor_aborts(
         await cmd.process_credit_distribution(
             start_height=-1, end_height=100_000,
             act=False, dry_run=False, force=False,
-            flags={"extract": False, "credit_revenue": False, "wage": False,
+            flags={"credit_revenue": False, "wage": False,
                    "holder_tier": False, "transfer": False, "publish": False},
         )
     assert exc.value.code == 2
