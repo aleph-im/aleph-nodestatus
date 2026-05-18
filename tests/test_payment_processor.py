@@ -310,6 +310,56 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     assert len(result["errors"]) == len(failing)
 
 
+def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
+    """When pool_oracle.check_swap_price_deviation returns ok=False, the
+    token gets skipped_reason set and the swap is NOT attempted (no
+    quote_amount_out, no simulate_process)."""
+    from aleph_nodestatus.payment_processor import extract_aleph
+    import aleph_nodestatus.payment_processor as pp
+    from aleph_nodestatus.pool_oracle import OracleResult
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(pp, "_erc20_contract", lambda w3, addr: erc20_mock)
+
+    quote_calls = []
+    simulate_calls = []
+    monkeypatch.setattr(pp, "quote_amount_out",
+                        lambda *a, **kw: quote_calls.append(1) or 10_000)
+    monkeypatch.setattr(pp, "simulate_process",
+                        lambda *a, **kw: simulate_calls.append(1) or None)
+
+    monkeypatch.setattr(
+        pp, "check_swap_price_deviation",
+        lambda w3, cfg, token_in: OracleResult(
+            ok=False, reason="price_deviation",
+            deviation_bps=350, spot_price=1.04, ref_price=1.00,
+        ),
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+    )
+
+    # ALEPH has no swap → still simulated. USDC and ETH have swaps → both
+    # should be flagged as price_deviation, no quote/simulate called.
+    skipped = [e for e in result["tokens"]
+               if e.get("skipped_reason") == "price_deviation"]
+    assert len(skipped) == 2, [e for e in result["tokens"]]
+    for e in skipped:
+        assert e["oracle"]["deviation_bps"] == 350
+        assert e["oracle"]["spot_price"] == 1.04
+        assert e["oracle"]["ref_price"] == 1.00
+    assert quote_calls == []     # never quoted the deviating tokens
+
+
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x

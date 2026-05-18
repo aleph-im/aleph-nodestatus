@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from .pool_oracle import check_swap_price_deviation
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -319,6 +320,25 @@ def extract_aleph(
             try:
                 swap_config = processor.functions.getSwapConfig(token).call()
                 cfg = _swap_config_to_dict(swap_config)
+            except Exception as e:
+                LOGGER.exception(
+                    "getSwapConfig failed for token %s: %r", symbol, e,
+                )
+                entry["error"] = f"swap_config_failed: {e!r}"
+                out["errors"].append(entry)
+                continue
+
+            oracle = check_swap_price_deviation(w3, cfg, token_in=token)
+            if not oracle.ok:
+                entry["skipped_reason"] = oracle.reason
+                entry["oracle"] = {
+                    "deviation_bps": oracle.deviation_bps,
+                    "spot_price":    oracle.spot_price,
+                    "ref_price":     oracle.ref_price,
+                }
+                continue
+
+            try:
                 expected_out = quote_amount_out(
                     quoters, cfg, swap_amount,
                     token_in=token,
