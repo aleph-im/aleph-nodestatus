@@ -12,6 +12,7 @@ stdout / log aggregation.
 
 import asyncio
 import logging
+import random
 from typing import Optional
 
 import click
@@ -34,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
 
 async def process_credit_extraction(
     *, act: bool, dry_run: bool, transfer: bool,
+    immediate: bool = False,
     slippage_bps: Optional[int] = None,
 ) -> dict:
     """Run one extract pass. Returns the dict produced by extract_aleph."""
@@ -67,6 +69,18 @@ async def process_credit_extraction(
                 gas_headroom / 1e18,
                 len(settings.process_tokens),
             )
+
+    # Anti-MEV random delay: hourly cron is predictable; this jitter
+    # uniformly spreads the actual execution over [0, max] seconds so a
+    # bot watching the schedule can't pre-position a sandwich for a
+    # specific block. Bypass via --immediate (manual retries) or
+    # --dry-run (no on-chain tx, no need to obscure timing).
+    if (not dry_run
+        and not immediate
+        and settings.extract_random_delay_max_seconds > 0):
+        delay = random.randint(0, settings.extract_random_delay_max_seconds)
+        click.echo(f"Sleeping {delay}s before extract (anti-MEV jitter)…")
+        await asyncio.sleep(delay)
 
     processor = get_processor_contract(web3)
     quoters = {

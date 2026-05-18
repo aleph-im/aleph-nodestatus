@@ -51,3 +51,44 @@ def test_cli_no_testnet_flag():
     runner = CliRunner()
     result = runner.invoke(extract_credits, ["--testnet"])
     assert result.exit_code != 0  # unknown flag
+
+
+def test_cli_help_lists_immediate_flag():
+    runner = CliRunner()
+    result = runner.invoke(extract_credits, ["--help"])
+    assert result.exit_code == 0
+    assert "--immediate" in result.output
+
+
+def test_cli_immediate_forwarded_to_orchestrator(monkeypatch):
+    import aleph_nodestatus.commands as cmd
+
+    captured = {}
+    async def fake_orch(**kwargs):
+        captured.update(kwargs)
+        return {"tokens": [], "errors": []}
+    monkeypatch.setattr(cmd, "process_credit_extraction", fake_orch)
+
+    runner = CliRunner()
+    result = runner.invoke(extract_credits, ["--immediate", "--act"])
+    assert result.exit_code == 0, result.output
+    assert captured["immediate"] is True
+    assert captured["act"] is True
+
+
+def test_cli_dry_run_implies_immediate(monkeypatch):
+    """--dry-run must forward immediate=True so the orchestrator skips
+    the random sleep without needing an extra flag."""
+    import aleph_nodestatus.commands as cmd
+
+    captured = {}
+    async def fake_orch(**kwargs):
+        captured.update(kwargs)
+        return {"tokens": [], "errors": []}
+    monkeypatch.setattr(cmd, "process_credit_extraction", fake_orch)
+
+    runner = CliRunner()
+    result = runner.invoke(extract_credits, ["--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert captured["dry_run"] is True
+    assert captured["immediate"] is True
