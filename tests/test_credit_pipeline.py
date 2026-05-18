@@ -93,7 +93,7 @@ def test_dry_run_does_not_post_or_transfer(patched_pipeline):
     """--dry-run runs every computation step but skips posts + transfers."""
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
-        "--dry-run", "--no-extract",
+        "--dry-run",
         "--start-height", "10",
         "--end-height",   "20",
     ])
@@ -107,7 +107,7 @@ def test_dry_run_includes_wage_and_credit_in_summary(patched_pipeline):
     """The summary printed in dry-run mode contains both per-stream totals."""
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
-        "--dry-run", "--no-extract",
+        "--dry-run",
         "--start-height", "10",
         "--end-height",   "20",
     ])
@@ -171,7 +171,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     try:
         runner = CliRunner()
         result = runner.invoke(distribute_credits, [
-            "--dry-run", "--no-extract", "--no-credit-revenue",
+            "--dry-run", "--no-credit-revenue",
             "--start-height", "10",
             "--end-height",   "20",
         ])
@@ -247,7 +247,7 @@ def test_balance_safety_aborts_when_short(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
-        "--act", "--no-extract", "--enable-holder-tier", "--no-wage",
+        "--act", "--enable-holder-tier", "--no-wage",
         "--start-height", "10",
         "--end-height",   "20",
     ])
@@ -307,7 +307,7 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
-        "--act", "--no-extract", "--no-holder-tier", "--no-wage",
+        "--act", "--no-holder-tier", "--no-wage",
         "--start-height", "10",
         "--end-height",   "20",
     ])

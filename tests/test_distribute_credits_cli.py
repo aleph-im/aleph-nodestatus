@@ -32,7 +32,6 @@ def test_cli_help_lists_new_flags():
     runner = CliRunner()
     result = runner.invoke(distribute_credits, ["--help"])
     assert "--dry-run" in result.output
-    assert "--no-extract" in result.output
     assert "--no-wage" in result.output
     assert "--enable-holder-tier" in result.output
     assert "--no-transfer" in result.output
@@ -47,7 +46,7 @@ def test_resolve_feature_flags_holder_tier_requires_credit_revenue(capsys):
     from aleph_nodestatus.commands import _resolve_feature_flags
 
     flags = _resolve_feature_flags(
-        no_extract=False, no_credit_revenue=True, no_wage=False,
+        no_credit_revenue=True, no_wage=False,
         enable_holder_tier=True, no_holder_tier=False,
         no_transfer=False, no_publish=False,
         act=False, dry_run=False,
