@@ -96,3 +96,188 @@ def test_read_chainlink_invalid_answer():
     price, reason = po._read_chainlink_price(w3, "0xfeed")
     assert price is None
     assert reason == "chainlink_invalid"
+
+
+def test_decode_v3_path_single_hop():
+    from aleph_nodestatus.pool_oracle import _decode_v3_path
+
+    # token_a (USDC) | fee 3000 | token_b (WETH)
+    path = (
+        bytes.fromhex("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+        + (3000).to_bytes(3, "big")
+        + bytes.fromhex("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2")
+    )
+    hops = _decode_v3_path(path)
+    assert hops == [(
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 3000,
+        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    )]
+
+
+def test_decode_v3_path_two_hops():
+    from aleph_nodestatus.pool_oracle import _decode_v3_path
+
+    # USDC | 3000 | WETH | 10000 | ALEPH
+    path = (
+        bytes.fromhex("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+        + (3000).to_bytes(3, "big")
+        + bytes.fromhex("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2")
+        + (10000).to_bytes(3, "big")
+        + bytes.fromhex("27702a26126e0b3702af63ee09ac4d1a084ef628")
+    )
+    hops = _decode_v3_path(path)
+    assert len(hops) == 2
+    assert hops[0][0].lower() == "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    assert hops[0][1] == 3000
+    assert hops[0][2].lower() == "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    assert hops[1][1] == 10000
+
+
+def test_sqrt_price_to_b_per_a_decimals():
+    """sqrtPriceX96 for USDC/WETH pool, USDC is token0 (lower address).
+    If 1 WETH = 2500 USDC, then USDC per WETH = 2500 → WETH per USDC = 1/2500."""
+    from aleph_nodestatus.pool_oracle import _sqrt_price_to_b_per_a
+
+    # WETH is token1; USDC is token0.
+    # price_raw_1_per_0 = wei_WETH per wei_USDC = (2500_USDC -> 1_WETH)
+    # 1 USDC = 10^6 wei; 1 WETH = 10^18 wei
+    # 2500 USDC -> 1 WETH: 2500 × 10^6 wei USDC -> 10^18 wei WETH
+    # so wei_WETH / wei_USDC = 10^18 / (2500 × 10^6) = 10^12 / 2500 = 4e8
+    # sqrt of 4e8 = 20000; sqrtPriceX96 = 20000 * 2^96
+    sqrt_price_x96 = 20000 * (2 ** 96)
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    # token_a = USDC, token_b = WETH → "WETH per USDC" → 1/2500
+    price = _sqrt_price_to_b_per_a(
+        sqrt_price_x96, token_a=USDC, token_b=WETH,
+        decimals_a=6, decimals_b=18,
+    )
+    assert abs(price - (1 / 2500)) < 1e-9
+
+    # token_a = WETH, token_b = USDC → "USDC per WETH" → 2500
+    price2 = _sqrt_price_to_b_per_a(
+        sqrt_price_x96, token_a=WETH, token_b=USDC,
+        decimals_a=18, decimals_b=6,
+    )
+    assert abs(price2 - 2500) < 1e-9
+
+
+def test_check_swap_price_deviation_v3_within_threshold(monkeypatch):
+    """Spot matches Chainlink (within 200 bps): ok=True."""
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    USDC_USD_FEED = "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6"
+    ETH_USD_FEED  = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): USDC_USD_FEED,
+        WETH.lower(): ETH_USD_FEED,
+    })
+
+    # Stub the pool spot — return 1/2500 (USDC→WETH at 2500 USDC/ETH)
+    monkeypatch.setattr(po, "_v3_spot",
+                        lambda w3, token_a, token_b, fee: 1 / 2500.0)
+    # Stub Chainlink: USDC=1.0, ETH=2500.0 → ratio WETH/USDC = 1/2500
+    chainlink_returns = {
+        USDC_USD_FEED.lower(): (1.0, None),
+        ETH_USD_FEED.lower():  (2500.0, None),
+    }
+    monkeypatch.setattr(po, "_read_chainlink_price",
+        lambda w3, feed: chainlink_returns[feed.lower()])
+
+    path = (bytes.fromhex(USDC[2:]) + (3000).to_bytes(3, "big")
+            + bytes.fromhex(WETH[2:]))
+    cfg = {"v": 3, "t": WETH, "v2": [], "v3": path, "v4": []}
+
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is True
+
+
+def test_check_swap_price_deviation_v3_exceeds_threshold(monkeypatch):
+    """Spot 3% off Chainlink (>200 bps): ok=False, reason=price_deviation."""
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    USDC_USD_FEED = "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6"
+    ETH_USD_FEED  = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): USDC_USD_FEED,
+        WETH.lower(): ETH_USD_FEED,
+    })
+    monkeypatch.setattr(s, "extract_max_deviation_bps", 200)
+
+    # Spot says 1 USDC = 1/2425 WETH (3% off "real" 1/2500)
+    monkeypatch.setattr(po, "_v3_spot",
+                        lambda w3, token_a, token_b, fee: 1 / 2425.0)
+    chainlink_returns = {
+        USDC_USD_FEED.lower(): (1.0, None),
+        ETH_USD_FEED.lower():  (2500.0, None),
+    }
+    monkeypatch.setattr(po, "_read_chainlink_price",
+        lambda w3, feed: chainlink_returns[feed.lower()])
+
+    path = (bytes.fromhex(USDC[2:]) + (3000).to_bytes(3, "big")
+            + bytes.fromhex(WETH[2:]))
+    cfg = {"v": 3, "t": WETH, "v2": [], "v3": path, "v4": []}
+
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is False
+    assert result.reason == "price_deviation"
+    assert result.deviation_bps is not None and result.deviation_bps > 200
+
+
+def test_check_swap_price_deviation_v3_pool_read_error(monkeypatch):
+    """Pool read raises → ok=False, reason=pool_read_failed."""
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): "0xUSDC_FEED", WETH.lower(): "0xETH_FEED",
+    })
+
+    def boom(*a, **kw):
+        raise RuntimeError("rpc fell over")
+    monkeypatch.setattr(po, "_v3_spot", boom)
+
+    path = (bytes.fromhex(USDC[2:]) + (3000).to_bytes(3, "big")
+            + bytes.fromhex(WETH[2:]))
+    cfg = {"v": 3, "t": WETH, "v2": [], "v3": path, "v4": []}
+
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is False
+    assert result.reason == "pool_read_failed"
+
+
+def test_check_swap_price_deviation_v3_no_feed_best_effort(monkeypatch):
+    """Hop with one side missing a feed → that hop is best-effort skipped;
+    if no other hop fails, ok=True with deviation_bps=None."""
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    ALEPH = "0x27702a26126e0b3702af63ee09ac4d1a084ef628"  # no feed
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): "0xUSDC_FEED",
+        # No mapping for ALEPH — best-effort skip the hop.
+    })
+    monkeypatch.setattr(po, "_v3_spot",
+                        lambda *a, **kw: 1.0)  # would never get used
+    monkeypatch.setattr(po, "_read_chainlink_price",
+                        lambda w3, feed: (1.0, None))
+
+    path = (bytes.fromhex(USDC[2:]) + (10000).to_bytes(3, "big")
+            + bytes.fromhex(ALEPH[2:]))
+    cfg = {"v": 3, "t": ALEPH, "v2": [], "v3": path, "v4": []}
+
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is True
+    assert result.deviation_bps is None
