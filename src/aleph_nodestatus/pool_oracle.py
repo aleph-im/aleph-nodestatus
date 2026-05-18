@@ -17,6 +17,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from eth_abi import encode as _abi_encode
+from eth_utils import keccak as _keccak
+
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -37,8 +40,11 @@ def check_swap_price_deviation(w3, swap_config: dict, token_in: str) -> OracleRe
         hops = _decode_v3_path(swap_config["v3"])
         spot_fn = lambda t_a, t_b, extra: _v3_spot(w3, t_a, t_b, extra["fee"])
         hop_iter = [(a, b, {"fee": fee}) for (a, fee, b) in hops]
+    elif v == 4:
+        hop_iter = list(_enumerate_v4_hops(swap_config["v4"], token_in))
+        spot_fn = lambda t_a, t_b, extra: _v4_spot(w3, t_a, t_b, extra)
     else:
-        # V2/V4 land in later tasks.
+        # V2 lands in the next task.
         return OracleResult(ok=True)
 
     feeds = {k.lower(): feed_addr for k, feed_addr in settings.chainlink_usd_feeds.items()}
@@ -196,6 +202,54 @@ def _v3_spot(w3, token_a: str, token_b: str, fee: int) -> float:
         abi=_load_abi("IUniswapV3Pool"),
     )
     slot0 = pool.functions.slot0().call()
+    sqrt_price_x96 = int(slot0[0])
+    return _sqrt_price_to_b_per_a(
+        sqrt_price_x96, token_a, token_b,
+        _erc20_decimals(w3, token_a),
+        _erc20_decimals(w3, token_b),
+    )
+
+
+def _v4_pool_id(currency_a: str, currency_b: str,
+                fee: int, tick_spacing: int, hooks: str) -> bytes:
+    """Compute the V4 pool id = keccak256(abi.encode(PoolKey)). The
+    PoolKey requires currency0 < currency1 (address-sorted)."""
+    c0, c1 = sorted([currency_a.lower(), currency_b.lower()])
+    encoded = _abi_encode(
+        ["address", "address", "uint24", "int24", "address"],
+        [c0, c1, fee, tick_spacing, hooks.lower()],
+    )
+    return _keccak(encoded)
+
+
+def _enumerate_v4_hops(path_keys, token_in: str):
+    """V4 path is a list of PathKey tuples
+    (intermediateCurrency, fee, tickSpacing, hooks, hookData). Each hop's
+    input is the previous hop's output (or token_in for the first)."""
+    prev = token_in
+    for pk in path_keys:
+        intermediate, fee, tick_spacing, hooks, _hook_data = pk
+        yield prev, intermediate, {
+            "fee": fee, "tick_spacing": tick_spacing, "hooks": hooks,
+        }
+        prev = intermediate
+
+
+def _v4_spot(w3, token_a: str, token_b: str, extra: dict) -> float:
+    """Read sqrtPriceX96 from the V4 StateView for the pool identified by
+    PoolKey(currency0, currency1, fee, tickSpacing, hooks), then convert
+    to "tokenB per tokenA"."""
+    pool_id = _v4_pool_id(
+        token_a, token_b,
+        fee=extra["fee"],
+        tick_spacing=extra["tick_spacing"],
+        hooks=extra["hooks"],
+    )
+    state_view = w3.eth.contract(
+        address=w3.to_checksum_address(settings.uniswap_v4_state_view_address),
+        abi=_load_abi("IUniswapV4StateView"),
+    )
+    slot0 = state_view.functions.getSlot0(pool_id).call()
     sqrt_price_x96 = int(slot0[0])
     return _sqrt_price_to_b_per_a(
         sqrt_price_x96, token_a, token_b,
