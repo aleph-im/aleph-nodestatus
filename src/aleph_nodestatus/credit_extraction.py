@@ -111,6 +111,10 @@ def _print_summary(extract_block: dict) -> None:
         line = f"  {entry['symbol']:6} balance={entry['amount_in']}"
         if entry.get("skipped_reason"):
             line += f" skipped={entry['skipped_reason']}"
+            if entry.get("skipped_reason") == "price_deviation":
+                o = entry.get("oracle") or {}
+                if o.get("deviation_bps") is not None:
+                    line += f" Δ={o['deviation_bps']}bps"
         elif entry.get("error"):
             line += f" ERROR={entry['error']}"
         elif entry.get("simulated_only"):
