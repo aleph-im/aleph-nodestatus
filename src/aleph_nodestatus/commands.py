@@ -357,73 +357,6 @@ async def process_credit_distribution(
     start_time = web3.eth.get_block(start_height).timestamp
     end_time = web3.eth.get_block(end_height).timestamp
 
-    admin_address = settings.payment_processor_admin_address
-    admin_account = None
-    if flags.get("extract") and (act and not dry_run):
-        pk = settings.payment_processor_admin_pkey or settings.ethereum_pkey
-        if not settings.payment_processor_admin_pkey:
-            LOGGER.warning(
-                "payment_processor_admin_pkey not set; falling back to ethereum_pkey"
-            )
-        admin_account = Account.from_key(HexBytes(pk))
-        admin_address = admin_account.address
-
-        # Pre-flight ETH balance check on the admin address. extract_aleph
-        # broadcasts up to one process() tx per configured token; if the
-        # signer runs out of ETH mid-loop, partial extraction succeeds
-        # silently while later tokens fail with a generic tx_failed error
-        # buried in the audit post. Warn loudly here so ops can top up
-        # before the quote/simulate work is wasted.
-        admin_eth_wei = web3.eth.get_balance(admin_address)
-        gas_headroom = (
-            settings.process_gas_ceiling
-            * int(web3.to_wei(50, "gwei"))     # generous max_fee estimate
-            * len(settings.process_tokens)
-        )
-        if admin_eth_wei < gas_headroom:
-            LOGGER.warning(
-                "Admin %s has %.4f ETH; recommended >= %.4f ETH to cover "
-                "~%d process() transactions at 50 gwei. Extract may fail "
-                "partway if gas runs out.",
-                admin_address,
-                admin_eth_wei / 1e18,
-                gas_headroom / 1e18,
-                len(settings.process_tokens),
-            )
-
-    # Step ordering note: extract runs BEFORE the balance check. The reasoning
-    # is that the extract step IS the top-up mechanism for the distribution
-    # account — extracting first ensures balance reflects the post-extract
-    # state. The trade-off: if extract partially fails and the post-extract
-    # balance is still short, we've burned gas without a distribution. This
-    # is acceptable for the current cadence (daily) but should be revisited
-    # if a pre-flight balance check becomes cheap to compute.
-    # === Step 1: extract ALEPH from the processor ===
-    # extract_aleph is synchronous (web3.py is sync-native) and the receipt
-    # wait can take up to 300s per token. We run it on a worker thread so the
-    # asyncio event loop remains responsive for any concurrent coroutines
-    # sharing this loop.
-    extract_block = {"tokens": [], "errors": []}
-    if flags.get("extract"):
-        processor = get_processor_contract(web3)
-        quoters = {
-            "v2": get_v2_router_contract(web3),
-            "v3": get_quoter_contract(web3),
-            "v4": get_v4_quoter_contract(web3),
-        }
-        extract_block = await asyncio.to_thread(
-            extract_aleph,
-            web3, processor, quoters,
-            account=admin_account,
-            from_address=admin_address,
-            dry_run=dry_run or not flags.get("transfer"),
-            transfer_enabled=flags.get("transfer"),
-            slippage_bps=(
-                slippage_bps if slippage_bps is not None
-                else settings.process_slippage_bps
-            ),
-        )
-
     # === Step 2: credit_revenue + holder_tier rewards ===
     streams = {
         "credit_revenue": ({}, zero_totals()),
@@ -592,7 +525,6 @@ async def process_credit_distribution(
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
         "wage_subsidy": wage_totals,
-        "extract": extract_block,
         "feature_flags": flags,
         "tags": [status, "credits", settings.filter_tag],
         "sources": transfer_metadata["sources"],
