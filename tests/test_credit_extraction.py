@@ -43,7 +43,7 @@ async def test_process_credit_extraction_calls_extract_aleph(monkeypatch):
     monkeypatch.setattr(ce, "extract_aleph", fake_extract_aleph)
 
     result = await ce.process_credit_extraction(
-        act=False, dry_run=False, transfer=False,
+        act=False, dry_run=False, transfer=False, immediate=True,
     )
 
     assert result == {
@@ -88,7 +88,9 @@ async def test_admin_pkey_fallback_to_ethereum_pkey(monkeypatch, caplog):
     monkeypatch.setattr(ce, "extract_aleph", fake_extract_aleph)
 
     with caplog.at_level(logging.WARNING, logger="aleph_nodestatus.credit_extraction"):
-        await ce.process_credit_extraction(act=True, dry_run=False, transfer=True)
+        await ce.process_credit_extraction(
+            act=True, dry_run=False, transfer=True, immediate=True,
+        )
 
     assert captured["account"] is not None
     assert captured["from_address"] == captured["account"].address
@@ -119,7 +121,9 @@ async def test_admin_pkey_set_no_warning(monkeypatch, caplog):
                         lambda *a, **kw: {"tokens": [], "errors": []})
 
     with caplog.at_level(logging.WARNING, logger="aleph_nodestatus.credit_extraction"):
-        await ce.process_credit_extraction(act=True, dry_run=False, transfer=True)
+        await ce.process_credit_extraction(
+            act=True, dry_run=False, transfer=True, immediate=True,
+        )
 
     assert not any("payment_processor_admin_pkey not set" in r.message
                    for r in caplog.records)
@@ -146,7 +150,9 @@ async def test_eth_preflight_warns_on_low_balance(monkeypatch, caplog):
                         lambda *a, **kw: {"tokens": [], "errors": []})
 
     with caplog.at_level(logging.WARNING, logger="aleph_nodestatus.credit_extraction"):
-        await ce.process_credit_extraction(act=True, dry_run=False, transfer=True)
+        await ce.process_credit_extraction(
+            act=True, dry_run=False, transfer=True, immediate=True,
+        )
 
     assert any("recommended" in r.message and "ETH" in r.message
                for r in caplog.records)
@@ -223,3 +229,132 @@ async def test_stdout_summary_per_token(monkeypatch, capsys):
     assert "ALEPH" in out and "tx_failed" in out
     assert "DAI" in out and "simulated_only" in out and "1800" in out
     assert "1 error" in out
+
+
+@pytest.mark.asyncio
+async def test_random_delay_sleeps_by_default(monkeypatch):
+    """For act=True, dry_run=False, transfer=True, immediate=False:
+    a uniformly chosen delay is slept before extract_aleph runs."""
+    import aleph_nodestatus.credit_extraction as ce
+    from aleph_nodestatus.settings import settings as s
+
+    monkeypatch.setattr(s, "payment_processor_admin_pkey", "0x" + "22" * 32)
+    monkeypatch.setattr(s, "extract_random_delay_max_seconds", 60)
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    captured = {"delay": None}
+    async def fake_sleep(d):
+        captured["delay"] = d
+    monkeypatch.setattr(ce.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ce.random, "randint", lambda lo, hi: 42)
+
+    await ce.process_credit_extraction(
+        act=True, dry_run=False, transfer=True, immediate=False,
+    )
+
+    assert captured["delay"] == 42
+
+
+@pytest.mark.asyncio
+async def test_random_delay_skipped_when_immediate(monkeypatch):
+    """immediate=True bypasses the sleep regardless of other flags."""
+    import aleph_nodestatus.credit_extraction as ce
+    from aleph_nodestatus.settings import settings as s
+
+    monkeypatch.setattr(s, "payment_processor_admin_pkey", "0x" + "22" * 32)
+    monkeypatch.setattr(s, "extract_random_delay_max_seconds", 3540)
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    sleep_calls = []
+    async def fake_sleep(d):
+        sleep_calls.append(d)
+    monkeypatch.setattr(ce.asyncio, "sleep", fake_sleep)
+
+    await ce.process_credit_extraction(
+        act=True, dry_run=False, transfer=True, immediate=True,
+    )
+
+    assert sleep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_random_delay_skipped_when_dry_run(monkeypatch):
+    """dry_run=True bypasses the sleep regardless of immediate."""
+    import aleph_nodestatus.credit_extraction as ce
+    from aleph_nodestatus.settings import settings as s
+
+    monkeypatch.setattr(s, "extract_random_delay_max_seconds", 3540)
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    sleep_calls = []
+    async def fake_sleep(d):
+        sleep_calls.append(d)
+    monkeypatch.setattr(ce.asyncio, "sleep", fake_sleep)
+
+    await ce.process_credit_extraction(
+        act=False, dry_run=True, transfer=False, immediate=False,
+    )
+
+    assert sleep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_random_delay_skipped_when_max_is_zero(monkeypatch):
+    """extract_random_delay_max_seconds=0 disables jitter entirely."""
+    import aleph_nodestatus.credit_extraction as ce
+    from aleph_nodestatus.settings import settings as s
+
+    monkeypatch.setattr(s, "payment_processor_admin_pkey", "0x" + "22" * 32)
+    monkeypatch.setattr(s, "extract_random_delay_max_seconds", 0)
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    sleep_calls = []
+    async def fake_sleep(d):
+        sleep_calls.append(d)
+    monkeypatch.setattr(ce.asyncio, "sleep", fake_sleep)
+
+    await ce.process_credit_extraction(
+        act=True, dry_run=False, transfer=True, immediate=False,
+    )
+
+    assert sleep_calls == []

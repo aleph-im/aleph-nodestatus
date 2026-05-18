@@ -786,9 +786,11 @@ def reset_balances(verbose, testnet, chain: str):
               help="No broadcast; only eth_call simulate")
 @click.option("--no-transfer", "no_transfer", is_flag=True,
               help="Compute + simulate, don't broadcast")
+@click.option("--immediate", "immediate", is_flag=True,
+              help="Skip the anti-MEV random delay (manual retries)")
 @click.option("--slippage-bps", "slippage_bps", default=None, type=int,
               help="Override per-run slippage tolerance")
-def extract_credits(verbose, act, dry_run, no_transfer, slippage_bps):
+def extract_credits(verbose, act, dry_run, no_transfer, immediate, slippage_bps):
     """Extract ALEPH from the AlephPaymentProcessor (no Aleph publish)."""
     setup_logging(verbose)
 
@@ -809,6 +811,7 @@ def extract_credits(verbose, act, dry_run, no_transfer, slippage_bps):
 
     asyncio.run(process_credit_extraction(
         act=act, dry_run=dry_run, transfer=transfer,
+        immediate=(immediate or dry_run),
         slippage_bps=slippage_bps,
     ))
 
