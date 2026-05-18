@@ -358,3 +358,39 @@ async def test_random_delay_skipped_when_max_is_zero(monkeypatch):
     )
 
     assert sleep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stdout_summary_renders_price_deviation(monkeypatch, capsys):
+    """A token with skipped_reason='price_deviation' shows the deviation
+    bps and the spot/ref prices in the summary line."""
+    import aleph_nodestatus.credit_extraction as ce
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 10 ** 20
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+
+    monkeypatch.setattr(ce, "extract_aleph", lambda *a, **kw: {
+        "tokens": [
+            {"symbol": "USDC", "token": "0xA", "amount_in": "1000",
+             "swap_amount_in": None, "min_out": None, "expected_out": None,
+             "tx_hash": None, "simulated_only": False,
+             "skipped_reason": "price_deviation", "error": None,
+             "oracle": {"deviation_bps": 350, "spot_price": 1.04,
+                        "ref_price": 1.00}},
+        ],
+        "errors": [],
+    })
+
+    await ce.process_credit_extraction(
+        act=False, dry_run=True, transfer=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "USDC" in out and "price_deviation" in out
+    assert "350" in out  # deviation bps shown
