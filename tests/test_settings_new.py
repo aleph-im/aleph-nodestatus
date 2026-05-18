@@ -28,7 +28,6 @@ def test_wage_subsidy_defaults():
 
 
 def test_feature_flags_defaults():
-    assert settings.credit_dist_extract_enabled is True
     assert settings.credit_dist_credit_revenue_enabled is True
     assert settings.credit_dist_wage_subsidy_enabled is True
     assert settings.credit_dist_holder_tier_enabled is True

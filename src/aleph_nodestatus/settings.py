@@ -159,7 +159,6 @@ class Settings(BaseSettings):
     credit_dist_max_total_aleph: float = 2 * 900_000  # 1.8M
 
     # === Feature flags ===
-    credit_dist_extract_enabled: bool        = True
     credit_dist_credit_revenue_enabled: bool = True
     credit_dist_wage_subsidy_enabled: bool   = True
     credit_dist_holder_tier_enabled: bool    = True
