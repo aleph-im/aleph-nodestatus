@@ -49,6 +49,23 @@ async def process_credit_extraction(
         admin_account = Account.from_key(HexBytes(pk))
         admin_address = admin_account.address
 
+        admin_eth_wei = web3.eth.get_balance(admin_address)
+        gas_headroom = (
+            settings.process_gas_ceiling
+            * int(web3.to_wei(50, "gwei"))
+            * len(settings.process_tokens)
+        )
+        if admin_eth_wei < gas_headroom:
+            LOGGER.warning(
+                "Admin %s has %.4f ETH; recommended >= %.4f ETH to cover "
+                "~%d process() transactions at 50 gwei. Extract may fail "
+                "partway if gas runs out.",
+                admin_address,
+                admin_eth_wei / 1e18,
+                gas_headroom / 1e18,
+                len(settings.process_tokens),
+            )
+
     processor = get_processor_contract(web3)
     quoters = {
         "v2": get_v2_router_contract(web3),

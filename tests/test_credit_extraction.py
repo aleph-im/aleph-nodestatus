@@ -107,3 +107,54 @@ async def test_admin_pkey_set_no_warning(monkeypatch, caplog):
 
     assert not any("payment_processor_admin_pkey not set" in r.message
                    for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_eth_preflight_warns_on_low_balance(monkeypatch, caplog):
+    """Admin ETH balance below the gas headroom triggers a WARNING."""
+    import logging
+    import aleph_nodestatus.credit_extraction as ce
+    from aleph_nodestatus.settings import settings as s
+
+    monkeypatch.setattr(s, "payment_processor_admin_pkey", "0x" + "22" * 32)
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 1  # 1 wei — way under headroom
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    with caplog.at_level(logging.WARNING, logger="aleph_nodestatus.credit_extraction"):
+        await ce.process_credit_extraction(act=True, dry_run=False, transfer=True)
+
+    assert any("recommended" in r.message and "ETH" in r.message
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_eth_preflight_skipped_in_dry_run(monkeypatch, caplog):
+    """Dry-run / calculation-only paths do not read get_balance, so no
+    preflight warning is emitted even when balance is 0."""
+    import logging
+    import aleph_nodestatus.credit_extraction as ce
+
+    fake_web3 = MagicMock()
+    fake_web3.eth.get_balance.return_value = 0
+    fake_web3.to_wei = lambda n, unit: int(n * 1e9)
+    monkeypatch.setattr(ce, "get_web3", lambda: fake_web3)
+    monkeypatch.setattr(ce, "get_processor_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_quoter_contract",    lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v2_router_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "get_v4_quoter_contract", lambda w3: MagicMock())
+    monkeypatch.setattr(ce, "extract_aleph",
+                        lambda *a, **kw: {"tokens": [], "errors": []})
+
+    with caplog.at_level(logging.WARNING, logger="aleph_nodestatus.credit_extraction"):
+        await ce.process_credit_extraction(act=False, dry_run=True, transfer=False)
+
+    assert not any("recommended" in r.message for r in caplog.records)
