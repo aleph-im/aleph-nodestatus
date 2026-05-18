@@ -1,4 +1,21 @@
 services:
+  # Hourly extraction: broadcasts process() on the AlephPaymentProcessor to
+  # sweep USDC/ETH/ALEPH balances into the distribution wallet. Uses the
+  # payment processor admin pkey (falls back to ethereum_pkey with a
+  # WARNING). Idempotent — tokens with zero balance are skipped.
+  nodestatus-extract:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env.extract
+    volumes:
+      - ../:/aleph-nodestatus
+      - ../logs:/logs
+    command: /bin/bash -c "service cron start && echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-extract-credits --act -v >> /logs/credits-extract.log\" | crontab - && /bin/sh"
+
   # Hourly calculation snapshots for the new credit-rewards flow.
   # ethereum_pkey here must be status_sender's.
   # The legacy `nodestatus-distribute` (staking-rewards) calc cron was
@@ -17,8 +34,12 @@ services:
       - ../logs:/logs
     command: /bin/bash -c "service cron start && echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\" | crontab - && /bin/sh"
 
-  # Daily distribution. ethereum_pkey here must be distribution_recipient's
-  # and the address must hold >= the expected daily ALEPH outflow.
+  # Distribution every 10 days. ethereum_pkey here must be
+  # distribution_recipient's and the address must hold >= the expected
+  # per-period ALEPH outflow. The app's own cadence guard
+  # (credit_dist_min_interval_blocks, default ~10 days) is an additional
+  # safety net: even if cron mis-fires, a run too close to the previous
+  # one is logged and skipped.
   nodestatus-dist:
     build:
       context: ..
@@ -30,4 +51,4 @@ services:
     volumes:
       - ../:/aleph-nodestatus
       - ../logs:/logs
-    command: /bin/bash -c "service cron start && (echo \"0 0 * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"
+    command: /bin/bash -c "service cron start && (echo \"0 0 */10 * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"
