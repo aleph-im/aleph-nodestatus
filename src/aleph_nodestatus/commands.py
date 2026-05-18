@@ -12,9 +12,6 @@ import time as time_mod
 from decimal import Decimal
 
 import click
-from eth_account import Account
-from hexbytes import HexBytes
-
 from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
 
@@ -43,13 +40,6 @@ from .ethereum import (
 )
 from .indexer_balance import indexer_monitoring_process
 from .messages import parse_window_size
-from .payment_processor import (
-    extract_aleph,
-    get_processor_contract,
-    get_quoter_contract,
-    get_v2_router_contract,
-    get_v4_quoter_contract,
-)
 from .rewards_merge import merge_rewards
 from .settings import settings, PublishMode
 from .solana import solana_monitoring_process
@@ -290,7 +280,7 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
 async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
-    flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
+    flags=None, reward_sender=None, full_resync=False,
 ):
     flags = flags or {}
     dbs = get_dbs()
@@ -609,8 +599,6 @@ async def process_credit_distribution(
               help="Compute everything but don't broadcast txs")
 @click.option("--no-publish", "no_publish", is_flag=True,
               help="Don't post the Aleph distribution record")
-@click.option("--slippage-bps", default=None, type=int,
-              help="Override per-run slippage tolerance")
 @click.option("--reward-sender", default=None,
               help="Address used to look up the previous distribution")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
@@ -618,7 +606,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
-                       slippage_bps, reward_sender):
+                       reward_sender):
     """Credit-based distribution script (new tokenomics)."""
     setup_logging(verbose)
 
@@ -656,8 +644,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
     asyncio.run(process_credit_distribution(
         start_height=start_height, end_height=end_height,
         act=act, dry_run=dry_run, force=force, force_cap=force_cap,
-        flags=flags, slippage_bps=slippage_bps,
-        reward_sender=reward_sender,
+        flags=flags, reward_sender=reward_sender,
         full_resync=full_resync,
     ))
 
