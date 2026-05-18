@@ -29,3 +29,18 @@ def test_quoter_v2_abi_has_quote_exact_input():
     assert len(fns) >= 1
     inputs = [(i["name"], i["type"]) for i in fns[0]["inputs"]]
     assert inputs == [("path", "bytes"), ("amountIn", "uint256")]
+
+
+def test_anti_mev_abis_present_and_valid():
+    expected = [
+        "IUniswapV3Pool.json",
+        "IUniswapV3Factory.json",
+        "IUniswapV4StateView.json",
+        "ChainlinkAggregator.json",
+    ]
+    for name in expected:
+        p = _abi_path(name.replace(".json", ""))
+        assert p.exists(), f"missing ABI: {name}"
+        data = json.loads(p.read_text())
+        assert isinstance(data, list), f"ABI {name} must be a JSON array"
+        assert len(data) > 0, f"ABI {name} is empty"
