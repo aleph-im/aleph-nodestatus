@@ -26,16 +26,17 @@ Operationally these now want to run at different frequencies:
   by the reward window the team wants to publish.
 
 Today the two are coupled. The `--no-extract` flag lets you skip the
-extract step from inside a distribute run, but there is no inverse, no
-separate audit post for extracts, and no way to run an extract without
-loading the entire distribute pipeline.
+extract step from inside a distribute run, but there is no inverse, and
+no way to run an extract without loading the entire distribute pipeline
+(reward calc, snapshots, balance checks).
 
 ## Goal
 
 Two independent CLI entry points with overlapping primitives:
 
-- `nodestatus-extract-credits` — sweeps the processor, publishes a
-  dedicated audit post.
+- `nodestatus-extract-credits` — sweeps the processor and logs the
+  per-token outcome to stdout. **Does not publish to Aleph.** The
+  on-chain tx hashes are the durable audit trail.
 - `nodestatus-distribute-credits` — reduced to reward calculation +
   transfer + audit post; no longer touches the processor or admin key.
 
@@ -43,6 +44,7 @@ Two independent CLI entry points with overlapping primitives:
 
 - Changing the reward math, post schema for distribution (aside from
   removing the `extract` field), or the on-chain processor contract.
+- Publishing extract results to Aleph. Logging only.
 - Adding cadence guards / scheduling to the extract command. The
   caller (cron, ops human) decides when to run it.
 - Replacing `extract_aleph` in `payment_processor.py`. It stays as the
@@ -53,14 +55,12 @@ Two independent CLI entry points with overlapping primitives:
 ### New module: `src/aleph_nodestatus/credit_extraction.py`
 
 ```python
-CREDIT_EXTRACT_POST_TYPE = "credit-extract"
-
 async def process_credit_extraction(
     *, act: bool, dry_run: bool,
-    transfer: bool, publish: bool,
+    transfer: bool,
     slippage_bps: Optional[int] = None,
-) -> None:
-    """Orchestrate one extract run.
+) -> dict:
+    """Orchestrate one extract run. Returns the extract block (for tests).
 
     Steps:
       1. Resolve admin account (payment_processor_admin_pkey, else
@@ -69,41 +69,15 @@ async def process_credit_extraction(
          headroom for len(process_tokens) txs at 50 gwei.
       3. extract_aleph(...) via asyncio.to_thread, with dry_run derived
          from `dry_run or not transfer`.
-      4. Print human-readable summary (per-token: balance, swap_amount,
-         min_out, tx_hash | skipped_reason | error).
-      5. If publish and not dry_run: publish `credit-extract` post.
+      4. Log a human-readable summary to stdout/LOGGER (per-token:
+         balance, swap_amount, min_out, tx_hash | skipped_reason | error;
+         plus a final tally of successes / failures).
     """
 ```
 
-### Post payload (`credit-extract`)
-
-```jsonc
-{
-  "incentive": "credits",
-  "operation": "extract",
-  "status": "extraction" | "calculation",  // "calculation" when not --act
-  "block_height": 24_996_999,
-  "admin_address": "0xC870…b14E",
-  "tokens": [
-    {
-      "symbol": "USDC", "token": "0xA0b8…eB48",
-      "amount_in": "12345000000",
-      "swap_amount_in": "11727750000",
-      "min_out": "5432000000000000000000",
-      "expected_out": "5487000000000000000000",
-      "tx_hash": "0x…", "simulated_only": false,
-      "skipped_reason": null, "error": null
-    },
-    …
-  ],
-  "errors": [],
-  "tags": ["extraction", "credits", "extract", "<filter_tag>"]
-}
-```
-
-Reuses the per-token entry schema that `extract_aleph` already produces,
-so dashboards consuming the existing `distribution.extract.tokens[*]`
-shape can map field-for-field to the new post type.
+No Aleph post is created. The on-chain `process()` tx hashes recorded by
+`extract_aleph` are the durable audit trail; any operator review of
+extract activity reads from stdout / log aggregation, not from Aleph.
 
 ### CLI: `extract_credits` in `commands.py`
 
@@ -111,18 +85,19 @@ shape can map field-for-field to the new post type.
 nodestatus-extract-credits [OPTIONS]
 
   -v, --verbose
-  -t, --testnet           Publish to testnet API; no transfers
   -a, --act               Broadcast process() txs
-      --dry-run           No broadcast, no publish; only eth_call simulate
+      --dry-run           No broadcast; only eth_call simulate
       --no-transfer       Compute + simulate, do not broadcast (calc-only)
-      --no-publish        Run extract but skip the audit post
       --slippage-bps N    Override per-run slippage tolerance
 ```
 
-Mutual exclusivity rules mirror `distribute_credits`:
-- `--act` and `--testnet` are exclusive
+No `--testnet` flag: extract talks to the Ethereum payment processor,
+not to Aleph, so the testnet/mainnet split (which only governs Aleph API
+target) does not apply.
+
+Mutual exclusivity rules:
 - `--act` and `--dry-run` are exclusive
-- `--dry-run` forces `transfer=False, publish=False`
+- `--dry-run` forces `transfer=False`
 
 The flag resolver is a small inline helper in the command, not a shared
 function — the flag sets between extract and distribute diverge enough
@@ -159,19 +134,25 @@ console_scripts =
 
 **Drop `extract` from the distribution post vs. keep an empty stub.**
 Drop it. The recent refactor `bb5bd0d` (drop `rewards_detailed`) set the
-precedent of trimming payloads when consumers have a cleaner path. Any
-external consumer that wants tx hashes from extraction can subscribe to
-the new `credit-extract` post type — it is fully searchable and dated.
+precedent of trimming payloads when consumers have a cleaner path. The
+on-chain tx history is the canonical record of extractions; nothing on
+Aleph is needed.
+
+**No Aleph audit post for extract.** The information of record is the
+on-chain `process()` tx (visible on Etherscan and indexable from logs).
+Adding a parallel Aleph post would duplicate that and create a second
+state to keep consistent. Stdout / log aggregation covers the human
+ops-review case.
 
 **Cadence guard on extract.** None. `extract_aleph` is naturally
 idempotent: tokens with zero balance are skipped (`skipped_reason:
 zero_balance`), so running every hour with nothing to extract is
 harmless. Adding a guard would just be friction.
 
-**Shared flag resolver between commands.** Skipped. Extract has 3
-booleans (`transfer`, `publish`, `act`); distribute has 6 plus
-mutually-exclusive holder-tier overrides. The unification would be a
-union type with branches, not a shared helper.
+**Shared flag resolver between commands.** Skipped. Extract has 2
+booleans (`transfer`, `act`); distribute has 6 plus mutually-exclusive
+holder-tier overrides. The unification would be a union type with
+branches, not a shared helper.
 
 **Module placement.** New module `credit_extraction.py` parallels
 `credit_distribution.py` — same package, same import depth, same naming
@@ -181,9 +162,9 @@ shape. `payment_processor.py` stays the contract-interaction primitive.
 
 - **Dashboards reading `post.content.extract` from
   `credit-rewards-distribution` posts** will see the field disappear.
-  Mitigation: the new `credit-extract` post type carries the same
-  per-token schema; consumers can map directly. Called out in the commit
-  message.
+  Mitigation: tx hashes for the swap-and-sweep are on-chain and
+  recoverable from Etherscan or any block indexer keyed on the admin
+  address. Called out in the commit message.
 - **Running distribute before extract on a low balance** aborts on the
   balance safety check (`commands.py:520-551`), same as today. No
   regression.
@@ -197,20 +178,20 @@ shape. `payment_processor.py` stays the contract-interaction primitive.
   - `process_credit_extraction` with `extract_aleph` mocked:
     - asserts admin account is loaded from `payment_processor_admin_pkey`
       when set, falls back to `ethereum_pkey` with a warning when not.
-    - asserts `create_distribution_tx_post` is called with
-      `post_type=CREDIT_EXTRACT_POST_TYPE` when `publish=True` and
-      `dry_run=False`; not called otherwise.
-    - asserts `dry_run=True` forces both `transfer=False` and
-      `publish=False`.
+    - asserts the returned extract block carries the per-token entries
+      produced by `extract_aleph` (no transformation).
+    - asserts `dry_run=True` forces `transfer=False` and the call to
+      `extract_aleph` receives `dry_run=True`.
+    - asserts no Aleph publish helper is invoked under any combination
+      of flags.
   - Flag resolver:
-    - `--act` + `--testnet` rejected with exit code 2.
     - `--act` + `--dry-run` rejected with exit code 2.
 
 - **Manual integration:**
   - `nodestatus-extract-credits --dry-run` prints a per-token simulate
-    summary and an unpublished JSON preview.
-  - `nodestatus-extract-credits --no-publish --no-transfer` runs the
-    full simulate path but does not broadcast or post.
+    summary.
+  - `nodestatus-extract-credits --no-transfer` runs the full simulate
+    path but does not broadcast.
   - `nodestatus-distribute-credits --dry-run` no longer references the
     extract step in its preview JSON.
 
