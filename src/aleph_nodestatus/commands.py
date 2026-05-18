@@ -27,6 +27,7 @@ from .credit_distribution import (
     should_skip_run,
     zero_totals,
 )
+from .credit_extraction import process_credit_extraction
 from .distribution import (
     create_distribution_tx_post,
     get_latest_successful_distribution,
@@ -861,6 +862,40 @@ def reset_balances(verbose, testnet, chain: str):
 
     LOGGER.warning(f"Reset all balances for chain: {chain}")
     asyncio.run(do_reset_balances(chain))
+
+
+@click.command()
+@click.option("-v", "--verbose", count=True)
+@click.option("-a", "--act", help="Broadcast process() txs", is_flag=True)
+@click.option("--dry-run", "dry_run", is_flag=True,
+              help="No broadcast; only eth_call simulate")
+@click.option("--no-transfer", "no_transfer", is_flag=True,
+              help="Compute + simulate, don't broadcast")
+@click.option("--slippage-bps", "slippage_bps", default=None, type=int,
+              help="Override per-run slippage tolerance")
+def extract_credits(verbose, act, dry_run, no_transfer, slippage_bps):
+    """Extract ALEPH from the AlephPaymentProcessor (no Aleph publish)."""
+    setup_logging(verbose)
+
+    if act and dry_run:
+        click.echo("ERROR: --act and --dry-run are mutually exclusive")
+        sys.exit(2)
+
+    transfer = not no_transfer
+    if dry_run or not act:
+        transfer = False
+
+    mode = (
+        "DRY-RUN"        if dry_run else
+        "LIVE EXTRACT"   if act else
+        "CALCULATION ONLY"
+    )
+    click.echo(f"Mode: {mode}")
+
+    asyncio.run(process_credit_extraction(
+        act=act, dry_run=dry_run, transfer=transfer,
+        slippage_bps=slippage_bps,
+    ))
 
 
 def run():
