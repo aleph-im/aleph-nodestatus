@@ -13,6 +13,17 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_decimals_cache():
+    """Module-level _DECIMALS_CACHE could leak across tests if any test
+    exercises _erc20_decimals through a non-mocked path. Reset before
+    each test for safety."""
+    import aleph_nodestatus.pool_oracle as po
+    po._DECIMALS_CACHE.clear()
+    yield
+    po._DECIMALS_CACHE.clear()
+
+
 def test_oracle_result_is_dataclass():
     from aleph_nodestatus.pool_oracle import OracleResult
 
@@ -281,3 +292,92 @@ def test_check_swap_price_deviation_v3_no_feed_best_effort(monkeypatch):
     result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
     assert result.ok is True
     assert result.deviation_bps is None
+
+
+def test_v4_pool_id_deterministic():
+    """V4 poolId = keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))
+    with currency0 < currency1 sorted lexicographically."""
+    from aleph_nodestatus.pool_oracle import _v4_pool_id
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    pid1 = _v4_pool_id(USDC, WETH, fee=3000, tick_spacing=60,
+                       hooks="0x0000000000000000000000000000000000000000")
+    pid2 = _v4_pool_id(WETH, USDC, fee=3000, tick_spacing=60,
+                       hooks="0x0000000000000000000000000000000000000000")
+    assert pid1 == pid2  # order-independent
+    assert isinstance(pid1, (bytes, bytearray))
+    assert len(pid1) == 32
+
+
+def test_enumerate_v4_hops_single():
+    """Single-hop V4 path: token_in → path[0].intermediateCurrency."""
+    from aleph_nodestatus.pool_oracle import _enumerate_v4_hops
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    HOOKS = "0x0000000000000000000000000000000000000000"
+    path = [(WETH, 3000, 60, HOOKS, b"")]
+    hops = list(_enumerate_v4_hops(path, token_in=USDC))
+    assert len(hops) == 1
+    assert hops[0][0].lower() == USDC.lower()
+    assert hops[0][1].lower() == WETH.lower()
+    assert hops[0][2]["fee"] == 3000
+    assert hops[0][2]["tick_spacing"] == 60
+    assert hops[0][2]["hooks"] == HOOKS
+
+
+def test_check_swap_price_deviation_v4_within_threshold(monkeypatch):
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    USDC_USD_FEED = "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6"
+    ETH_USD_FEED  = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): USDC_USD_FEED, WETH.lower(): ETH_USD_FEED,
+    })
+
+    monkeypatch.setattr(po, "_v4_spot",
+                        lambda w3, t_a, t_b, extra: 1 / 2500.0)
+    monkeypatch.setattr(po, "_read_chainlink_price",
+        lambda w3, feed: {
+            USDC_USD_FEED.lower(): (1.0, None),
+            ETH_USD_FEED.lower():  (2500.0, None),
+        }[feed.lower()])
+
+    HOOKS = "0x0000000000000000000000000000000000000000"
+    cfg = {"v": 4, "t": WETH, "v2": [], "v3": b"",
+           "v4": [(WETH, 3000, 60, HOOKS, b"")]}
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is True
+
+
+def test_check_swap_price_deviation_v4_exceeds_threshold(monkeypatch):
+    import aleph_nodestatus.pool_oracle as po
+    from aleph_nodestatus.settings import settings as s
+
+    USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    USDC_USD_FEED = "0xfeed_usdc"
+    ETH_USD_FEED  = "0xfeed_eth"
+    monkeypatch.setattr(s, "chainlink_usd_feeds", {
+        USDC.lower(): USDC_USD_FEED, WETH.lower(): ETH_USD_FEED,
+    })
+    monkeypatch.setattr(s, "extract_max_deviation_bps", 200)
+
+    monkeypatch.setattr(po, "_v4_spot",
+                        lambda w3, t_a, t_b, extra: 1 / 2425.0)
+    monkeypatch.setattr(po, "_read_chainlink_price",
+        lambda w3, feed: {
+            USDC_USD_FEED.lower(): (1.0, None),
+            ETH_USD_FEED.lower():  (2500.0, None),
+        }[feed.lower()])
+
+    HOOKS = "0x0000000000000000000000000000000000000000"
+    cfg = {"v": 4, "t": WETH, "v2": [], "v3": b"",
+           "v4": [(WETH, 3000, 60, HOOKS, b"")]}
+    result = po.check_swap_price_deviation(MagicMock(), cfg, token_in=USDC)
+    assert result.ok is False
+    assert result.reason == "price_deviation"
