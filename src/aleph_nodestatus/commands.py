@@ -593,8 +593,6 @@ async def process_credit_distribution(
               help="Ending block height, default: latest")
 @click.option("--full-resync", is_flag=True,
               help="Replay full state machine from genesis")
-@click.option("--no-extract", "no_extract", is_flag=True,
-              help="Skip process() calls")
 @click.option("--no-credit-revenue", "no_credit_revenue", is_flag=True,
               help="Skip credit-expense reward computation")
 @click.option("--no-wage", "no_wage", is_flag=True,
@@ -617,7 +615,7 @@ async def process_credit_distribution(
               help="Address used to look up the previous distribution")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        start_height, end_height, full_resync,
-                       no_extract, no_credit_revenue, no_wage,
+                       no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
                        slippage_bps, reward_sender):
@@ -639,7 +637,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
         PublishMode.set_testnet(True)
 
     flags = _resolve_feature_flags(
-        no_extract=no_extract, no_credit_revenue=no_credit_revenue,
+        no_credit_revenue=no_credit_revenue,
         no_wage=no_wage, enable_holder_tier=enable_holder_tier,
         no_holder_tier=no_holder_tier,
         no_transfer=no_transfer, no_publish=no_publish,
@@ -664,18 +662,16 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
     ))
 
 
-def _resolve_feature_flags(*, no_extract, no_credit_revenue, no_wage,
+def _resolve_feature_flags(*, no_credit_revenue, no_wage,
                            enable_holder_tier, no_holder_tier,
                            no_transfer, no_publish, act, dry_run):
     f = {
-        "extract":        settings.credit_dist_extract_enabled,
         "credit_revenue": settings.credit_dist_credit_revenue_enabled,
         "wage":           settings.credit_dist_wage_subsidy_enabled,
         "holder_tier":    settings.credit_dist_holder_tier_enabled,
         "transfer":       settings.credit_dist_transfer_enabled,
         "publish":        settings.credit_dist_publish_enabled,
     }
-    if no_extract:        f["extract"] = False
     if no_credit_revenue: f["credit_revenue"] = False
     if no_wage:           f["wage"] = False
     # holder_tier overrides are last-wins. Order matters only for
