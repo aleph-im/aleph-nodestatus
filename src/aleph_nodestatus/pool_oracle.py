@@ -43,9 +43,26 @@ def check_swap_price_deviation(w3, swap_config: dict, token_in: str) -> OracleRe
     elif v == 4:
         hop_iter = list(_enumerate_v4_hops(swap_config["v4"], token_in))
         spot_fn = lambda t_a, t_b, extra: _v4_spot(w3, t_a, t_b, extra)
+    elif v == 2:
+        v2_path = list(swap_config["v2"])
+        hop_iter = []
+        for i in range(len(v2_path) - 1):
+            t_a, t_b = v2_path[i], v2_path[i + 1]
+            try:
+                pair = _v2_pair_address(w3, t_a, t_b)
+            except Exception as e:
+                LOGGER.warning(
+                    "V2 pair lookup failed for hop %s→%s: %r",
+                    t_a, t_b, e,
+                )
+                return OracleResult(ok=False, reason="pool_read_failed")
+            hop_iter.append((t_a, t_b, {"pair_address": pair}))
+        spot_fn = lambda t_a, t_b, extra: _v2_spot(
+            w3, t_a, t_b, extra["pair_address"],
+        )
     else:
-        # V2 lands in the next task.
-        return OracleResult(ok=True)
+        LOGGER.warning("Unknown swap version: %s", v)
+        return OracleResult(ok=False, reason="pool_read_failed")
 
     feeds = {k.lower(): feed_addr for k, feed_addr in settings.chainlink_usd_feeds.items()}
     threshold = settings.extract_max_deviation_bps
@@ -256,3 +273,57 @@ def _v4_spot(w3, token_a: str, token_b: str, extra: dict) -> float:
         _erc20_decimals(w3, token_a),
         _erc20_decimals(w3, token_b),
     )
+
+
+def _v2_pair_address(w3, token_a: str, token_b: str) -> str:
+    """Return the V2 pair address for (tokenA, tokenB). Today the project
+    uses the Uniswap V2 router (settings.uniswap_v2_router_address) but
+    the canonical way to derive a pair is via the V2 factory's
+    getPair(tokenA, tokenB). The router exposes factory() — read it
+    once."""
+    router = w3.eth.contract(
+        address=w3.to_checksum_address(settings.uniswap_v2_router_address),
+        abi=_load_abi("UniswapV2Router"),
+    )
+    factory_addr = router.functions.factory().call()
+    factory_abi = [{
+        "inputs": [
+            {"name": "tokenA", "type": "address"},
+            {"name": "tokenB", "type": "address"},
+        ],
+        "name": "getPair",
+        "outputs": [{"name": "pair", "type": "address"}],
+        "stateMutability": "view", "type": "function",
+    }]
+    factory = w3.eth.contract(
+        address=w3.to_checksum_address(factory_addr), abi=factory_abi,
+    )
+    pair = factory.functions.getPair(
+        w3.to_checksum_address(token_a),
+        w3.to_checksum_address(token_b),
+    ).call()
+    if int(pair, 16) == 0:
+        raise ValueError(
+            f"V2 pair not found for {token_a}/{token_b}"
+        )
+    return pair
+
+
+def _v2_spot(w3, token_a: str, token_b: str, pair_address: str) -> float:
+    """Read reserves from a V2 pair and return "tokenB per tokenA" in
+    human units. token0 = lower address."""
+    pair = w3.eth.contract(
+        address=w3.to_checksum_address(pair_address),
+        abi=_load_abi("IUniswapV2Pair"),
+    )
+    reserve0, reserve1, _ts = pair.functions.getReserves().call()
+    a_is_token0 = int(token_a, 16) < int(token_b, 16)
+    decimals_a = _erc20_decimals(w3, token_a)
+    decimals_b = _erc20_decimals(w3, token_b)
+    if a_is_token0:
+        amt_a = reserve0 / (10 ** decimals_a)
+        amt_b = reserve1 / (10 ** decimals_b)
+    else:
+        amt_a = reserve1 / (10 ** decimals_a)
+        amt_b = reserve0 / (10 ** decimals_b)
+    return amt_b / amt_a
