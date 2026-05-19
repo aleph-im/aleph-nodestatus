@@ -129,3 +129,14 @@ def chunks(data, SIZE=10000):
     it = iter(data)
     for i in range(0, len(data), SIZE):
         yield {k:data[k] for k in islice(it, SIZE)}
+
+
+def get_reward_address(entity, web3=None):
+    """Return the EIP-55 checksummed reward address for a node/entity,
+    falling back to owner if reward is empty or invalid."""
+    from eth_utils import to_checksum_address
+    raw = entity.get("reward") or entity["owner"]
+    try:
+        return to_checksum_address(raw)
+    except Exception:
+        return raw

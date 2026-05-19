@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from pydantic import BaseSettings
+from pydantic import BaseSettings, validator
 
 
 class Settings(BaseSettings):
@@ -108,6 +108,80 @@ class Settings(BaseSettings):
     crn_inactivity_cutoff_height: int = 20840959
 
     db_path: str = "./database"
+
+    # === AlephPaymentProcessor ===
+    payment_processor_address: str = "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
+    payment_processor_admin_pkey: str = ""
+    payment_processor_admin_address: str = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    distribution_recipient: str = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
+
+    # Tokens to process, in order. address(0) for ETH.
+    process_tokens: List[tuple] = [
+        ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        ("ETH",  "0x0000000000000000000000000000000000000000"),
+        ("ALEPH","0x27702a26126e0B3702af63Ee09aC4d1A084EF628"),
+    ]
+
+    # Slippage / quoter
+    uniswap_v3_quoter_address: str = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+    uniswap_v4_quoter_address: str = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203"
+    uniswap_v2_router_address: str = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+    process_slippage_bps: int = 100          # 1%; see docs/operations/slippage.md
+    process_ttl_seconds: int = 1800
+    process_gas_ceiling: int = 1_500_000
+
+    @validator("process_ttl_seconds", allow_reuse=True)
+    def _ttl_within_contract_bound(cls, v):
+        # AlephPaymentProcessor's process() enforces ttl <= 3600 on-chain.
+        if v > 3600:
+            raise ValueError(
+                f"process_ttl_seconds must be <= 3600 (contract bound), got {v}"
+            )
+        if v <= 0:
+            raise ValueError(f"process_ttl_seconds must be positive, got {v}")
+        return v
+
+    # === Wage subsidy ===
+    wage_start_date: str = "2026-05-01T00:00:00+00:00"
+    wage_duration_months: int = 6
+    wage_initial_monthly_aleph: int = 900_000
+    wage_ccn_share: float = 1/3
+    wage_crn_share: float = 1/3
+    wage_staker_share: float = 1/3
+
+    # === Cadence & filtering ===
+    credit_dist_min_interval_blocks: int = 10 * 7130
+    credit_dist_dust_threshold_aleph: float = 0.01
+
+    # Cap on total ALEPH a single --act run can distribute. Aborts before
+    # any balance check or transfer if an upstream bug produces inflated
+    # rewards. Default sized at 2x the maximum monthly wage subsidy.
+    credit_dist_max_total_aleph: float = 2 * 900_000  # 1.8M
+
+    # === Feature flags ===
+    credit_dist_credit_revenue_enabled: bool = True
+    credit_dist_wage_subsidy_enabled: bool   = True
+    credit_dist_holder_tier_enabled: bool    = True
+    credit_dist_transfer_enabled: bool       = True
+    credit_dist_publish_enabled: bool        = True
+
+    # === Anti-MEV (Phase 1) ===
+    extract_random_delay_max_seconds: int = 3540
+    extract_max_deviation_bps: int        = 200
+    chainlink_max_age_seconds: int        = 3600
+
+    uniswap_v3_factory_address: str       = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+    uniswap_v4_state_view_address: str    = "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"
+
+    # Chainlink USD feed addresses keyed by lowercase token address.
+    # ETH sentinel (0x000…000) and WETH (0xC02a…6cc2) both map to the
+    # ETH/USD feed because process_tokens refers to ETH via the sentinel
+    # while the on-chain swap path encodes WETH.
+    chainlink_usd_feeds: Dict[str, str] = {
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6",
+        "0x0000000000000000000000000000000000000000": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+    }
 
     class Config:
         env_file = ".env"
