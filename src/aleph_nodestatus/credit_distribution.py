@@ -222,26 +222,30 @@ async def get_latest_successful_credit_distribution(sender=None):
 def _message_cache_path(message_filter):
     """Resolve the JSONL cache path for a `MessageFilter`, or None.
 
-    Cache is keyed by a SHA-256 of the filter's HTTP params, with
-    `endDate` floored to `aleph_msg_cache_end_floor_seconds` granularity
-    so back-to-back dry-runs against the same heights collapse onto the
-    same cache file even though the resolved end-block timestamp
-    advances every ~12s. Returns None when caching is disabled.
+    Cache is keyed by a SHA-256 of the filter's HTTP params with the
+    date range fields (`startDate`, `endDate`) stripped out. The cache
+    file collects every message fetched for the same
+    `(msgType, contentType, addresses, …)` shape across runs; the
+    caller filters by the current run's date range in memory on read.
+
+    Why exclude dates: `endDate` defaults to the head-block timestamp,
+    which advances every ~12s, and `startDate` follows `last_end`,
+    which can drift if a new distribution lands between runs. Including
+    either in the key means two back-to-back dry-runs almost never hit
+    the same cache. Operators who want fresh data pass --refresh-cache.
+
+    Logs the cache key + canonical hashed bytes at DEBUG so any future
+    miss is diagnosable from logs alone.
     """
     cache_dir = settings.aleph_msg_cache_dir
     if not cache_dir:
         return None
     params = dict(message_filter.as_http_params()) if message_filter else {}
-    floor = settings.aleph_msg_cache_end_floor_seconds
-    if floor > 0 and "endDate" in params:
-        try:
-            ed = float(params["endDate"])
-            params["endDate"] = str(int(ed // floor) * floor)
-        except (TypeError, ValueError):
-            pass
-    key = hashlib.sha256(
-        json.dumps(params, sort_keys=True).encode()
-    ).hexdigest()
+    params.pop("startDate", None)
+    params.pop("endDate", None)
+    canonical = json.dumps(params, sort_keys=True)
+    key = hashlib.sha256(canonical.encode()).hexdigest()
+    LOGGER.debug("cache key %s ← %s", key[:16], canonical)
     return Path(cache_dir) / f"msgs-{key}.jsonl"
 
 
@@ -255,6 +259,40 @@ def _read_jsonl_cache(path):
             yield json.loads(line)
 
 
+def _msg_in_range(msg, start_date, end_date):
+    """Return True if `msg` falls within the requested [start, end] range.
+
+    Uses `content.time` (the post body's own timestamp) as the
+    chronology — that matches what Aleph indexes against `startDate`
+    /`endDate` server-side, so the in-memory filter is consistent with
+    the server-side filter even when reading from cache. Falls back to
+    the top-level `time` field for AGGREGATE messages that lack the
+    nested timestamp.
+    """
+    t = None
+    content = msg.get("content")
+    if isinstance(content, dict):
+        t = content.get("time")
+    if t is None:
+        t = msg.get("time")
+    if t is None:
+        return True  # no time → keep, downstream parsers will decide
+    if isinstance(t, str):
+        # AlephMessage.model_dump(mode="json") serializes the top-level
+        # `time` field as an ISO-8601 string; only the nested
+        # `content.time` is the numeric epoch seconds we need to compare.
+        from datetime import datetime
+        try:
+            t = datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return True
+    if start_date is not None and t < start_date:
+        return False
+    if end_date is not None and t > end_date:
+        return False
+    return True
+
+
 async def _iter_messages_dedup(client, message_filter, *, refresh=False):
     """Yield Aleph messages via cursor pagination, deduped by item_hash.
 
@@ -265,21 +303,37 @@ async def _iter_messages_dedup(client, message_filter, *, refresh=False):
     duplicates returned across cursor boundaries.
 
     When `settings.aleph_msg_cache_dir` is set, a successful fetch is
-    persisted to a JSONL file keyed by the filter; a re-run with the
-    same filter reads from disk instead of the API. Pass `refresh=True`
-    to skip the cache-read branch and force a fresh API fetch — the new
-    response overwrites the cache file on success.
+    persisted to a JSONL file keyed by the filter shape (no dates); a
+    re-run with the same shape reads from disk and applies the current
+    request's date range in memory. Pass `refresh=True` to skip the
+    cache-read branch and force a fresh API fetch — the new response
+    overwrites the cache file on success.
     """
     cache_path = _message_cache_path(message_filter)
+    start_date = getattr(message_filter, "start_date", None) if message_filter else None
+    end_date = getattr(message_filter, "end_date", None) if message_filter else None
     if cache_path and cache_path.exists() and not refresh:
-        LOGGER.info("Aleph messages: reusing cache %s", cache_path)
+        LOGGER.info(
+            "Aleph messages: reusing cache %s (filtering by [%s, %s] in memory)",
+            cache_path, start_date, end_date,
+        )
         seen = set()
+        total = 0
+        kept = 0
         for msg in _read_jsonl_cache(cache_path):
+            total += 1
             h = msg.get("item_hash")
             if h in seen:
                 continue
             seen.add(h)
+            if not _msg_in_range(msg, start_date, end_date):
+                continue
+            kept += 1
             yield msg
+        LOGGER.info(
+            "Aleph messages: cache yielded %d/%d in-range messages",
+            kept, total,
+        )
         return
     if cache_path and cache_path.exists() and refresh:
         LOGGER.info(

@@ -171,22 +171,14 @@ class Settings(BaseSettings):
 
     # Directory for cached Aleph message JSONL files. When non-empty,
     # `_iter_messages_dedup` writes every successful fetch to a file
-    # keyed by the filter parameters, and reads from that file on
-    # subsequent runs with identical filters. Lets dry-runs against the
-    # same (start_height, end_height) reuse the slow API response.
-    # Pass `--refresh-cache` on the CLI to force a re-fetch (the cache
-    # file is overwritten on success). Set to the empty string to
-    # disable caching entirely.
+    # keyed by the filter shape (date range excluded), and reads from
+    # that file on subsequent runs with the same shape — filtering by
+    # the run's actual date range in memory. Lets back-to-back dry-runs
+    # reuse the slow API response even when end_height resolves to a
+    # different head block. Pass `--refresh-cache` on the CLI to force
+    # a re-fetch (the cache file is overwritten on success). Set to the
+    # empty string to disable caching entirely.
     aleph_msg_cache_dir: str = "./cache/aleph_msgs"
-
-    # Granularity (seconds) to which `endDate` is floored in the cache
-    # key. Without this, default dry-runs would never hit the cache:
-    # `end_height=-1` resolves to the current head block, whose
-    # timestamp moves every ~12s, producing a fresh SHA-256 every run.
-    # Flooring snaps reruns in the same window onto the same cache file,
-    # at the cost of up to N seconds of staleness on cached reads — fine
-    # for dry-run iteration, and overridable with --refresh-cache.
-    aleph_msg_cache_end_floor_seconds: int = 3600
 
     # Cap on total ALEPH a single --act run can distribute. Aborts before
     # any balance check or transfer if an upstream bug produces inflated

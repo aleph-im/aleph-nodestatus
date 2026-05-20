@@ -16,10 +16,10 @@ from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
 
 from .balances import do_reset_balances
+from . import credit_distribution
 from .credit_distribution import (
     CREDIT_DISTRIBUTION_POST_TYPE,
     compute_rewards,
-    fetch_node_snapshots,
     get_latest_successful_credit_distribution,
     should_skip_run,
     zero_totals,
@@ -356,7 +356,9 @@ async def process_credit_distribution(
     api_server = PublishMode.get_publish_api_server()
     snapshots = None
     if (flags.get("credit_revenue") and not full_resync) or flags.get("wage"):
-        snapshots = await fetch_node_snapshots(
+        # Call through the module so test-time monkeypatching of
+        # `credit_distribution.fetch_node_snapshots` is observed here.
+        snapshots = await credit_distribution.fetch_node_snapshots(
             api_server, start_time, end_time,
             refresh_cache=refresh_cache,
         )
