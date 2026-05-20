@@ -425,6 +425,22 @@ async def process_credit_distribution(
         dust_threshold=settings.credit_dist_dust_threshold_aleph,
     )
 
+    # Enrich the per-address detail with a `total` field inside each
+    # stream block so the dry-run `rewards_detailed` output is fully
+    # self-contained: each address carries both its per-component
+    # breakdown (existing) and the per-stream total (formerly available
+    # via the published rewards_by_source field, now removed from the
+    # post). Streams that contributed zero for an address are omitted.
+    # Iterating over final_rewards (not by_address_detailed) covers the
+    # edge case of survivors whose details dict was empty for every
+    # stream.
+    for addr in final_rewards:
+        detail = by_address_detailed.setdefault(addr, {})
+        for stream in by_source:
+            amount = by_source[stream].get(addr, 0.0)
+            if amount:
+                detail.setdefault(stream, {})["total"] = amount
+
     # === Global cap (before balance check) ===
     # Aborts when upstream math produces inflated rewards, regardless of
     # whether the sender happens to be flush. Independent of --force
@@ -494,15 +510,15 @@ async def process_credit_distribution(
             click.echo(f"Batch {i+1}: would transfer to {count} recipients")
 
     # === Step 6: publish ===
-    # `rewards_detailed` (per-account × per-source × per-component
-    # breakdown) is intentionally NOT in the published distribution.
-    # The post aggregates over whatever arbitrary window the operator
-    # ran with (--start-height → now), so a per-account breakdown at
-    # that granularity isn't useful for end consumers and bloats the
-    # payload. A dedicated service will expose this view later with
-    # proper time-window filtering (1D/1W/1M); out of scope for this
-    # PR. The dry-run preview below still prints it as a separate
-    # payload for local debugging.
+    # Per-account × per-source breakdowns (`rewards_by_source` and the
+    # finer-grained `rewards_detailed`) are intentionally NOT in the
+    # published distribution. The post aggregates over whatever
+    # arbitrary window the operator ran with (--start-height → now), so
+    # per-account-per-source data at that granularity isn't useful for
+    # end consumers and bloats the payload. A dedicated service will
+    # expose this view later with proper time-window filtering
+    # (1D/1W/1M); out of scope for this PR. The dry-run output still
+    # prints `rewards_detailed` for local debugging.
     status = "distribution" if act else "calculation"
     distribution = {
         "incentive": "credits",
@@ -510,7 +526,6 @@ async def process_credit_distribution(
         "start_height": start_height, "end_height": end_height,
         "start_time": start_time, "end_time": end_time,
         "rewards": final_rewards,
-        "rewards_by_source": by_source,
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
@@ -527,9 +542,7 @@ async def process_credit_distribution(
         )
     else:
         click.echo("--no-publish / dry-run: skipping Aleph post")
-        preview = {k: v for k, v in distribution.items()
-                    if k != "rewards_by_source"}
-        click.echo(json.dumps(preview, indent=2, default=str))
+        click.echo(json.dumps(distribution, indent=2, default=str))
         if dry_run:
             click.echo(
                 "\n=== rewards_detailed (dry-run debug; not published) ==="

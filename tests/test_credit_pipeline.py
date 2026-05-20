@@ -118,6 +118,33 @@ def test_dry_run_includes_wage_and_credit_in_summary(patched_pipeline):
     assert "feature_flags" in result.output
     assert "start_height" in result.output
     assert "end_height" in result.output
+    # rewards_by_source is no longer in the distribution dict at all;
+    # per-account breakdowns live in `rewards_detailed` (dry-run only),
+    # now enriched with a "total" field inside each stream block.
+    assert "rewards_by_source" not in result.output
+    assert "rewards_detailed" in result.output
+    assert '"total":' in result.output
+
+
+def test_calculation_published_post_excludes_rewards_by_source(patched_pipeline):
+    """A calculation run (no --dry-run, no --act) publishes a post. The
+    payload must NOT carry rewards_by_source — that field was removed
+    because per-account breakdowns at arbitrary-window granularity
+    bloat the post without giving consumers useful data."""
+    runner = CliRunner()
+    result = runner.invoke(distribute_credits, [
+        "--start-height", "10",
+        "--end-height",   "20",
+    ])
+    assert result.exit_code == 0, result.output
+    posts = patched_pipeline["posts"]
+    assert len(posts) == 1, f"expected one post, got {len(posts)}"
+    distribution_dict = posts[0][0][0]
+    assert "rewards_by_source" not in distribution_dict
+    # Sanity: per-stream totals + final rewards are still present.
+    for k in ("rewards", "credit_revenue_totals", "holder_tier_totals",
+              "wage_subsidy", "sources"):
+        assert k in distribution_dict, k
 
 
 def test_wage_unallocated_when_no_snapshots(monkeypatch):
