@@ -1,6 +1,7 @@
 from typing import Dict, List
 
-from pydantic import BaseSettings, validator
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -77,7 +78,7 @@ class Settings(BaseSettings):
         "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B",
     ]
 
-    platform_indexer_endpoint = "https://test-avax-base.api.aleph.cloud/"
+    platform_indexer_endpoint: str = "https://test-avax-base.api.aleph.cloud/"
     # dict: solana = SOL, base = BASE, avalanche = AVAX
     platform_indexer_chains: Dict[str, str] = {
         # "solana": "SOL",
@@ -87,7 +88,7 @@ class Settings(BaseSettings):
     platform_indexer_ignored_addresses: List[str] = [
     ]
 
-    voucher_indexer_endpoint = "https://vouchers.api.2n6.io"
+    voucher_indexer_endpoint: str = "https://vouchers.api.2n6.io"
 
     credit_expense_sender: str = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
     status_sender: str = "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"
@@ -130,7 +131,8 @@ class Settings(BaseSettings):
     process_ttl_seconds: int = 1800
     process_gas_ceiling: int = 1_500_000
 
-    @validator("process_ttl_seconds", allow_reuse=True)
+    @field_validator("process_ttl_seconds")
+    @classmethod
     def _ttl_within_contract_bound(cls, v):
         # AlephPaymentProcessor's process() enforces ttl <= 3600 on-chain.
         if v > 3600:
@@ -205,8 +207,7 @@ class Settings(BaseSettings):
         "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
     }
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()

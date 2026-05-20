@@ -155,7 +155,7 @@ async def transfer_tokens(targets, metadata=None):
             }
         )
         signed_tx = account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
         success = True
         NONCE += 1
         LOGGER.info(f"TX {tx_hash} created on ETH")

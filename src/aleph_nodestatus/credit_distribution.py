@@ -27,69 +27,82 @@ CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 
 
 class _LoggingAlephHttpClient(AlephHttpClient):
-    """AlephHttpClient with configurable page size and per-request logging.
+    """AlephHttpClient extended with logged cursor-paginated fetches.
 
-    Overrides `get_messages` and `get_posts` so the smaller default
-    `page_size` propagates to the SDK's `get_messages_iterator` /
-    `get_posts_iterator` (both of which call `self.get_messages` /
-    `self.get_posts` without an explicit page_size), and so each page
-    request is logged before/after — slow API responses then surface as
-    visible progress instead of silence followed by a timeout traceback.
+    Overrides the SDK's `get_messages_cursor` and `get_posts_cursor`
+    (introduced in aleph-im/aleph-sdk-python#282) so each cursor step
+    logs a pre-request line, request duration, and the next cursor —
+    slow API responses surface as visible progress instead of silence,
+    and timeouts get a distinct error line before the traceback. The
+    configured `aleph_http_page_size` is plumbed in when the caller
+    doesn't pass one explicitly.
     """
 
-    async def get_messages(self, page_size=None, page=1, message_filter=None, **kwargs):
+    @staticmethod
+    def _cursor_tag(cursor):
+        return cursor[:16] if cursor else "<empty>"
+
+    async def get_messages_cursor(self, page_size=None, cursor="", message_filter=None, **kwargs):
         if page_size is None:
             page_size = settings.aleph_http_page_size
+        timeout_s = settings.aleph_http_timeout_seconds
+        tag = self._cursor_tag(cursor)
         LOGGER.info(
-            "Aleph messages page %d requested (page_size=%d, timeout=%ds)…",
-            page, page_size, settings.aleph_http_timeout_seconds,
+            "Aleph messages cursor=%s requested (page_size=%d, timeout=%ds)…",
+            tag, page_size, timeout_s,
         )
         t0 = asyncio.get_event_loop().time()
         try:
-            resp = await super().get_messages(
-                page_size=page_size, page=page,
+            resp = await super().get_messages_cursor(
+                page_size=page_size, cursor=cursor,
                 message_filter=message_filter, **kwargs,
             )
         except asyncio.TimeoutError:
             elapsed = asyncio.get_event_loop().time() - t0
             LOGGER.error(
-                "Aleph messages page %d TIMED OUT after %.1fs "
+                "Aleph messages cursor=%s TIMED OUT after %.1fs "
                 "(aleph_http_timeout_seconds=%ds)",
-                page, elapsed, settings.aleph_http_timeout_seconds,
+                tag, elapsed, timeout_s,
             )
             raise
         elapsed = asyncio.get_event_loop().time() - t0
+        nxt = resp.next_cursor or ""
         LOGGER.info(
-            "Aleph messages page %d → %d msgs in %.1fs",
-            page, len(resp.messages), elapsed,
+            "Aleph messages cursor=%s → %d msgs in %.1fs (next=%s)",
+            tag, len(resp.messages), elapsed,
+            self._cursor_tag(nxt) if nxt else "<end>",
         )
         return resp
 
-    async def get_posts(self, page_size=None, page=1, post_filter=None, **kwargs):
+    async def get_posts_cursor(self, page_size=None, cursor="", post_filter=None, **kwargs):
         if page_size is None:
             page_size = settings.aleph_http_page_size
+        timeout_s = settings.aleph_http_timeout_seconds
+        tag = self._cursor_tag(cursor)
         LOGGER.info(
-            "Aleph posts page %d requested (page_size=%d, timeout=%ds)…",
-            page, page_size, settings.aleph_http_timeout_seconds,
+            "Aleph posts cursor=%s requested (page_size=%d, timeout=%ds)…",
+            tag, page_size, timeout_s,
         )
         t0 = asyncio.get_event_loop().time()
         try:
-            resp = await super().get_posts(
-                page_size=page_size, page=page,
+            resp = await super().get_posts_cursor(
+                page_size=page_size, cursor=cursor,
                 post_filter=post_filter, **kwargs,
             )
         except asyncio.TimeoutError:
             elapsed = asyncio.get_event_loop().time() - t0
             LOGGER.error(
-                "Aleph posts page %d TIMED OUT after %.1fs "
+                "Aleph posts cursor=%s TIMED OUT after %.1fs "
                 "(aleph_http_timeout_seconds=%ds)",
-                page, elapsed, settings.aleph_http_timeout_seconds,
+                tag, elapsed, timeout_s,
             )
             raise
         elapsed = asyncio.get_event_loop().time() - t0
+        nxt = resp.next_cursor or ""
         LOGGER.info(
-            "Aleph posts page %d → %d posts in %.1fs",
-            page, len(resp.posts), elapsed,
+            "Aleph posts cursor=%s → %d posts in %.1fs (next=%s)",
+            tag, len(resp.posts), elapsed,
+            self._cursor_tag(nxt) if nxt else "<end>",
         )
         return resp
 
@@ -100,8 +113,7 @@ def _aleph_client(api_server):
     aiohttp's default 5-minute timeout fires before the API can answer
     some date+address-filtered AGGREGATE queries over multi-week windows;
     use the configured `aleph_http_timeout_seconds` instead so operators
-    can tune it. The subclass plumbs `aleph_http_page_size` into the
-    SDK's auto-paginated iterators.
+    can tune it.
     """
     return _LoggingAlephHttpClient(
         api_server=api_server,
@@ -166,35 +178,44 @@ async def get_latest_successful_credit_distribution(sender=None):
         addresses=senders,
     )
 
-    current_post = None
+    current_content = None
     current_end_height = 0
     async with _aleph_client(PublishMode.get_publish_api_server()) as client:
-        # Iterator auto-paginates so we don't drop older distributions
-        # once the post history grows past one page.
-        async for post in client.get_posts_iterator(post_filter=post_filter):
-            content = post.content or {}
-            if content.get("status") != "distribution":
-                continue
+        # Walk via cursor so we don't drop older distributions once the
+        # post history grows past one page.
+        cursor = ""
+        while True:
+            resp = await client.get_posts_cursor(
+                post_filter=post_filter, cursor=cursor,
+            )
+            for post in resp.posts:
+                content = post.content or {}
+                if content.get("status") != "distribution":
+                    continue
 
-            end_height = content.get("end_height")
-            if end_height is None:
-                continue
+                end_height = content.get("end_height")
+                if end_height is None:
+                    continue
 
-            if any(t.get("success") for t in content.get("targets", [])):
-                # `>=` (not `>`) so that an AMEND publishing a later
-                # post with the same end_height overrides the prior
-                # pick rather than being ignored. The iterator yields
-                # posts in API-defined order, so the AMEND wins iff
-                # it is yielded after the original — true for the
-                # default sort (newest first ⇒ amend appears first
-                # and is replaced by older same-height entries until
-                # the most-recent one is reached).
-                if end_height >= current_end_height:
-                    current_post = post
-                    current_end_height = end_height
+                if any(t.get("success") for t in content.get("targets", [])):
+                    # `>=` (not `>`) so that an AMEND publishing a later
+                    # post with the same end_height overrides the prior
+                    # pick rather than being ignored. Posts are yielded
+                    # in API-defined order, so the AMEND wins iff it is
+                    # yielded after the original — true for the default
+                    # sort (newest first ⇒ amend appears first and is
+                    # replaced by older same-height entries until the
+                    # most-recent one is reached).
+                    if end_height >= current_end_height:
+                        current_content = content
+                        current_end_height = end_height
 
-    if current_post is not None:
-        return current_end_height, current_post.content
+            cursor = resp.next_cursor or ""
+            if not cursor:
+                break
+
+    if current_content is not None:
+        return current_end_height, current_content
     return 0, None
 
 
@@ -226,16 +247,13 @@ def _read_jsonl_cache(path):
 
 
 async def _iter_messages_dedup(client, message_filter):
-    """Wrap the SDK's async message iterator with item_hash dedup.
+    """Yield Aleph messages via cursor pagination, deduped by item_hash.
 
-    The SDK's `get_messages_iterator` auto-paginates: in 1.4.0 it walks
-    pages by offset and the docstring warns it "might return duplicates";
-    in 2.3.2+ (PR #282 of aleph-sdk-python) it walks via cursor and the
-    duplicates disappear. Dedup is cheap insurance across both versions.
-
-    Per-page progress logging and the smaller page_size live in
-    `_LoggingAlephHttpClient.get_messages`, which both the iterator and
-    direct callers route through.
+    Cursor pagination (SDK `get_messages_cursor`, see
+    `_LoggingAlephHttpClient.get_messages_cursor`) avoids the deep-page
+    slowdown that made offset-based scans of multi-week aggregate
+    history time out. Dedup is kept as cheap insurance against any
+    duplicates returned across cursor boundaries.
 
     When `settings.aleph_msg_cache_dir` is set, a successful fetch is
     persisted to a JSONL file keyed by the filter; a re-run with the
@@ -261,18 +279,27 @@ async def _iter_messages_dedup(client, message_filter):
         f_out = tmp_path.open("w")
 
     seen = set()
+    cursor = ""
     try:
-        async for msg in client.get_messages_iterator(message_filter=message_filter):
-            h = msg.item_hash
-            if h in seen:
-                continue
-            seen.add(h)
-            # Serialise to a dict so downstream parsers consume the same
-            # shape regardless of pydantic version under the SDK.
-            msg_dict = msg.dict()
-            if f_out is not None:
-                f_out.write(json.dumps(msg_dict, default=str) + "\n")
-            yield msg_dict
+        while True:
+            resp = await client.get_messages_cursor(
+                message_filter=message_filter, cursor=cursor,
+            )
+            for msg in resp.messages:
+                h = msg.item_hash
+                if h in seen:
+                    continue
+                seen.add(h)
+                # `model_dump(mode="json")` produces JSON-safe primitives
+                # (datetimes → ISO strings, etc.) so the cache file is
+                # readable back as plain JSON in the cache-hit branch.
+                msg_dict = msg.model_dump(mode="json")
+                if f_out is not None:
+                    f_out.write(json.dumps(msg_dict) + "\n")
+                yield msg_dict
+            cursor = resp.next_cursor or ""
+            if not cursor:
+                break
         if f_out is not None:
             f_out.close()
             f_out = None
