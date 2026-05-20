@@ -54,3 +54,4 @@ MANIFEST
 device.key
 
 database/*
+cache/*

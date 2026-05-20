@@ -246,7 +246,7 @@ def _read_jsonl_cache(path):
             yield json.loads(line)
 
 
-async def _iter_messages_dedup(client, message_filter):
+async def _iter_messages_dedup(client, message_filter, *, refresh=False):
     """Yield Aleph messages via cursor pagination, deduped by item_hash.
 
     Cursor pagination (SDK `get_messages_cursor`, see
@@ -257,10 +257,12 @@ async def _iter_messages_dedup(client, message_filter):
 
     When `settings.aleph_msg_cache_dir` is set, a successful fetch is
     persisted to a JSONL file keyed by the filter; a re-run with the
-    same filter reads from disk instead of the API.
+    same filter reads from disk instead of the API. Pass `refresh=True`
+    to skip the cache-read branch and force a fresh API fetch — the new
+    response overwrites the cache file on success.
     """
     cache_path = _message_cache_path(message_filter)
-    if cache_path and cache_path.exists():
+    if cache_path and cache_path.exists() and not refresh:
         LOGGER.info("Aleph messages: reusing cache %s", cache_path)
         seen = set()
         for msg in _read_jsonl_cache(cache_path):
@@ -270,6 +272,11 @@ async def _iter_messages_dedup(client, message_filter):
             seen.add(h)
             yield msg
         return
+    if cache_path and cache_path.exists() and refresh:
+        LOGGER.info(
+            "Aleph messages: --refresh-cache, ignoring %s and re-fetching",
+            cache_path,
+        )
 
     tmp_path = None
     f_out = None
@@ -327,7 +334,8 @@ def _extract_eth_height(msg):
     return height
 
 
-async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
+async def fetch_node_snapshots(api_server, start_time, end_time, sender=None,
+                                *, refresh_cache=False):
     """
     Fetch historical corechannel aggregate snapshots for the period via
     the SDK's auto-paginated message iterator.
@@ -355,7 +363,9 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     # The outer layer carries the aggregate name (here "corechannel") and the
     # inner layer holds the actual node/resource_node lists.
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(client, message_filter):
+        async for msg in _iter_messages_dedup(
+            client, message_filter, refresh=refresh_cache,
+        ):
             content = msg.get("content") or {}
             if content.get("key") != "corechannel":
                 continue
@@ -584,7 +594,8 @@ def _distribute_storage_pools(
                 unallocated["staker"][ccn_hash] += ccn_staker_pool
 
 
-async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
+async def _fetch_expense_messages(api_server, start_time, end_time, sender=None,
+                                   *, refresh_cache=False):
     """Fetch aleph_credit_expense POST messages via the SDK iterator.
 
     Returns a list of message dicts. The shape mirrors the raw API
@@ -601,7 +612,9 @@ async def _fetch_expense_messages(api_server, start_time, end_time, sender=None)
     )
     messages = []
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(client, message_filter):
+        async for msg in _iter_messages_dedup(
+            client, message_filter, refresh=refresh_cache,
+        ):
             messages.append(msg)
     return messages
 
@@ -766,6 +779,7 @@ async def compute_rewards(
     include_holder_tier=False, sender=None,
     dbs=None, end_height=None, web3=None,
     snapshots=None,
+    refresh_cache=False,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -787,7 +801,10 @@ async def compute_rewards(
     api_server = PublishMode.get_publish_api_server()
     sender = sender or settings.credit_expense_sender
 
-    msgs = await _fetch_expense_messages(api_server, start_time, end_time, sender)
+    msgs = await _fetch_expense_messages(
+        api_server, start_time, end_time, sender,
+        refresh_cache=refresh_cache,
+    )
     if not msgs:
         LOGGER.warning("No credit expenses found in the given time range")
         return {
