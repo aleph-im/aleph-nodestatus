@@ -1,3 +1,4 @@
+import asyncio
 import bisect
 import logging
 from collections import defaultdict, deque
@@ -113,22 +114,42 @@ async def get_latest_successful_credit_distribution(sender=None):
 
 
 async def _iter_messages_dedup(client, message_filter):
-    """Wrap the SDK's async message iterator with item_hash dedup.
+    """Wrap the SDK's message API with item_hash dedup and per-page logging.
 
-    The SDK's `get_messages_iterator` auto-paginates: in 1.4.0 it walks
-    pages by offset and the docstring warns it "might return duplicates";
-    in 2.3.2+ (PR #282 of aleph-sdk-python) it walks via cursor and the
-    duplicates disappear. Dedup is cheap insurance across both versions.
+    Re-implements pagination locally (instead of `get_messages_iterator`)
+    so each page request is timed and logged. The Aleph API's
+    `/api/v0/messages.json` can take tens of seconds per page for
+    AGGREGATE+date-filtered queries; without progress logging the caller
+    appears stuck. Dedup remains because the 1.x SDK docs warn the
+    underlying pagination "might return duplicates".
     """
     seen = set()
-    async for msg in client.get_messages_iterator(message_filter=message_filter):
-        h = msg.item_hash
-        if h in seen:
-            continue
-        seen.add(h)
-        # Serialise to a dict so downstream parsers consume the same
-        # shape regardless of pydantic version under the SDK.
-        yield msg.dict()
+    page = 1
+    while True:
+        t0 = asyncio.get_event_loop().time()
+        resp = await client.get_messages(
+            page=page, message_filter=message_filter,
+        )
+        elapsed = asyncio.get_event_loop().time() - t0
+        if not resp.messages:
+            LOGGER.info(
+                "_iter_messages_dedup: page %d empty (%.1fs); stopping",
+                page, elapsed,
+            )
+            return
+        LOGGER.info(
+            "_iter_messages_dedup: page %d → %d msgs in %.1fs",
+            page, len(resp.messages), elapsed,
+        )
+        for msg in resp.messages:
+            h = msg.item_hash
+            if h in seen:
+                continue
+            seen.add(h)
+            # Serialise to a dict so downstream parsers consume the same
+            # shape regardless of pydantic version under the SDK.
+            yield msg.dict()
+        page += 1
 
 
 def _extract_eth_height(msg):
@@ -580,6 +601,7 @@ async def compute_rewards(
     start_time, end_time, full_resync=False,
     include_holder_tier=False, sender=None,
     dbs=None, end_height=None, web3=None,
+    snapshots=None,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -592,6 +614,11 @@ async def compute_rewards(
     The `detailed` key carries per-account, per-component (storage_ccn,
     storage_staker, execution_ccn, execution_crn, execution_staker) shares
     so the audit post can attribute every ALEPH to its source pool.
+
+    `snapshots`, when supplied, lets the orchestrator share a single
+    `fetch_node_snapshots` result with the downstream wage-subsidy step.
+    Aggregate-by-date queries on the Aleph API take tens of seconds per
+    page, so doing them twice in one run doubles wall-time for nothing.
     """
     api_server = PublishMode.get_publish_api_server()
     sender = sender or settings.credit_expense_sender
@@ -623,7 +650,8 @@ async def compute_rewards(
         )
     else:
         result = await _compute_rewards_snapshots(
-            api_server, start_time, end_time, msgs, include_holder_tier, web3
+            api_server, start_time, end_time, msgs, include_holder_tier, web3,
+            snapshots=snapshots,
         )
 
     credit_totals = result["credit_revenue"][1]
@@ -642,9 +670,11 @@ async def compute_rewards(
 
 
 async def _compute_rewards_snapshots(
-    api_server, start_time, end_time, msgs, include_holder_tier, web3
+    api_server, start_time, end_time, msgs, include_holder_tier, web3,
+    snapshots=None,
 ):
-    snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
+    if snapshots is None:
+        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
     if not snapshots:
         raise ValueError(
             "No node status snapshots found. "

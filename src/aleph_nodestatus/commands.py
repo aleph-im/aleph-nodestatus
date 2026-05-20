@@ -347,6 +347,16 @@ async def process_credit_distribution(
     start_time = web3.eth.get_block(start_height).timestamp
     end_time = web3.eth.get_block(end_height).timestamp
 
+    # Aleph API `messages.json` AGGREGATE+date queries are slow (~80s per
+    # page), so fetch node snapshots once and share between the credit
+    # revenue path (snapshot mode only) and the wage subsidy below.
+    # full_resync drives credit revenue from the local state machine, so
+    # it doesn't need snapshots there — but wage still does.
+    api_server = PublishMode.get_publish_api_server()
+    snapshots = None
+    if (flags.get("credit_revenue") and not full_resync) or flags.get("wage"):
+        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
+
     # === Step 2: credit_revenue + holder_tier rewards ===
     streams = {
         "credit_revenue": ({}, zero_totals()),
@@ -360,6 +370,7 @@ async def process_credit_distribution(
             include_holder_tier=flags.get("holder_tier", False),
             sender=settings.credit_expense_sender,
             dbs=dbs, end_height=end_height, web3=web3,
+            snapshots=snapshots,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
@@ -379,8 +390,6 @@ async def process_credit_distribution(
         "split": {"ccn": 0, "crn": 0, "staker": 0},
     }
     if flags.get("wage"):
-        api_server = PublishMode.get_publish_api_server()
-        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
         if snapshots:
             # Design choice: use the most recent snapshot as the canonical
             # weighting for the whole period. Intermediate node/staker state
