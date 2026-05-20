@@ -1,9 +1,13 @@
 import asyncio
 import bisect
+import hashlib
+import json
 import logging
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import TypedDict
 
+import aiohttp
 from aleph.sdk.client import AlephHttpClient
 from aleph.sdk.query.filters import MessageFilter, PostFilter
 from aleph_message.models import MessageType
@@ -20,6 +24,89 @@ from .utils import get_reward_address
 LOGGER = logging.getLogger(__name__)
 
 CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
+
+
+class _LoggingAlephHttpClient(AlephHttpClient):
+    """AlephHttpClient with configurable page size and per-request logging.
+
+    Overrides `get_messages` and `get_posts` so the smaller default
+    `page_size` propagates to the SDK's `get_messages_iterator` /
+    `get_posts_iterator` (both of which call `self.get_messages` /
+    `self.get_posts` without an explicit page_size), and so each page
+    request is logged before/after — slow API responses then surface as
+    visible progress instead of silence followed by a timeout traceback.
+    """
+
+    async def get_messages(self, page_size=None, page=1, message_filter=None, **kwargs):
+        if page_size is None:
+            page_size = settings.aleph_http_page_size
+        LOGGER.info(
+            "Aleph messages page %d requested (page_size=%d, timeout=%ds)…",
+            page, page_size, settings.aleph_http_timeout_seconds,
+        )
+        t0 = asyncio.get_event_loop().time()
+        try:
+            resp = await super().get_messages(
+                page_size=page_size, page=page,
+                message_filter=message_filter, **kwargs,
+            )
+        except asyncio.TimeoutError:
+            elapsed = asyncio.get_event_loop().time() - t0
+            LOGGER.error(
+                "Aleph messages page %d TIMED OUT after %.1fs "
+                "(aleph_http_timeout_seconds=%ds)",
+                page, elapsed, settings.aleph_http_timeout_seconds,
+            )
+            raise
+        elapsed = asyncio.get_event_loop().time() - t0
+        LOGGER.info(
+            "Aleph messages page %d → %d msgs in %.1fs",
+            page, len(resp.messages), elapsed,
+        )
+        return resp
+
+    async def get_posts(self, page_size=None, page=1, post_filter=None, **kwargs):
+        if page_size is None:
+            page_size = settings.aleph_http_page_size
+        LOGGER.info(
+            "Aleph posts page %d requested (page_size=%d, timeout=%ds)…",
+            page, page_size, settings.aleph_http_timeout_seconds,
+        )
+        t0 = asyncio.get_event_loop().time()
+        try:
+            resp = await super().get_posts(
+                page_size=page_size, page=page,
+                post_filter=post_filter, **kwargs,
+            )
+        except asyncio.TimeoutError:
+            elapsed = asyncio.get_event_loop().time() - t0
+            LOGGER.error(
+                "Aleph posts page %d TIMED OUT after %.1fs "
+                "(aleph_http_timeout_seconds=%ds)",
+                page, elapsed, settings.aleph_http_timeout_seconds,
+            )
+            raise
+        elapsed = asyncio.get_event_loop().time() - t0
+        LOGGER.info(
+            "Aleph posts page %d → %d posts in %.1fs",
+            page, len(resp.posts), elapsed,
+        )
+        return resp
+
+
+def _aleph_client(api_server):
+    """Construct a `_LoggingAlephHttpClient` with an explicit total timeout.
+
+    aiohttp's default 5-minute timeout fires before the API can answer
+    some date+address-filtered AGGREGATE queries over multi-week windows;
+    use the configured `aleph_http_timeout_seconds` instead so operators
+    can tune it. The subclass plumbs `aleph_http_page_size` into the
+    SDK's auto-paginated iterators.
+    """
+    return _LoggingAlephHttpClient(
+        api_server=api_server,
+        timeout=aiohttp.ClientTimeout(total=settings.aleph_http_timeout_seconds),
+    )
 
 # Sentinel keys used in `unallocated_*_by_id` for drops that don't map to a
 # real node hash. Distinct from valid node hashes so downstream tooling can
@@ -81,9 +168,7 @@ async def get_latest_successful_credit_distribution(sender=None):
 
     current_post = None
     current_end_height = 0
-    async with AlephHttpClient(
-        api_server=PublishMode.get_publish_api_server()
-    ) as client:
+    async with _aleph_client(PublishMode.get_publish_api_server()) as client:
         # Iterator auto-paginates so we don't drop older distributions
         # once the post history grows past one page.
         async for post in client.get_posts_iterator(post_filter=post_filter):
@@ -113,43 +198,95 @@ async def get_latest_successful_credit_distribution(sender=None):
     return 0, None
 
 
-async def _iter_messages_dedup(client, message_filter):
-    """Wrap the SDK's message API with item_hash dedup and per-page logging.
+def _message_cache_path(message_filter):
+    """Resolve the JSONL cache path for a `MessageFilter`, or None.
 
-    Re-implements pagination locally (instead of `get_messages_iterator`)
-    so each page request is timed and logged. The Aleph API's
-    `/api/v0/messages.json` can take tens of seconds per page for
-    AGGREGATE+date-filtered queries; without progress logging the caller
-    appears stuck. Dedup remains because the 1.x SDK docs warn the
-    underlying pagination "might return duplicates".
+    Cache is keyed by a SHA-256 of the filter's HTTP params (the same
+    bytes that would go on the wire), so any two runs with byte-identical
+    filters share a cache file. Returns None when caching is disabled.
     """
+    cache_dir = settings.aleph_msg_cache_dir
+    if not cache_dir:
+        return None
+    params = dict(message_filter.as_http_params()) if message_filter else {}
+    key = hashlib.sha256(
+        json.dumps(params, sort_keys=True).encode()
+    ).hexdigest()
+    return Path(cache_dir) / f"msgs-{key}.jsonl"
+
+
+def _read_jsonl_cache(path):
+    """Yield message dicts from a JSONL cache file."""
+    with path.open("r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+async def _iter_messages_dedup(client, message_filter):
+    """Wrap the SDK's async message iterator with item_hash dedup.
+
+    The SDK's `get_messages_iterator` auto-paginates: in 1.4.0 it walks
+    pages by offset and the docstring warns it "might return duplicates";
+    in 2.3.2+ (PR #282 of aleph-sdk-python) it walks via cursor and the
+    duplicates disappear. Dedup is cheap insurance across both versions.
+
+    Per-page progress logging and the smaller page_size live in
+    `_LoggingAlephHttpClient.get_messages`, which both the iterator and
+    direct callers route through.
+
+    When `settings.aleph_msg_cache_dir` is set, a successful fetch is
+    persisted to a JSONL file keyed by the filter; a re-run with the
+    same filter reads from disk instead of the API.
+    """
+    cache_path = _message_cache_path(message_filter)
+    if cache_path and cache_path.exists():
+        LOGGER.info("Aleph messages: reusing cache %s", cache_path)
+        seen = set()
+        for msg in _read_jsonl_cache(cache_path):
+            h = msg.get("item_hash")
+            if h in seen:
+                continue
+            seen.add(h)
+            yield msg
+        return
+
+    tmp_path = None
+    f_out = None
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(".jsonl.tmp")
+        f_out = tmp_path.open("w")
+
     seen = set()
-    page = 1
-    while True:
-        t0 = asyncio.get_event_loop().time()
-        resp = await client.get_messages(
-            page=page, message_filter=message_filter,
-        )
-        elapsed = asyncio.get_event_loop().time() - t0
-        if not resp.messages:
-            LOGGER.info(
-                "_iter_messages_dedup: page %d empty (%.1fs); stopping",
-                page, elapsed,
-            )
-            return
-        LOGGER.info(
-            "_iter_messages_dedup: page %d → %d msgs in %.1fs",
-            page, len(resp.messages), elapsed,
-        )
-        for msg in resp.messages:
+    try:
+        async for msg in client.get_messages_iterator(message_filter=message_filter):
             h = msg.item_hash
             if h in seen:
                 continue
             seen.add(h)
             # Serialise to a dict so downstream parsers consume the same
             # shape regardless of pydantic version under the SDK.
-            yield msg.dict()
-        page += 1
+            msg_dict = msg.dict()
+            if f_out is not None:
+                f_out.write(json.dumps(msg_dict, default=str) + "\n")
+            yield msg_dict
+        if f_out is not None:
+            f_out.close()
+            f_out = None
+            tmp_path.rename(cache_path)
+            LOGGER.info("Aleph messages: wrote cache %s", cache_path)
+    finally:
+        # Partial cache from an interrupted/errored fetch would mislead
+        # the next run, so drop the tempfile rather than leaving it behind.
+        if f_out is not None:
+            f_out.close()
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _extract_eth_height(msg):
@@ -190,7 +327,7 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     #   msg["content"] = {"key": "<name>", "content": {<body>}, ...}
     # The outer layer carries the aggregate name (here "corechannel") and the
     # inner layer holds the actual node/resource_node lists.
-    async with AlephHttpClient(api_server=api_server) as client:
+    async with _aleph_client(api_server) as client:
         async for msg in _iter_messages_dedup(client, message_filter):
             content = msg.get("content") or {}
             if content.get("key") != "corechannel":
@@ -436,7 +573,7 @@ async def _fetch_expense_messages(api_server, start_time, end_time, sender=None)
         end_date=float(end_time),
     )
     messages = []
-    async with AlephHttpClient(api_server=api_server) as client:
+    async with _aleph_client(api_server) as client:
         async for msg in _iter_messages_dedup(client, message_filter):
             messages.append(msg)
     return messages

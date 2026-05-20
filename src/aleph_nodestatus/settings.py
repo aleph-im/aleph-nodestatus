@@ -153,6 +153,28 @@ class Settings(BaseSettings):
     credit_dist_min_interval_blocks: int = 10 * 7130
     credit_dist_dust_threshold_aleph: float = 0.01
 
+    # Per-request total timeout for the Aleph HTTP API. The default aiohttp
+    # 5-minute cap is too tight: AGGREGATE+date-filtered first-page queries
+    # over a multi-week window have been observed to take longer than that
+    # before returning. Raising to 10 minutes gives the API room without
+    # leaving a stuck run waiting forever.
+    aleph_http_timeout_seconds: int = 600
+
+    # Page size for Aleph API message/post iterators. The SDK default (200)
+    # produces multi-MB responses for the corechannel `status_sender`
+    # aggregates that this distributor scans — large enough that a single
+    # page can exceed the request timeout. A smaller value trades extra
+    # round-trips for a much higher chance the API can answer in time.
+    aleph_http_page_size: int = 20
+
+    # Directory for cached Aleph message JSONL files. When non-empty,
+    # `_iter_messages_dedup` writes every successful fetch to a file
+    # keyed by the filter parameters, and reads from that file on
+    # subsequent runs with identical filters. Lets dry-runs against the
+    # same (start_height, end_height) reuse the slow API response. Empty
+    # string disables caching.
+    aleph_msg_cache_dir: str = ""
+
     # Cap on total ALEPH a single --act run can distribute. Aborts before
     # any balance check or transfer if an upstream bug produces inflated
     # rewards. Default sized at 2x the maximum monthly wage subsidy.
