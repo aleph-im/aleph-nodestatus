@@ -222,14 +222,23 @@ async def get_latest_successful_credit_distribution(sender=None):
 def _message_cache_path(message_filter):
     """Resolve the JSONL cache path for a `MessageFilter`, or None.
 
-    Cache is keyed by a SHA-256 of the filter's HTTP params (the same
-    bytes that would go on the wire), so any two runs with byte-identical
-    filters share a cache file. Returns None when caching is disabled.
+    Cache is keyed by a SHA-256 of the filter's HTTP params, with
+    `endDate` floored to `aleph_msg_cache_end_floor_seconds` granularity
+    so back-to-back dry-runs against the same heights collapse onto the
+    same cache file even though the resolved end-block timestamp
+    advances every ~12s. Returns None when caching is disabled.
     """
     cache_dir = settings.aleph_msg_cache_dir
     if not cache_dir:
         return None
     params = dict(message_filter.as_http_params()) if message_filter else {}
+    floor = settings.aleph_msg_cache_end_floor_seconds
+    if floor > 0 and "endDate" in params:
+        try:
+            ed = float(params["endDate"])
+            params["endDate"] = str(int(ed // floor) * floor)
+        except (TypeError, ValueError):
+            pass
     key = hashlib.sha256(
         json.dumps(params, sort_keys=True).encode()
     ).hexdigest()

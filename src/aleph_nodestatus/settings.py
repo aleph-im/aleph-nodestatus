@@ -179,6 +179,15 @@ class Settings(BaseSettings):
     # disable caching entirely.
     aleph_msg_cache_dir: str = "./cache/aleph_msgs"
 
+    # Granularity (seconds) to which `endDate` is floored in the cache
+    # key. Without this, default dry-runs would never hit the cache:
+    # `end_height=-1` resolves to the current head block, whose
+    # timestamp moves every ~12s, producing a fresh SHA-256 every run.
+    # Flooring snaps reruns in the same window onto the same cache file,
+    # at the cost of up to N seconds of staleness on cached reads — fine
+    # for dry-run iteration, and overridable with --refresh-cache.
+    aleph_msg_cache_end_floor_seconds: int = 3600
+
     # Cap on total ALEPH a single --act run can distribute. Aborts before
     # any balance check or transfer if an upstream bug produces inflated
     # rewards. Default sized at 2x the maximum monthly wage subsidy.
