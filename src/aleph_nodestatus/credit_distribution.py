@@ -259,15 +259,13 @@ def _read_jsonl_cache(path):
             yield json.loads(line)
 
 
-def _msg_in_range(msg, start_date, end_date):
-    """Return True if `msg` falls within the requested [start, end] range.
+def _msg_time(msg):
+    """Return the message's chronology timestamp as float epoch seconds, or None.
 
-    Uses `content.time` (the post body's own timestamp) as the
-    chronology — that matches what Aleph indexes against `startDate`
-    /`endDate` server-side, so the in-memory filter is consistent with
-    the server-side filter even when reading from cache. Falls back to
-    the top-level `time` field for AGGREGATE messages that lack the
-    nested timestamp.
+    Prefers `content.time` (the post body's numeric epoch — what Aleph
+    indexes against server-side for `startDate`/`endDate`), falls back to
+    the top-level `time` (ISO 8601 string from `model_dump(mode='json')`)
+    for AGGREGATE messages that don't carry the nested timestamp.
     """
     t = None
     content = msg.get("content")
@@ -276,16 +274,23 @@ def _msg_in_range(msg, start_date, end_date):
     if t is None:
         t = msg.get("time")
     if t is None:
-        return True  # no time → keep, downstream parsers will decide
+        return None
+    if isinstance(t, (int, float)):
+        return float(t)
     if isinstance(t, str):
-        # AlephMessage.model_dump(mode="json") serializes the top-level
-        # `time` field as an ISO-8601 string; only the nested
-        # `content.time` is the numeric epoch seconds we need to compare.
         from datetime import datetime
         try:
-            t = datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
         except ValueError:
-            return True
+            return None
+    return None
+
+
+def _msg_in_range(msg, start_date, end_date):
+    """Return True if `msg` falls within the requested [start, end] range."""
+    t = _msg_time(msg)
+    if t is None:
+        return True  # no time → keep, downstream parsers will decide
     if start_date is not None and t < start_date:
         return False
     if end_date is not None and t > end_date:
@@ -302,44 +307,37 @@ async def _iter_messages_dedup(client, message_filter, *, refresh=False):
     history time out. Dedup is kept as cheap insurance against any
     duplicates returned across cursor boundaries.
 
-    When `settings.aleph_msg_cache_dir` is set, a successful fetch is
-    persisted to a JSONL file keyed by the filter shape (no dates); a
-    re-run with the same shape reads from disk and applies the current
-    request's date range in memory. Pass `refresh=True` to skip the
-    cache-read branch and force a fresh API fetch — the new response
-    overwrites the cache file on success.
+    Caching (when `settings.aleph_msg_cache_dir` is set) is **incremental**:
+
+      1. Read the existing cache (if any), stream each message into a
+         new tempfile, yield those in the run's `[start, end]` range,
+         and track the max `content.time` seen on disk.
+      2. Issue a cursor walk against the API starting from that max
+         time, end at the run's `end_date`. Each new message is also
+         streamed into the tempfile and yielded if in range.
+      3. Atomically rename the tempfile over the cache file.
+
+    Net effect: a re-run with the same filter shape only fetches messages
+    that have appeared on Aleph since the previous run's max time — the
+    cache grows monotonically. `refresh=True` skips the read phase
+    (still writes a fresh cache on success).
+
+    Caveat: the cache only grows forward in time. If a later run requests
+    a `start_date` *earlier* than the cache's existing coverage, those
+    older messages will be missing — use `--refresh-cache` in that case.
     """
+    import copy as _copy
+
     cache_path = _message_cache_path(message_filter)
     start_date = getattr(message_filter, "start_date", None) if message_filter else None
     end_date = getattr(message_filter, "end_date", None) if message_filter else None
-    if cache_path and cache_path.exists() and not refresh:
-        LOGGER.info(
-            "Aleph messages: reusing cache %s (filtering by [%s, %s] in memory)",
-            cache_path, start_date, end_date,
-        )
-        seen = set()
-        total = 0
-        kept = 0
-        for msg in _read_jsonl_cache(cache_path):
-            total += 1
-            h = msg.get("item_hash")
-            if h in seen:
-                continue
-            seen.add(h)
-            if not _msg_in_range(msg, start_date, end_date):
-                continue
-            kept += 1
-            yield msg
-        LOGGER.info(
-            "Aleph messages: cache yielded %d/%d in-range messages",
-            kept, total,
-        )
-        return
+
     if cache_path and cache_path.exists() and refresh:
         LOGGER.info(
             "Aleph messages: --refresh-cache, ignoring %s and re-fetching",
             cache_path,
         )
+    has_cache = bool(cache_path and cache_path.exists() and not refresh)
 
     tmp_path = None
     f_out = None
@@ -349,27 +347,91 @@ async def _iter_messages_dedup(client, message_filter, *, refresh=False):
         f_out = tmp_path.open("w")
 
     seen = set()
-    cursor = ""
+    cached_max_time = None
+    cached_count = 0
+    cached_yielded = 0
+
     try:
-        while True:
-            resp = await client.get_messages_cursor(
-                message_filter=message_filter, cursor=cursor,
-            )
-            for msg in resp.messages:
-                h = msg.item_hash
+        # Phase 1: stream the existing cache through to the new tempfile,
+        # yielding any messages in the current request's range, and track
+        # the highest `content.time` seen so we know where to resume from.
+        if has_cache:
+            for msg in _read_jsonl_cache(cache_path):
+                h = msg.get("item_hash")
                 if h in seen:
                     continue
                 seen.add(h)
-                # `model_dump(mode="json")` produces JSON-safe primitives
-                # (datetimes → ISO strings, etc.) so the cache file is
-                # readable back as plain JSON in the cache-hit branch.
-                msg_dict = msg.model_dump(mode="json")
+                cached_count += 1
+                t = _msg_time(msg)
+                if t is not None and (cached_max_time is None or t > cached_max_time):
+                    cached_max_time = t
                 if f_out is not None:
-                    f_out.write(json.dumps(msg_dict) + "\n")
-                yield msg_dict
-            cursor = resp.next_cursor or ""
-            if not cursor:
-                break
+                    f_out.write(json.dumps(msg) + "\n")
+                if _msg_in_range(msg, start_date, end_date):
+                    cached_yielded += 1
+                    yield msg
+            LOGGER.info(
+                "Aleph messages: cache had %d msgs (yielded %d in-range, max_time=%s)",
+                cached_count, cached_yielded, cached_max_time,
+            )
+
+        # Phase 2: fetch only the delta (messages newer than what's already
+        # cached). Skip entirely if the cache already covers the requested
+        # window.
+        needs_delta = True
+        if (
+            cached_max_time is not None
+            and end_date is not None
+            and cached_max_time >= end_date
+        ):
+            needs_delta = False
+            LOGGER.info(
+                "Aleph messages: cached_max_time=%s ≥ end_date=%s, "
+                "no delta fetch needed",
+                cached_max_time, end_date,
+            )
+
+        if needs_delta:
+            if cached_max_time is not None:
+                # Shift the server-side start_date forward to the cache's
+                # max time. Dedup catches the boundary message that the
+                # server returns at that exact time.
+                delta_filter = _copy.copy(message_filter)
+                delta_filter.start_date = cached_max_time
+                LOGGER.info(
+                    "Aleph messages: delta fetch from %s (end=%s)",
+                    cached_max_time, end_date,
+                )
+            else:
+                delta_filter = message_filter
+
+            cursor = ""
+            new_count = 0
+            new_yielded = 0
+            while True:
+                resp = await client.get_messages_cursor(
+                    message_filter=delta_filter, cursor=cursor,
+                )
+                for msg in resp.messages:
+                    h = msg.item_hash
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    new_count += 1
+                    msg_dict = msg.model_dump(mode="json")
+                    if f_out is not None:
+                        f_out.write(json.dumps(msg_dict) + "\n")
+                    if _msg_in_range(msg_dict, start_date, end_date):
+                        new_yielded += 1
+                        yield msg_dict
+                cursor = resp.next_cursor or ""
+                if not cursor:
+                    break
+            LOGGER.info(
+                "Aleph messages: delta fetched %d new (yielded %d in-range)",
+                new_count, new_yielded,
+            )
+
         if f_out is not None:
             f_out.close()
             f_out = None
@@ -377,7 +439,8 @@ async def _iter_messages_dedup(client, message_filter, *, refresh=False):
             LOGGER.info("Aleph messages: wrote cache %s", cache_path)
     finally:
         # Partial cache from an interrupted/errored fetch would mislead
-        # the next run, so drop the tempfile rather than leaving it behind.
+        # the next run, so drop the tempfile and leave the prior cache
+        # (if any) intact.
         if f_out is not None:
             f_out.close()
             try:
