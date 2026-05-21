@@ -23,7 +23,7 @@ RUN rm -f /wheels/setuptools-*.whl && \
     pip install --no-cache-dir /wheels/*.whl && \
     rm -rf /wheels
 
-# Match the bind-mount target so relative paths (e.g. the default
-# `aleph_msg_cache_dir = "./cache/aleph_msgs"`) resolve inside the
-# mounted project directory and persist between runs.
+# Match the bind-mount target so relative paths in settings (logs,
+# leveldb dirs, etc.) resolve inside the mounted project directory
+# and persist between runs.
 WORKDIR /aleph-nodestatus

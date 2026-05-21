@@ -169,17 +169,6 @@ class Settings(BaseSettings):
     # round-trips for a much higher chance the API can answer in time.
     aleph_http_page_size: int = 20
 
-    # Directory for cached Aleph message JSONL files. When non-empty,
-    # `_iter_messages_dedup` writes every successful fetch to a file
-    # keyed by the filter shape (date range excluded), and reads from
-    # that file on subsequent runs with the same shape — filtering by
-    # the run's actual date range in memory. Lets back-to-back dry-runs
-    # reuse the slow API response even when end_height resolves to a
-    # different head block. Pass `--refresh-cache` on the CLI to force
-    # a re-fetch (the cache file is overwritten on success). Set to the
-    # empty string to disable caching entirely.
-    aleph_msg_cache_dir: str = "./cache/aleph_msgs"
-
     # Cap on total ALEPH a single --act run can distribute. Aborts before
     # any balance check or transfer if an upstream bug produces inflated
     # rewards. Default sized at 2x the maximum monthly wage subsidy.

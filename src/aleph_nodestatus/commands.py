@@ -281,7 +281,6 @@ async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
     flags=None, reward_sender=None, full_resync=False,
-    refresh_cache=False,
 ):
     flags = flags or {}
     dbs = get_dbs()
@@ -360,7 +359,6 @@ async def process_credit_distribution(
         # `credit_distribution.fetch_node_snapshots` is observed here.
         snapshots = await credit_distribution.fetch_node_snapshots(
             api_server, start_time, end_time,
-            refresh_cache=refresh_cache,
         )
 
     # === Step 2: credit_revenue + holder_tier rewards ===
@@ -377,7 +375,6 @@ async def process_credit_distribution(
             sender=settings.credit_expense_sender,
             dbs=dbs, end_height=end_height, web3=web3,
             snapshots=snapshots,
-            refresh_cache=refresh_cache,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
@@ -630,15 +627,12 @@ async def process_credit_distribution(
               help="Don't post the Aleph distribution record")
 @click.option("--reward-sender", default=None,
               help="Address used to look up the previous distribution")
-@click.option("--refresh-cache", "refresh_cache", is_flag=True,
-              help="Bypass any cached Aleph message JSONL and re-fetch "
-                   "from the API; the new response overwrites the cache.")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        start_height, end_height, full_resync,
                        no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
-                       reward_sender, refresh_cache):
+                       reward_sender):
     """Credit-based distribution script (new tokenomics)."""
     setup_logging(verbose)
 
@@ -678,7 +672,6 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
         act=act, dry_run=dry_run, force=force, force_cap=force_cap,
         flags=flags, reward_sender=reward_sender,
         full_resync=full_resync,
-        refresh_cache=refresh_cache,
     ))
 
 

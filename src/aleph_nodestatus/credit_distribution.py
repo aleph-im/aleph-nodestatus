@@ -1,10 +1,7 @@
 import asyncio
 import bisect
-import hashlib
-import json
 import logging
 from collections import defaultdict, deque
-from pathlib import Path
 from typing import TypedDict
 
 import aiohttp
@@ -219,86 +216,7 @@ async def get_latest_successful_credit_distribution(sender=None):
     return 0, None
 
 
-def _message_cache_path(message_filter):
-    """Resolve the JSONL cache path for a `MessageFilter`, or None.
-
-    Cache is keyed by a SHA-256 of the filter's HTTP params with the
-    date range fields (`startDate`, `endDate`) stripped out. The cache
-    file collects every message fetched for the same
-    `(msgType, contentType, addresses, …)` shape across runs; the
-    caller filters by the current run's date range in memory on read.
-
-    Why exclude dates: `endDate` defaults to the head-block timestamp,
-    which advances every ~12s, and `startDate` follows `last_end`,
-    which can drift if a new distribution lands between runs. Including
-    either in the key means two back-to-back dry-runs almost never hit
-    the same cache. Operators who want fresh data pass --refresh-cache.
-
-    Logs the cache key + canonical hashed bytes at DEBUG so any future
-    miss is diagnosable from logs alone.
-    """
-    cache_dir = settings.aleph_msg_cache_dir
-    if not cache_dir:
-        return None
-    params = dict(message_filter.as_http_params()) if message_filter else {}
-    params.pop("startDate", None)
-    params.pop("endDate", None)
-    canonical = json.dumps(params, sort_keys=True)
-    key = hashlib.sha256(canonical.encode()).hexdigest()
-    LOGGER.debug("cache key %s ← %s", key[:16], canonical)
-    return Path(cache_dir) / f"msgs-{key}.jsonl"
-
-
-def _read_jsonl_cache(path):
-    """Yield message dicts from a JSONL cache file."""
-    with path.open("r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
-
-
-def _msg_time(msg):
-    """Return the message's chronology timestamp as float epoch seconds, or None.
-
-    Prefers `content.time` (the post body's numeric epoch — what Aleph
-    indexes against server-side for `startDate`/`endDate`), falls back to
-    the top-level `time` (ISO 8601 string from `model_dump(mode='json')`)
-    for AGGREGATE messages that don't carry the nested timestamp.
-    """
-    t = None
-    content = msg.get("content")
-    if isinstance(content, dict):
-        t = content.get("time")
-    if t is None:
-        t = msg.get("time")
-    if t is None:
-        return None
-    if isinstance(t, (int, float)):
-        return float(t)
-    if isinstance(t, str):
-        from datetime import datetime
-        try:
-            return datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    return None
-
-
-def _msg_in_range(msg, start_date, end_date):
-    """Return True if `msg` falls within the requested [start, end] range."""
-    t = _msg_time(msg)
-    if t is None:
-        return True  # no time → keep, downstream parsers will decide
-    if start_date is not None and t < start_date:
-        return False
-    if end_date is not None and t > end_date:
-        return False
-    return True
-
-
-async def _iter_messages_dedup(client, message_filter, *, refresh=False):
+async def _iter_messages_dedup(client, message_filter):
     """Yield Aleph messages via cursor pagination, deduped by item_hash.
 
     Cursor pagination (SDK `get_messages_cursor`, see
@@ -306,147 +224,22 @@ async def _iter_messages_dedup(client, message_filter, *, refresh=False):
     slowdown that made offset-based scans of multi-week aggregate
     history time out. Dedup is kept as cheap insurance against any
     duplicates returned across cursor boundaries.
-
-    Caching (when `settings.aleph_msg_cache_dir` is set) is **incremental**:
-
-      1. Read the existing cache (if any), stream each message into a
-         new tempfile, yield those in the run's `[start, end]` range,
-         and track the max `content.time` seen on disk.
-      2. Issue a cursor walk against the API starting from that max
-         time, end at the run's `end_date`. Each new message is also
-         streamed into the tempfile and yielded if in range.
-      3. Atomically rename the tempfile over the cache file.
-
-    Net effect: a re-run with the same filter shape only fetches messages
-    that have appeared on Aleph since the previous run's max time — the
-    cache grows monotonically. `refresh=True` skips the read phase
-    (still writes a fresh cache on success).
-
-    Caveat: the cache only grows forward in time. If a later run requests
-    a `start_date` *earlier* than the cache's existing coverage, those
-    older messages will be missing — use `--refresh-cache` in that case.
     """
-    import copy as _copy
-
-    cache_path = _message_cache_path(message_filter)
-    start_date = getattr(message_filter, "start_date", None) if message_filter else None
-    end_date = getattr(message_filter, "end_date", None) if message_filter else None
-
-    if cache_path and cache_path.exists() and refresh:
-        LOGGER.info(
-            "Aleph messages: --refresh-cache, ignoring %s and re-fetching",
-            cache_path,
-        )
-    has_cache = bool(cache_path and cache_path.exists() and not refresh)
-
-    tmp_path = None
-    f_out = None
-    if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = cache_path.with_suffix(".jsonl.tmp")
-        f_out = tmp_path.open("w")
-
     seen = set()
-    cached_max_time = None
-    cached_count = 0
-    cached_yielded = 0
-
-    try:
-        # Phase 1: stream the existing cache through to the new tempfile,
-        # yielding any messages in the current request's range, and track
-        # the highest `content.time` seen so we know where to resume from.
-        if has_cache:
-            for msg in _read_jsonl_cache(cache_path):
-                h = msg.get("item_hash")
-                if h in seen:
-                    continue
-                seen.add(h)
-                cached_count += 1
-                t = _msg_time(msg)
-                if t is not None and (cached_max_time is None or t > cached_max_time):
-                    cached_max_time = t
-                if f_out is not None:
-                    f_out.write(json.dumps(msg) + "\n")
-                if _msg_in_range(msg, start_date, end_date):
-                    cached_yielded += 1
-                    yield msg
-            LOGGER.info(
-                "Aleph messages: cache had %d msgs (yielded %d in-range, max_time=%s)",
-                cached_count, cached_yielded, cached_max_time,
-            )
-
-        # Phase 2: fetch only the delta (messages newer than what's already
-        # cached). Skip entirely if the cache already covers the requested
-        # window.
-        needs_delta = True
-        if (
-            cached_max_time is not None
-            and end_date is not None
-            and cached_max_time >= end_date
-        ):
-            needs_delta = False
-            LOGGER.info(
-                "Aleph messages: cached_max_time=%s ≥ end_date=%s, "
-                "no delta fetch needed",
-                cached_max_time, end_date,
-            )
-
-        if needs_delta:
-            if cached_max_time is not None:
-                # Shift the server-side start_date forward to the cache's
-                # max time. Dedup catches the boundary message that the
-                # server returns at that exact time.
-                delta_filter = _copy.copy(message_filter)
-                delta_filter.start_date = cached_max_time
-                LOGGER.info(
-                    "Aleph messages: delta fetch from %s (end=%s)",
-                    cached_max_time, end_date,
-                )
-            else:
-                delta_filter = message_filter
-
-            cursor = ""
-            new_count = 0
-            new_yielded = 0
-            while True:
-                resp = await client.get_messages_cursor(
-                    message_filter=delta_filter, cursor=cursor,
-                )
-                for msg in resp.messages:
-                    h = msg.item_hash
-                    if h in seen:
-                        continue
-                    seen.add(h)
-                    new_count += 1
-                    msg_dict = msg.model_dump(mode="json")
-                    if f_out is not None:
-                        f_out.write(json.dumps(msg_dict) + "\n")
-                    if _msg_in_range(msg_dict, start_date, end_date):
-                        new_yielded += 1
-                        yield msg_dict
-                cursor = resp.next_cursor or ""
-                if not cursor:
-                    break
-            LOGGER.info(
-                "Aleph messages: delta fetched %d new (yielded %d in-range)",
-                new_count, new_yielded,
-            )
-
-        if f_out is not None:
-            f_out.close()
-            f_out = None
-            tmp_path.rename(cache_path)
-            LOGGER.info("Aleph messages: wrote cache %s", cache_path)
-    finally:
-        # Partial cache from an interrupted/errored fetch would mislead
-        # the next run, so drop the tempfile and leave the prior cache
-        # (if any) intact.
-        if f_out is not None:
-            f_out.close()
-            try:
-                tmp_path.unlink()
-            except FileNotFoundError:
-                pass
+    cursor = ""
+    while True:
+        resp = await client.get_messages_cursor(
+            message_filter=message_filter, cursor=cursor,
+        )
+        for msg in resp.messages:
+            h = msg.item_hash
+            if h in seen:
+                continue
+            seen.add(h)
+            yield msg.model_dump(mode="json")
+        cursor = resp.next_cursor or ""
+        if not cursor:
+            break
 
 
 def _extract_eth_height(msg):
@@ -460,8 +253,7 @@ def _extract_eth_height(msg):
     return height
 
 
-async def fetch_node_snapshots(api_server, start_time, end_time, sender=None,
-                                *, refresh_cache=False):
+async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     """
     Fetch historical corechannel aggregate snapshots for the period via
     the SDK's auto-paginated message iterator.
@@ -489,9 +281,7 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None,
     # The outer layer carries the aggregate name (here "corechannel") and the
     # inner layer holds the actual node/resource_node lists.
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(
-            client, message_filter, refresh=refresh_cache,
-        ):
+        async for msg in _iter_messages_dedup(client, message_filter):
             content = msg.get("content") or {}
             if content.get("key") != "corechannel":
                 continue
@@ -720,8 +510,7 @@ def _distribute_storage_pools(
                 unallocated["staker"][ccn_hash] += ccn_staker_pool
 
 
-async def _fetch_expense_messages(api_server, start_time, end_time, sender=None,
-                                   *, refresh_cache=False):
+async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
     """Fetch aleph_credit_expense POST messages via the SDK iterator.
 
     Returns a list of message dicts. The shape mirrors the raw API
@@ -738,9 +527,7 @@ async def _fetch_expense_messages(api_server, start_time, end_time, sender=None,
     )
     messages = []
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(
-            client, message_filter, refresh=refresh_cache,
-        ):
+        async for msg in _iter_messages_dedup(client, message_filter):
             messages.append(msg)
     return messages
 
@@ -905,7 +692,6 @@ async def compute_rewards(
     include_holder_tier=False, sender=None,
     dbs=None, end_height=None, web3=None,
     snapshots=None,
-    refresh_cache=False,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -929,7 +715,6 @@ async def compute_rewards(
 
     msgs = await _fetch_expense_messages(
         api_server, start_time, end_time, sender,
-        refresh_cache=refresh_cache,
     )
     if not msgs:
         LOGGER.warning("No credit expenses found in the given time range")
