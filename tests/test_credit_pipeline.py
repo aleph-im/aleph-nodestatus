@@ -28,6 +28,25 @@ from aleph_nodestatus.commands import distribute_credits
 FIX = Path(__file__).parent / "fixtures"
 
 
+def _msg_to_post(msg):
+    """Project a captured AlephMessage envelope into the Post dict shape
+    returned by `/posts.json` (which is what `_fetch_expense_messages`
+    yields after the cursor-walk). Posts collapse `message.content.content`
+    into `post.content` and inherit the envelope's `confirmations`,
+    `time`, `item_hash`, `sender`."""
+    envelope = msg.get("content", {})
+    payload = envelope.get("content", envelope)
+    return {
+        "item_hash": msg.get("item_hash"),
+        "original_item_hash": msg.get("item_hash"),
+        "time": msg.get("time"),
+        "confirmations": msg.get("confirmations", []),
+        "sender": msg.get("sender"),
+        "address": envelope.get("address"),
+        "content": payload,
+    }
+
+
 @pytest.fixture
 def patched_pipeline(monkeypatch):
     """Patch external I/O so the orchestrator runs end-to-end in-memory."""
@@ -35,7 +54,7 @@ def patched_pipeline(monkeypatch):
     snapshot = json.loads((FIX / "snapshot.json").read_text())
 
     async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
+        return [_msg_to_post(expense_msg["message"])]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
@@ -157,7 +176,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
 
     async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
+        return [_msg_to_post(expense_msg["message"])]
 
     # Return empty snapshot list — but compute_rewards needs at least one
     # snapshot for the credit-revenue path. So we have to disable credit_revenue
@@ -232,7 +251,7 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     snapshot = _json.loads((FIX / "snapshot.json").read_text())
 
     async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
+        return [_msg_to_post(expense_msg["message"])]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
@@ -295,7 +314,7 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     snapshot = _json.loads((FIX / "snapshot.json").read_text())
 
     async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
+        return [_msg_to_post(expense_msg["message"])]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}

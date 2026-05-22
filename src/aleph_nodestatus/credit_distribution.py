@@ -749,10 +749,14 @@ def _parse_message(msg):
     when both billing-window fields are absent (legacy/malformed payloads).
 
     Skips unconfirmed messages — see `_is_eth_confirmed`.
+
+    Note: `msg` here is a Post dict (from `/posts.json`), so the payload is
+    `msg["content"]` directly — not `msg["content"]["content"]` as on the
+    AlephMessage envelopes returned by `/messages.json`.
     """
     if not _is_eth_confirmed(msg):
         return None, None, None
-    content = msg.get("content", {}).get("content", {})
+    content = msg.get("content", {})
     tags = content.get("tags", [])
     expense = content.get("expense", {})
     if not expense:

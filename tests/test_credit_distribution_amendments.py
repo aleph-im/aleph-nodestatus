@@ -27,14 +27,11 @@ def _post(item_hash, *, original_item_hash=None, confirmations=None,
         "time": time,
         "confirmations": confirmations,
         "content": {
-            "type": "aleph_credit_expense",
-            "content": {
-                "tags": ["credit_expense", "type_execution"],
-                "expense": {
-                    "credit_price_aleph": 0.001,
-                    "end_date": end_date_ms,
-                    "credits": credits,
-                },
+            "tags": ["credit_expense", "type_execution"],
+            "expense": {
+                "credit_price_aleph": 0.001,
+                "end_date": end_date_ms,
+                "credits": credits,
             },
         },
     }
@@ -277,8 +274,8 @@ def test_parse_message_falls_back_to_msg_time_when_no_billing_window():
     """No `end_date` / `start_date` → fall back to `msg.time` (s) so legacy
     payloads aren't silently dropped."""
     msg = _post("h1", time=42.0)
-    msg["content"]["content"]["expense"].pop("end_date", None)
-    msg["content"]["content"]["expense"].pop("start_date", None)
+    msg["content"]["expense"].pop("end_date", None)
+    msg["content"]["expense"].pop("start_date", None)
     ts_s, _, _ = cd._parse_message(msg)
     assert ts_s == 42.0
 
