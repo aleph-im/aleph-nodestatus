@@ -160,7 +160,7 @@ async def transfer_tokens(targets, metadata=None):
         NONCE += 1
         LOGGER.info(f"TX {tx_hash} created on ETH")
 
-    except:
+    except Exception:
         LOGGER.exception("Error packing ethereum TX")
 
     if "targets" not in metadata:

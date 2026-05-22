@@ -196,7 +196,7 @@ async def get_latest_successful_credit_distribution(sender=None):
                 if end_height is None:
                     continue
 
-                if any(t.get("success") for t in content.get("targets", [])):
+                if any(tgt.get("success") for tgt in content.get("targets", [])):
                     # `>=` (not `>`) so that an AMEND publishing a later
                     # post with the same end_height overrides the prior
                     # pick rather than being ignored. Posts are yielded
@@ -575,15 +575,18 @@ def _distribute_execution_credits(
         staker_amount = credit_aleph * staker_share
         id_key        = node_id or UNALLOCATED_MISSING_NODE_ID
 
-        # 1) CRN share — to the CRN that hosted the workload.
-        if node_id and node_id in resource_nodes:
-            rnode = resource_nodes[node_id]
+        # 1) CRN share — to the CRN that hosted the workload. Gated on
+        #    status == "linked": a delinked CRN still present in
+        #    resource_nodes loses its share to unallocated, mirroring the
+        #    wage_subsidy / storage-pool eligibility rules.
+        rnode = resource_nodes.get(node_id) if node_id else None
+        if rnode and rnode.get("status") == "linked":
             crn_addr = get_reward_address(rnode, web3)
             rewards[crn_addr] = rewards.get(crn_addr, 0) + crn_amount
             detailed[crn_addr]["execution_crn"] += crn_amount
         else:
             LOGGER.warning(
-                f"CRN {id_key} not resolved, "
+                f"CRN {id_key} not resolved or not linked, "
                 f"dropping {crn_amount:.6f} ALEPH CRN share"
             )
             if crn_amount > 0:

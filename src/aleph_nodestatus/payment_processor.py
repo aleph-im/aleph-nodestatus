@@ -264,7 +264,7 @@ def extract_aleph(
         )
         dev_pct = 0
 
-    for symbol, raw_token in settings.process_tokens:
+    for token_symbol, raw_token in settings.process_tokens:
         # Checksum once at the loop head so every downstream call
         # (getSwapConfig, quote_amount_out, simulate_process,
         # execute_process, the audit-post entry) sees the same
@@ -276,7 +276,7 @@ def extract_aleph(
         contract_address = settings.payment_processor_address
         balance = _balance_of(w3, contract_address, token)
         entry = {
-            "symbol": symbol, "token": token,
+            "symbol": token_symbol, "token": token,
             "amount_in": str(balance), "skipped_reason": None,
             "swap_amount_in": None,
             "min_out": None, "expected_out": None,
@@ -303,7 +303,7 @@ def extract_aleph(
             except Exception as e:
                 LOGGER.warning(
                     "Failed to read isStableToken(%s); assuming non-stable: %r",
-                    symbol, e,
+                    token_symbol, e,
                 )
                 is_stable = False
             if is_stable and dev_pct > 0:
@@ -322,7 +322,7 @@ def extract_aleph(
                 cfg = _swap_config_to_dict(swap_config)
             except Exception as e:
                 LOGGER.exception(
-                    "getSwapConfig failed for token %s: %r", symbol, e,
+                    "getSwapConfig failed for token %s: %r", token_symbol, e,
                 )
                 entry["error"] = f"swap_config_failed: {e!r}"
                 out["errors"].append(entry)
@@ -349,7 +349,7 @@ def extract_aleph(
             except Exception as e:
                 LOGGER.exception(
                     "Quote failed for token %s (balance=%d, swap_amount=%d): %r",
-                    symbol, balance, swap_amount, e,
+                    token_symbol, balance, swap_amount, e,
                 )
                 entry["error"] = f"quote_failed: {e!r}"
                 out["errors"].append(entry)
@@ -384,7 +384,7 @@ def extract_aleph(
                 out["errors"].append(entry)
         except Exception as e:
             LOGGER.exception(
-                "process() tx broadcast failed for token %s: %r", symbol, e,
+                "process() tx broadcast failed for token %s: %r", token_symbol, e,
             )
             entry["error"] = f"tx_failed: {e!r}"
             out["errors"].append(entry)

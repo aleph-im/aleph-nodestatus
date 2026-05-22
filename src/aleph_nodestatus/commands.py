@@ -448,6 +448,13 @@ async def process_credit_distribution(
     # Iterating over final_rewards (not by_address_detailed) covers the
     # edge case of survivors whose details dict was empty for every
     # stream.
+    #
+    # NOTE: this mutates `by_address_detailed` in place after the
+    # `merge_rewards` boundary. Kept here (rather than inside
+    # merge_rewards) because the "per-stream total" enrichment is a
+    # publish-shape concern specific to this caller — merge_rewards is
+    # stream-agnostic. Anything downstream that holds a reference to
+    # `by_address_detailed` will see the enriched dict.
     for addr in final_rewards:
         detail = by_address_detailed.setdefault(addr, {})
         for stream in by_source:
