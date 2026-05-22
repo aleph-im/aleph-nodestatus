@@ -355,6 +355,7 @@ def test_compute_rewards_surfaces_unallocated_in_totals(monkeypatch):
     }
     msg = {
         "item_hash": "h1",
+        "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
         "content": {"content": {
             "tags": ["credit_expense", "type_execution"],
@@ -364,7 +365,7 @@ def test_compute_rewards_surfaces_unallocated_in_totals(monkeypatch):
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
     async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100},
                                    resource_nodes=["r1"])},
                      {"r1": _rnode("r1", 0.9, "0xCRN1")})]
 
@@ -428,7 +429,7 @@ def test_distribute_expense_storage_uses_storage_component_keys():
 
 def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
     fake_messages = []  # no expenses
-    fake_snapshots = [(100, {}, {})]
+    fake_snapshots = [(1.0, {}, {})]
 
     async def fake_fetch_msgs(*a, **kw):
         return fake_messages
@@ -468,6 +469,7 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     }
     msg = {
         "item_hash": "h1",
+        "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
         "content": {"content": {
             "tags": ["credit_expense", "type_execution"],
@@ -477,7 +479,7 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
     async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100},
                                    resource_nodes=["r1"])},
                      {"r1": _rnode("r1", 0.9, "0xCRN1")})]
 
@@ -504,16 +506,18 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     assert holder["0xCRN1"] == pytest.approx(0.30)
 
 
-def test_full_resync_tail_loop_applies_post_yield_expenses(monkeypatch):
-    """Regression cover for the tail loop in
-    `_compute_rewards_full_resync`: expenses with confirmation height
-    *above* the state machine's last yield (but still inside `end_height`)
-    must be applied against the terminal snapshot. A bug in the tail
-    loop would silently drop them.
+def test_full_resync_applies_expenses_past_last_state_machine_yield(monkeypatch):
+    """`_compute_rewards_full_resync` builds one snapshot per state-machine
+    tick (paired with the tick's ETH block timestamp) and then routes
+    every expense via `bisect_right` on snapshot ts. So an expense whose
+    ts is past the last tick falls onto the final snapshot — exactly
+    what the previous tail-loop did, just via the unified ts lookup.
 
-    Setup: state machine yields ONCE at height=100 then drains. Two
-    expenses — one at height 50 (consumed by the main async-for loop)
-    and one at height 150 (only the tail loop can pick it up).
+    Setup: state machine yields ONCE at height=100 (ts=1500). Two
+    expenses — one at ts=1200 (before the yield → still mapped to that
+    one snapshot via the helper's `idx<0` guard? No — it gets dropped
+    with a warning since no snapshot covers it) and one at ts=1900
+    (after the yield → maps to the only snapshot).
     """
     nodes = {"ccn1": _node("ccn1", 0.9, {"0xS1": 100},
                             resource_nodes=["r1"])}
@@ -542,10 +546,26 @@ def test_full_resync_tail_loop_applies_post_yield_expenses(monkeypatch):
         lambda name, it: it,
     )
 
-    def _msg(item_hash, eth_height, amount):
+    # Fake web3 with a deterministic height→timestamp mapping so the
+    # state-machine tick (height=100) lands at ts=1500 and end_height=200
+    # at ts=2000. Both test expenses sit between those.
+    height_to_ts = {100: 1500, 200: 2000}
+
+    class _FakeBlock:
+        def __init__(self, ts): self.timestamp = ts
+
+    class _FakeEth:
+        def get_block(self, height):
+            return _FakeBlock(height_to_ts[height])
+
+    class _FakeWeb3:
+        def __init__(self): self.eth = _FakeEth()
+
+    def _msg(item_hash, ts, amount):
         return {
             "item_hash": item_hash,
-            "confirmations": [{"chain": "ETH", "height": eth_height}],
+            "time": ts,
+            "confirmations": [{"chain": "ETH", "height": 100}],
             "content": {"content": {
                 "tags": ["credit_expense", "type_execution"],
                 "expense": {
@@ -556,10 +576,10 @@ def test_full_resync_tail_loop_applies_post_yield_expenses(monkeypatch):
         }
 
     async def fake_fetch_msgs(*a, **kw):
-        # Height 50 is consumed by the main loop (before/at the yield),
-        # height 150 is past the last yield and can only land via the tail.
-        return [_msg("h_main", 50,  1000),
-                _msg("h_tail", 150, 2000)]
+        # ts=1600 is right after the only snapshot (ts=1500); ts=1900
+        # is also after it — both land on the same snapshot via bisect.
+        return [_msg("h_main", 1600, 1000),
+                _msg("h_tail", 1900, 2000)]
 
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution._fetch_expense_messages",
@@ -567,17 +587,18 @@ def test_full_resync_tail_loop_applies_post_yield_expenses(monkeypatch):
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=200.0,
+        start_time=1.0, end_time=2000.0,
         full_resync=True,
         include_holder_tier=False,
         end_height=200,
+        web3=_FakeWeb3(),
         dbs={"erc20": None, "balances": None,
              "messages": None, "scores": None},
     ))
 
     credit, totals = result["credit_revenue"]
-    # Total execution = 1.0 + 2.0 = 3.0 ALEPH. If the tail loop were
-    # dropping h_tail, this would be 1.0.
+    # Total execution = 1.0 + 2.0 = 3.0 ALEPH. If h_tail were being
+    # dropped (e.g. because bisect picked idx<0 for it), this would be 1.0.
     assert totals["execution_total_aleph"] == pytest.approx(3.0)
     # CRN gets 60% of both credits' total = 1.8 ALEPH.
     assert credit["0xCRN1"] == pytest.approx(3.0 * 0.60)
@@ -593,6 +614,7 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
     }
     msg = {
         "item_hash": "h1",
+        "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
         "content": {"content": {
             "tags": ["credit_expense", "type_execution"],
@@ -602,7 +624,7 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
     async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100},
                                    resource_nodes=["r1"])},
                      {"r1": _rnode("r1", 0.9, "0xCRN1")})]
     monkeypatch.setattr(
@@ -641,6 +663,7 @@ def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
     }
     msg = {
         "item_hash": "h1",
+        "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
         "content": {"content": {
             "tags": ["credit_expense", "type_execution"],
@@ -649,7 +672,7 @@ def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
     }
     async def fake_fetch_msgs(*a, **kw): return [msg]
     async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100},
                                    resource_nodes=["r1"])},
                      {"r1": _rnode("r1", 0.9, "0xCRN1")})]
     monkeypatch.setattr(

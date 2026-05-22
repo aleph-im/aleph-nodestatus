@@ -40,7 +40,9 @@ def patched_pipeline(monkeypatch):
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
-        return [(snapshot["height"], nodes, rnodes)]
+        # Snapshot ts must be ≤ the fixture expense's `time` (1778060633.717)
+        # for bisect to route the expense to this snapshot.
+        return [(1778050000.0, nodes, rnodes)]
 
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution._fetch_expense_messages",
@@ -235,7 +237,9 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
-        return [(snapshot["height"], nodes, rnodes)]
+        # Snapshot ts must be ≤ the fixture expense's `time` (1778060633.717)
+        # for bisect to route the expense to this snapshot.
+        return [(1778050000.0, nodes, rnodes)]
 
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution._fetch_expense_messages",
@@ -296,7 +300,9 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
-        return [(snapshot["height"], nodes, rnodes)]
+        # Snapshot ts must be ≤ the fixture expense's `time` (1778060633.717)
+        # for bisect to route the expense to this snapshot.
+        return [(1778050000.0, nodes, rnodes)]
 
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution._fetch_expense_messages",

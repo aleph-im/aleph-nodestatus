@@ -2,10 +2,12 @@ import asyncio
 import bisect
 import logging
 from collections import defaultdict, deque
+from datetime import datetime
 from typing import TypedDict
 
 import aiohttp
 from aleph.sdk.client import AlephHttpClient
+from aleph.sdk.exceptions import MessageNotFoundError
 from aleph.sdk.query.filters import MessageFilter, PostFilter
 from aleph_message.models import MessageType
 
@@ -253,6 +255,175 @@ def _extract_eth_height(msg):
     return height
 
 
+def _is_eth_confirmed(msg):
+    """True iff the message has at least one ETH confirmation.
+
+    Used as an explicit guard so that unconfirmed posts/messages never
+    enter the rewards pipeline — confirmation = the data is durable on
+    chain, so the run is reproducible.
+    """
+    for conf in msg.get("confirmations") or []:
+        if conf.get("chain") == "ETH":
+            return True
+    return False
+
+
+def _normalize_ts_to_seconds(ts):
+    """Aleph mixes units and types across fields:
+    - `Post.time` is a float (seconds since epoch).
+    - `AlephMessage.time` is a datetime; `model_dump(mode="json")`
+      serializes that as an ISO 8601 string (with trailing `Z`).
+    - `expense.start_date` / `expense.end_date` are *milliseconds*.
+
+    Magnitude check is unambiguous because 1e12 seconds is year ~33000:
+    anything above 1e12 has to be ms.
+    """
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    ts = float(ts)
+    if ts > 1e12:
+        ts /= 1000.0
+    return ts
+
+
+_ORIGINAL_HEIGHT_RETRIES = 5
+_ORIGINAL_HEIGHT_BACKOFFS = (1.0, 2.0, 4.0, 8.0, 16.0)
+
+# Cross-run leak mitigation: re-fetch a 48h window before `start_time` and
+# rely on `_original_height <= last_end_height` for dedup. Covers the
+# typical case of an expense published just before a run but
+# ETH-confirmed afterwards: it falls outside the new run's time window
+# (msg.time < new_start_time) but is recovered via the lookback. Width
+# tuned to comfortably exceed the publication-to-confirmation gap (minutes
+# in normal operation) plus typical inter-run gap (hours).
+_EXPENSE_FETCH_LOOKBACK_SECONDS = 48 * 3600
+
+
+async def _resolve_original_height(client, original_item_hash, cache):
+    """Return the earliest ETH-confirmation height of `original_item_hash`.
+
+    Persists the result in `cache` so re-encountering the same original
+    (across pages or multiple amendments) avoids a second API call.
+
+    Raises after `_ORIGINAL_HEIGHT_RETRIES` consecutive transient failures:
+    rewards cannot trust an amended post's height for trazabilidad, so
+    aborting the run is preferable to silently using the amend's height.
+
+    Returns None if the original exists but is not ETH-confirmed; the
+    caller treats that as "drop the expense" (we will not credit work
+    whose origin isn't durable on chain even if the amend is confirmed).
+    """
+    if original_item_hash in cache:
+        return cache[original_item_hash]
+
+    last_err = None
+    for attempt in range(_ORIGINAL_HEIGHT_RETRIES):
+        try:
+            original = await client.get_message(item_hash=original_item_hash)
+            original_dict = original.model_dump(mode="json")
+            if not _is_eth_confirmed(original_dict):
+                LOGGER.warning(
+                    "Original message %s is not ETH-confirmed; dropping amend",
+                    original_item_hash,
+                )
+                cache[original_item_hash] = None
+                return None
+            height = _extract_eth_height(original_dict)
+            cache[original_item_hash] = height
+            return height
+        except MessageNotFoundError:
+            LOGGER.warning(
+                "Original message %s not found; dropping amend",
+                original_item_hash,
+            )
+            cache[original_item_hash] = None
+            return None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            last_err = e
+            if attempt < _ORIGINAL_HEIGHT_RETRIES - 1:
+                backoff = _ORIGINAL_HEIGHT_BACKOFFS[attempt]
+                LOGGER.warning(
+                    "Fetch of original %s failed (attempt %d/%d): %s — "
+                    "retrying in %.1fs",
+                    original_item_hash, attempt + 1,
+                    _ORIGINAL_HEIGHT_RETRIES, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+    raise RuntimeError(
+        f"Could not fetch original message {original_item_hash} after "
+        f"{_ORIGINAL_HEIGHT_RETRIES} attempts: {last_err}"
+    )
+
+
+async def _iter_posts_dedup(client, post_filter, last_end_height=None):
+    """Yield Aleph posts via cursor pagination, deduped by item_hash.
+
+    For amended posts (`original_item_hash != item_hash`), enriches the
+    yielded dict with `_original_height`: the ETH-confirmation height of
+    the original message (resolved via an extra `get_message` call,
+    cached for the lifetime of the iterator). Posts without ETH
+    confirmation, and amendments whose original is unconfirmed/missing,
+    are skipped — see `_resolve_original_height`.
+
+    Cross-run leak mitigation: when `last_end_height` is given, posts
+    whose `_original_height <= last_end_height` are skipped — they were
+    already visible to the previous successful run (so either applied
+    then, or were the run's responsibility to handle). Posts whose
+    original confirmation came AFTER that cursor are kept; they are the
+    ones the previous run could not see (unconfirmed at fetch time) and
+    must be recovered now. Caller widens the fetch window backwards via
+    `_EXPENSE_FETCH_LOOKBACK_SECONDS` to give this rule something to
+    work with.
+    """
+    seen = set()
+    cursor = ""
+    original_height_cache = {}
+    while True:
+        resp = await client.get_posts_cursor(
+            post_filter=post_filter, cursor=cursor,
+        )
+        for post in resp.posts:
+            h = post.item_hash
+            if h in seen:
+                continue
+            seen.add(h)
+            post_dict = post.model_dump(mode="json")
+
+            if not _is_eth_confirmed(post_dict):
+                LOGGER.debug(
+                    "Skipping unconfirmed post %s", h,
+                )
+                continue
+
+            original_item_hash = post_dict.get("original_item_hash")
+            if original_item_hash and original_item_hash != h:
+                original_height = await _resolve_original_height(
+                    client, original_item_hash, original_height_cache,
+                )
+                if original_height is None:
+                    continue
+                post_dict["_original_height"] = original_height
+            else:
+                post_dict["_original_height"] = _extract_eth_height(post_dict)
+
+            if (last_end_height is not None
+                    and post_dict["_original_height"] is not None
+                    and post_dict["_original_height"] <= last_end_height):
+                LOGGER.debug(
+                    "Skipping already-seen post %s "
+                    "(_original_height=%d <= last_end_height=%d)",
+                    h, post_dict["_original_height"], last_end_height,
+                )
+                continue
+
+            yield post_dict
+        cursor = resp.next_cursor or ""
+        if not cursor:
+            break
+
+
 async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     """
     Fetch historical corechannel aggregate snapshots for the period via
@@ -262,7 +433,11 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
     before the first expense.
 
     Returns:
-        List of (height, nodes_dict, resource_nodes_dict) sorted by height.
+        List of (ts, nodes_dict, resource_nodes_dict) sorted by ts, where
+        `ts` is the aggregate's `msg.time` (seconds). Lookup is by ts to
+        match the consumption-time semantics used by the expense path —
+        an amended aggregate could otherwise drift the snapshot away
+        from its real point in time.
     """
     if sender is None:
         sender = settings.status_sender
@@ -286,8 +461,11 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
             if content.get("key") != "corechannel":
                 continue
 
-            height = _extract_eth_height(msg)
-            if height is None:
+            if not _is_eth_confirmed(msg):
+                continue
+
+            ts = _normalize_ts_to_seconds(msg.get("time"))
+            if ts is None:
                 continue
 
             inner = content.get("content") or {}
@@ -297,7 +475,7 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
             nodes_dict          = {n["hash"]: n  for n  in nodes_list}
             resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
 
-            snapshots.append((height, nodes_dict, resource_nodes_dict))
+            snapshots.append((ts, nodes_dict, resource_nodes_dict))
 
     snapshots.sort(key=lambda x: x[0])
     LOGGER.info(f"Fetched {len(snapshots)} node status snapshots")
@@ -510,49 +688,90 @@ def _distribute_storage_pools(
                 unallocated["staker"][ccn_hash] += ccn_staker_pool
 
 
-async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
-    """Fetch aleph_credit_expense POST messages via the SDK iterator.
+async def _fetch_expense_messages(
+    api_server, start_time, end_time, sender=None, last_end_height=None,
+):
+    """Fetch `aleph_credit_expense` posts via cursor pagination.
 
-    Returns a list of message dicts. The shape mirrors the raw API
-    response, so the downstream parser (`_parse_message`) consumes
-    the same keys as before the SDK migration.
+    Pagination uses `/posts.json` (not `/messages.json`) so that amended
+    expenses surface only once, in their materialized form. With
+    `/messages.json` an amend and its original both show up — sorted by
+    their respective publication times — which would have us applying
+    the same expense twice, with contradictory metadata, to different
+    snapshots.
+
+    For amended posts the downstream parser uses the ETH confirmation
+    height of the *original* (stamped here as `_original_height` by
+    `_iter_posts_dedup`) for trazabilidad; the time at which rewards are
+    routed comes from `expense.end_date` (the billing window), not from
+    `msg.time`.
+
+    When `last_end_height` is given the fetch widens backwards by
+    `_EXPENSE_FETCH_LOOKBACK_SECONDS` and `_iter_posts_dedup` drops
+    anything whose `_original_height <= last_end_height` — this is the
+    cross-run recovery path for expenses whose ETH confirmation landed
+    after the previous run had already closed.
     """
-    # SDK 1.4.0 rejects bare `int` in start_date/end_date; cast to float.
-    message_filter = MessageFilter(
-        message_types=[MessageType.post],
-        content_types=["aleph_credit_expense"],
+    if last_end_height is not None:
+        fetch_start_time = start_time - _EXPENSE_FETCH_LOOKBACK_SECONDS
+    else:
+        fetch_start_time = start_time
+
+    post_filter = PostFilter(
+        types=["aleph_credit_expense"],
         addresses=[sender] if sender else None,
-        start_date=float(start_time),
+        start_date=float(fetch_start_time),
         end_date=float(end_time),
     )
-    messages = []
+    posts = []
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(client, message_filter):
-            messages.append(msg)
-    return messages
+        async for post in _iter_posts_dedup(
+            client, post_filter, last_end_height=last_end_height,
+        ):
+            posts.append(post)
+    return posts
 
 
 def _parse_message(msg):
-    """Return (height, expense_type, expense_dict) or (None, None, None).
+    """Return (ts_s, expense_type, expense_dict) or (None, None, None).
 
-    Logs a WARNING when an expense payload is present but carries neither
-    `type_storage` nor `type_execution` — these messages are silently
-    skipped so a missed tag at the indexer side surfaces during debugging.
+    `ts_s` is taken from `expense.end_date` (preferred) or
+    `expense.start_date`, i.e. the billing window — never from the
+    publication timestamp of the envelope. Two reasons: (1) amendments
+    overwrite the envelope `time` to the amend's publication, which is
+    days after the consumption it describes; (2) batches of stuck
+    expenses get released together, so `msg.time` clusters consumption
+    from different billing periods at one instant. Both cases would
+    route expenses to the wrong snapshot. Falls back to `msg.time` only
+    when both billing-window fields are absent (legacy/malformed payloads).
+
+    Skips unconfirmed messages — see `_is_eth_confirmed`.
     """
-    height = _extract_eth_height(msg)
-    if height is None:
+    if not _is_eth_confirmed(msg):
         return None, None, None
     content = msg.get("content", {}).get("content", {})
     tags = content.get("tags", [])
     expense = content.get("expense", {})
     if not expense:
         return None, None, None
+    ts_s = (
+        _normalize_ts_to_seconds(expense.get("end_date"))
+        or _normalize_ts_to_seconds(expense.get("start_date"))
+        or _normalize_ts_to_seconds(msg.get("time"))
+    )
+    if ts_s is None:
+        LOGGER.warning(
+            "Credit expense %s has no usable timestamp "
+            "(end_date/start_date/time all missing); skipping",
+            msg.get("item_hash"),
+        )
+        return None, None, None
     if "type_storage" in tags:
-        return height, "storage", expense
+        return ts_s, "storage", expense
     if "type_execution" in tags:
-        return height, "execution", expense
+        return ts_s, "execution", expense
     LOGGER.warning(
-        f"Credit expense at height {height} has neither type_storage nor "
+        f"Credit expense at ts={ts_s} has neither type_storage nor "
         f"type_execution tag (tags={tags}); skipping"
     )
     return None, None, None
@@ -691,7 +910,7 @@ async def compute_rewards(
     start_time, end_time, full_resync=False,
     include_holder_tier=False, sender=None,
     dbs=None, end_height=None, web3=None,
-    snapshots=None,
+    snapshots=None, last_end_height=None,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -715,6 +934,7 @@ async def compute_rewards(
 
     msgs = await _fetch_expense_messages(
         api_server, start_time, end_time, sender,
+        last_end_height=last_end_height,
     )
     if not msgs:
         LOGGER.warning("No credit expenses found in the given time range")
@@ -761,18 +981,38 @@ async def compute_rewards(
     return result
 
 
-async def _compute_rewards_snapshots(
-    api_server, start_time, end_time, msgs, include_holder_tier, web3,
-    snapshots=None,
+def _parse_expenses(msgs):
+    """Parse a list of raw expense post dicts into sorted (ts_s, type, expense)."""
+    parsed = []
+    for msg in msgs:
+        ts_s, exp_type, expense = _parse_message(msg)
+        if expense is not None:
+            parsed.append((ts_s, exp_type, expense))
+    parsed.sort(key=lambda x: x[0])
+    return parsed
+
+
+def _apply_expenses_to_snapshots(
+    parsed, snapshots, include_holder_tier, web3,
 ):
-    if snapshots is None:
-        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
+    """Apply a sorted list of (ts_s, exp_type, expense) to snapshots.
+
+    `snapshots` is a list of (ts, nodes, resource_nodes) sorted by ts;
+    each expense is routed to the snapshot with the largest ts ≤ ts_s,
+    i.e. the node state that was in force at the end of the expense's
+    billing window. Both the corechannel-aggregate path and the
+    full-resync state-machine path produce snapshots in this shape, so
+    this helper is the one and only place where expense-to-snapshot
+    routing happens.
+
+    Window enforcement is upstream: `_fetch_expense_messages` already
+    filters by `start_date/end_date` at the API level, so callers can
+    trust that `parsed` only contains expenses inside the run window.
+    """
     if not snapshots:
-        raise ValueError(
-            "No node status snapshots found. "
-            "Use --full-resync or ensure nodestatus is running."
-        )
-    snapshot_heights = [s[0] for s in snapshots]
+        raise ValueError("Cannot apply expenses with empty snapshot list")
+
+    snapshot_times = [s[0] for s in snapshots]
 
     credit_rewards, credit_totals = {}, zero_totals()
     holder_rewards, holder_totals = {}, zero_totals()
@@ -781,12 +1021,15 @@ async def _compute_rewards_snapshots(
     credit_unallocated = _empty_unallocated()
     holder_unallocated = _empty_unallocated()
 
-    for msg in msgs:
-        height, exp_type, expense = _parse_message(msg)
-        if expense is None:
+    for ts_s, exp_type, expense in parsed:
+        idx = bisect.bisect_right(snapshot_times, ts_s) - 1
+        if idx < 0:
+            LOGGER.warning(
+                "Expense at ts=%.0f falls before first snapshot (ts=%.0f); "
+                "skipping — snapshot range does not cover expense range",
+                ts_s, snapshot_times[0],
+            )
             continue
-
-        idx = max(0, bisect.bisect_right(snapshot_heights, height) - 1)
         _, nodes, resource_nodes = snapshots[idx]
 
         _apply_expense_to(
@@ -818,16 +1061,39 @@ async def _compute_rewards_snapshots(
     }
 
 
-async def _compute_rewards_full_resync(
-    dbs, end_height, msgs, include_holder_tier, web3
+async def _compute_rewards_snapshots(
+    api_server, start_time, end_time, msgs, include_holder_tier, web3,
+    snapshots=None,
 ):
-    """Identical math as snapshot mode but driven by the state machine."""
-    parsed = []
-    for msg in msgs:
-        height, exp_type, expense = _parse_message(msg)
-        if expense is not None:
-            parsed.append((height, exp_type, expense))
-    parsed.sort(key=lambda x: x[0])
+    if snapshots is None:
+        snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
+    if not snapshots:
+        raise ValueError(
+            "No node status snapshots found. "
+            "Use --full-resync or ensure nodestatus is running."
+        )
+    parsed = _parse_expenses(msgs)
+    return _apply_expenses_to_snapshots(
+        parsed, snapshots, include_holder_tier, web3,
+    )
+
+
+async def _compute_rewards_full_resync(
+    dbs, end_height, msgs, include_holder_tier, web3,
+):
+    """Same math as snapshot mode, but snapshots are reconstructed from
+    base-data replay (ERC20, staking, balances, scores) instead of read
+    from corechannel aggregates.
+
+    Each state-machine yield is paired with the timestamp of its ETH
+    block via `web3.eth.get_block`, cached in-memory so re-asks (and the
+    `end_time` lookup) reuse the same value.
+    """
+    if web3 is None:
+        raise ValueError(
+            "web3 is required for full_resync (used to derive block "
+            "timestamps for snapshot lookup)"
+        )
 
     state_machine = NodesStatus()
     last_seen_txs = deque([], maxlen=100)
@@ -858,72 +1124,26 @@ async def _compute_rewards_full_resync(
                 request_count=1000, db=dbs["scores"])),
     ]
 
-    credit_rewards, credit_totals = {}, zero_totals()
-    holder_rewards, holder_totals = {}, zero_totals()
-    credit_detailed = _empty_detailed()
-    holder_detailed = _empty_detailed()
-    credit_unallocated = _empty_unallocated()
-    holder_unallocated = _empty_unallocated()
-    idx = 0
-    nodes = resource_nodes = None
+    block_ts_cache = {}
 
+    def _block_ts(height):
+        if height not in block_ts_cache:
+            block_ts_cache[height] = float(web3.eth.get_block(height).timestamp)
+        return block_ts_cache[height]
+
+    snapshots = []
     async for height, nodes, resource_nodes in state_machine.process(iterators):
         if end_height is not None and height > end_height:
             break
-        while idx < len(parsed) and parsed[idx][0] <= height:
-            _, exp_type, expense = parsed[idx]
-            _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
-                              credit_unallocated, exp_type,
-                              _project_expense(expense, "credits"),
-                              nodes, resource_nodes, web3)
-            if include_holder_tier and expense.get("hold"):
-                _validate_hold_aggregates(expense)
-                _apply_expense_to(holder_rewards, holder_totals,
-                                  holder_detailed, holder_unallocated, exp_type,
-                                  _project_expense(expense, "hold"),
-                                  nodes, resource_nodes, web3)
-            idx += 1
+        snapshots.append((_block_ts(height), nodes, resource_nodes))
 
-    # Tail: expenses with height > last state-machine yield (but <= end_height)
-    # are applied against the final (nodes, resource_nodes) snapshot from the
-    # loop above. The state machine only emits a yield when corechannel state
-    # changes; expenses landing in the gap between the last yield and
-    # end_height all share that terminal state.
-    while idx < len(parsed) and nodes is not None:
-        h, exp_type, expense = parsed[idx]
-        if end_height is not None and h > end_height:
-            # Beyond the run's upper bound — skip rather than apply
-            # against the stale terminal snapshot. `parsed` may still
-            # contain even later items, so advance idx and keep
-            # scanning instead of breaking out of the loop.
-            idx += 1
-            continue
-        _apply_expense_to(credit_rewards, credit_totals, credit_detailed,
-                          credit_unallocated, exp_type,
-                          _project_expense(expense, "credits"),
-                          nodes, resource_nodes, web3)
-        if include_holder_tier and expense.get("hold"):
-            _validate_hold_aggregates(expense)
-            _apply_expense_to(holder_rewards, holder_totals, holder_detailed,
-                              holder_unallocated, exp_type,
-                              _project_expense(expense, "hold"),
-                              nodes, resource_nodes, web3)
-        idx += 1
+    if not snapshots:
+        raise ValueError("State machine produced no snapshots")
 
-    if nodes is None:
-        raise ValueError("No node state available")
-
-    _fold_unallocated(credit_totals, credit_unallocated)
-    _fold_unallocated(holder_totals, holder_unallocated)
-
-    return {
-        "credit_revenue": (credit_rewards, credit_totals),
-        "holder_tier":    (holder_rewards, holder_totals),
-        "detailed": {
-            "credit_revenue": _detailed_to_plain(credit_detailed),
-            "holder_tier":    _detailed_to_plain(holder_detailed),
-        },
-    }
+    parsed = _parse_expenses(msgs)
+    return _apply_expenses_to_snapshots(
+        parsed, snapshots, include_holder_tier, web3,
+    )
 
 
 def should_skip_run(last_end_height, current_height, min_interval_blocks,

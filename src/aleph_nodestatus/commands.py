@@ -375,6 +375,7 @@ async def process_credit_distribution(
             sender=settings.credit_expense_sender,
             dbs=dbs, end_height=end_height, web3=web3,
             snapshots=snapshots,
+            last_end_height=last_end,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
