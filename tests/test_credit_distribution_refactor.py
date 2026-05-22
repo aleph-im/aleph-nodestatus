@@ -357,10 +357,10 @@ def test_compute_rewards_surfaces_unallocated_in_totals(monkeypatch):
         "item_hash": "h1",
         "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
+        "content": {
             "tags": ["credit_expense", "type_execution"],
             "expense": expense,
-        }},
+        },
     }
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
@@ -471,10 +471,10 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
         "item_hash": "h1",
         "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
+        "content": {
             "tags": ["credit_expense", "type_execution"],
             "expense": expense,
-        }},
+        },
     }
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
@@ -566,13 +566,13 @@ def test_full_resync_applies_expenses_past_last_state_machine_yield(monkeypatch)
             "item_hash": item_hash,
             "time": ts,
             "confirmations": [{"chain": "ETH", "height": 100}],
-            "content": {"content": {
+            "content": {
                 "tags": ["credit_expense", "type_execution"],
                 "expense": {
                     "credit_price_aleph": 0.001,
                     "credits": [{"amount": amount, "node_id": "r1"}],
                 },
-            }},
+            },
         }
 
     async def fake_fetch_msgs(*a, **kw):
@@ -616,10 +616,10 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
         "item_hash": "h1",
         "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
+        "content": {
             "tags": ["credit_expense", "type_execution"],
             "expense": expense,
-        }},
+        },
     }
 
     async def fake_fetch_msgs(*a, **kw): return [msg]
@@ -665,10 +665,10 @@ def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
         "item_hash": "h1",
         "time": 1.5,
         "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
+        "content": {
             "tags": ["credit_expense", "type_execution"],
             "expense": expense,
-        }},
+        },
     }
     async def fake_fetch_msgs(*a, **kw): return [msg]
     async def fake_fetch_snaps(*a, **kw):
