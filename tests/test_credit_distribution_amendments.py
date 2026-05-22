@@ -287,6 +287,90 @@ def test_parse_message_skips_unconfirmed():
     assert cd._parse_message(msg) == (None, None, None)
 
 
+# ──────── _parse_expenses window filter ────────
+# The 48h fetch lookback (activated by `last_end_height`) surfaces
+# expenses whose envelope time is up to 2 days before `start_time` so
+# late-confirmed amends in the current period are recovered. That same
+# lookback also brings in expenses whose `end_date` falls in the
+# *previous* period — those must be dropped or they double-pay.
+
+
+# Use realistic 2026 timestamps so values clear the >1e12 ms detection
+# threshold in `_normalize_ts_to_seconds`. Window: 2026-05-01 → 2026-05-22.
+_WIN_START = 1_777_593_611.0   # 2026-05-01T00:00:11 UTC (s)
+_WIN_END   = 1_779_467_999.0   # 2026-05-22T16:39:59 UTC (s)
+
+
+def test_parse_expenses_drops_expense_with_end_date_before_window():
+    """Expense whose end_date predates window_start is filtered out (the
+    cross-run-leak case behind the +229 ALEPH delta in the May 1-22
+    address-0xf379 audit). Without this gate the expense would be routed
+    to the snapshot at-or-before its (out-of-window) end_date and its
+    credits[] would contribute to the current period's totals."""
+    # 2026-04-30T21:00:51 UTC — inside the 48h fetch lookback band but
+    # outside the period.
+    msg = _post("h1", end_date_ms=1_777_575_651_000)
+    parsed = cd._parse_expenses(
+        [msg],
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+    )
+    assert parsed == []
+
+
+def test_parse_expenses_drops_expense_with_end_date_after_window():
+    # 2026-05-23T00:00:00 UTC — after window_end.
+    msg = _post("h1", end_date_ms=1_779_494_400_000)
+    parsed = cd._parse_expenses(
+        [msg],
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+    )
+    assert parsed == []
+
+
+def test_parse_expenses_keeps_expense_inside_window():
+    # 2026-05-10T00:00:00 UTC — inside the period.
+    msg = _post("h1", end_date_ms=1_778_371_200_000)
+    parsed = cd._parse_expenses(
+        [msg],
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+    )
+    assert len(parsed) == 1
+    ts_s, exp_type, _ = parsed[0]
+    assert ts_s == pytest.approx(1_778_371_200.0)
+    assert exp_type == "execution"
+
+
+def test_parse_expenses_window_filter_skip_does_not_pollute_out_hashes():
+    """An expense dropped by the window check must NOT appear in
+    `out_hashes` — the hashes dump is meant to reflect what actually
+    contributed to the calculation, not what got fetched."""
+    in_msg  = _post("h1", end_date_ms=1_778_371_200_000)   # inside
+    out_msg = _post("h2", end_date_ms=1_777_575_651_000)   # before window
+    hashes = []
+    cd._parse_expenses(
+        [in_msg, out_msg],
+        out_hashes=hashes,
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+    )
+    assert hashes == ["h1"]
+
+
+def test_parse_expenses_no_window_keeps_all_parseable_expenses():
+    """Backwards compat: without `window_start`/`window_end` the filter
+    is a no-op — tests that monkeypatch `_parse_expenses` callers and
+    don't set the window must keep working."""
+    msgs = [
+        _post("h1", end_date_ms=1_777_575_651_000),
+        _post("h2", end_date_ms=1_779_494_400_000),
+    ]
+    parsed = cd._parse_expenses(msgs)
+    assert len(parsed) == 2
+
+
 def test_normalize_ts_handles_ms_seconds_iso_string():
     """Magnitude-based detection: > 1e12 → ms, else seconds. ISO strings
     (how `AlephMessage.time` serializes in `model_dump(mode='json')`) are

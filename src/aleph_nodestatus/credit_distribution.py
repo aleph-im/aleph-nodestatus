@@ -984,6 +984,7 @@ async def compute_rewards(
         result = await _compute_rewards_full_resync(
             dbs, end_height, msgs, include_holder_tier, web3,
             out_expense_hashes=out_expense_hashes,
+            start_time=start_time, end_time=end_time,
         )
     else:
         result = await _compute_rewards_snapshots(
@@ -1007,24 +1008,38 @@ async def compute_rewards(
     return result
 
 
-def _parse_expenses(msgs, out_hashes=None):
+def _parse_expenses(msgs, out_hashes=None, window_start=None, window_end=None):
     """Parse a list of raw expense post dicts into sorted (ts_s, type, expense).
 
+    When `window_start`/`window_end` are supplied, expenses whose
+    routing timestamp (`expense.end_date`) falls outside `[window_start,
+    window_end]` are dropped. This matters because
+    `_fetch_expense_messages` opens its fetch window 48h backwards
+    whenever `last_end_height` is set, to recover late-confirmed amends
+    whose billing window still falls *inside* the current period. That
+    same lookback also surfaces expenses whose billing window falls in
+    the *previous* period (already settled or supposed to be); without
+    this filter those get re-applied here and double-pay recipients.
+
     `out_hashes`, when supplied, is appended with each expense post's
-    `item_hash` for every message that survives parsing (confirmed, has
-    a usable ts, has either type_storage or type_execution tag). Used by
-    the dry-run debug path to dump the exact expense set fed into the
-    distribution math.
+    `item_hash` for every message that survives parsing and the window
+    check. Used by the dry-run debug path to dump the exact expense set
+    fed into the distribution math.
     """
     parsed = []
     for msg in msgs:
         ts_s, exp_type, expense = _parse_message(msg)
-        if expense is not None:
-            parsed.append((ts_s, exp_type, expense))
-            if out_hashes is not None:
-                h = msg.get("item_hash")
-                if h:
-                    out_hashes.append(h)
+        if expense is None:
+            continue
+        if window_start is not None and ts_s < window_start:
+            continue
+        if window_end is not None and ts_s > window_end:
+            continue
+        parsed.append((ts_s, exp_type, expense))
+        if out_hashes is not None:
+            h = msg.get("item_hash")
+            if h:
+                out_hashes.append(h)
     parsed.sort(key=lambda x: x[0])
     return parsed
 
@@ -1109,7 +1124,12 @@ async def _compute_rewards_snapshots(
             "No node status snapshots found. "
             "Use --full-resync or ensure nodestatus is running."
         )
-    parsed = _parse_expenses(msgs, out_hashes=out_expense_hashes)
+    parsed = _parse_expenses(
+        msgs,
+        out_hashes=out_expense_hashes,
+        window_start=start_time,
+        window_end=end_time,
+    )
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
     )
@@ -1117,7 +1137,7 @@ async def _compute_rewards_snapshots(
 
 async def _compute_rewards_full_resync(
     dbs, end_height, msgs, include_holder_tier, web3,
-    out_expense_hashes=None,
+    out_expense_hashes=None, start_time=None, end_time=None,
 ):
     """Same math as snapshot mode, but snapshots are reconstructed from
     base-data replay (ERC20, staking, balances, scores) instead of read
@@ -1178,7 +1198,12 @@ async def _compute_rewards_full_resync(
     if not snapshots:
         raise ValueError("State machine produced no snapshots")
 
-    parsed = _parse_expenses(msgs, out_hashes=out_expense_hashes)
+    parsed = _parse_expenses(
+        msgs,
+        out_hashes=out_expense_hashes,
+        window_start=start_time,
+        window_end=end_time,
+    )
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
     )

@@ -83,7 +83,13 @@ def patched_pipeline(monkeypatch):
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
     fake_web3.eth.block_number = 100
-    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
+    # Spread block timestamps wide enough that the period window contains
+    # the fixture expense's end_date (1778059834.782 — within `expense_execution.json`).
+    # Pre-window filter this lambda produced a 10-second window that excluded
+    # the expense, but routing-by-end_date still worked; with the window
+    # filter in `_parse_expenses` an excluded expense is now dropped, so the
+    # window must straddle the fixture timestamp.
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778049000 + h * 1000)
     monkeypatch.setattr(
         "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
@@ -201,7 +207,13 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
     fake_web3.eth.block_number = 100
-    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
+    # Spread block timestamps wide enough that the period window contains
+    # the fixture expense's end_date (1778059834.782 — within `expense_execution.json`).
+    # Pre-window filter this lambda produced a 10-second window that excluded
+    # the expense, but routing-by-end_date still worked; with the window
+    # filter in `_parse_expenses` an excluded expense is now dropped, so the
+    # window must straddle the fixture timestamp.
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778049000 + h * 1000)
     monkeypatch.setattr(
         "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
@@ -277,7 +289,13 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
     fake_web3.eth.block_number = 100
-    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
+    # Spread block timestamps wide enough that the period window contains
+    # the fixture expense's end_date (1778059834.782 — within `expense_execution.json`).
+    # Pre-window filter this lambda produced a 10-second window that excluded
+    # the expense, but routing-by-end_date still worked; with the window
+    # filter in `_parse_expenses` an excluded expense is now dropped, so the
+    # window must straddle the fixture timestamp.
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778049000 + h * 1000)
     monkeypatch.setattr(
         "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
@@ -340,7 +358,13 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     fake_web3.to_checksum_address = lambda x: x
     fake_web3.eth.get_balance.return_value = 0
     fake_web3.eth.block_number = 100
-    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778050000 + h)
+    # Spread block timestamps wide enough that the period window contains
+    # the fixture expense's end_date (1778059834.782 — within `expense_execution.json`).
+    # Pre-window filter this lambda produced a 10-second window that excluded
+    # the expense, but routing-by-end_date still worked; with the window
+    # filter in `_parse_expenses` an excluded expense is now dropped, so the
+    # window must straddle the fixture timestamp.
+    fake_web3.eth.get_block = lambda h: MagicMock(timestamp=1778049000 + h * 1000)
     monkeypatch.setattr(
         "aleph_nodestatus.commands.get_web3", lambda: fake_web3,
     )
