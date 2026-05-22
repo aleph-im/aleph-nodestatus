@@ -90,7 +90,11 @@ class Settings(BaseSettings):
 
     voucher_indexer_endpoint: str = "https://vouchers.api.2n6.io"
 
-    credit_expense_sender: str = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
+    # Owner of the `aleph_credit_expense` posts as seen by `/posts.json`.
+    # The delegated signer (0x6aeaEE...) used to publish on behalf of this
+    # account is accepted by `/messages.json` filters but not by `/posts.json`,
+    # which only indexes the materialized post's owner.
+    credit_expense_sender: str = "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC"
     status_sender: str = "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"
 
     # Credit distribution shares (storage, 95% total)
