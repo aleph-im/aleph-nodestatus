@@ -190,3 +190,147 @@ def test_compute_subsidy_returns_rewards_totals_unallocated():
     assert totals["split"]["crn"]       == pytest.approx(period_total / 3)
     assert totals["split"]["staker"]    == pytest.approx(period_total / 3)
     assert sum(rewards.values()) == pytest.approx(period_total)
+
+
+from aleph_nodestatus.wage_subsidy import compute_subsidy_daily
+
+
+def test_compute_subsidy_daily_matches_single_when_one_snapshot():
+    """With a single snapshot covering the whole period, the daily variant
+    must produce the same per-address totals as `compute_subsidy` — the
+    only difference is the (cosmetic) per-day loop overhead."""
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
+    start = parse_wage_start()
+    end = start + 5 * 86400        # 5 full days
+    nodes = {"n1": _node("n1", "active", 0.9, "0xCCN1",
+                          stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+    snapshots = [(start - 3600, nodes, rnodes)]
+
+    expected_rewards, expected_totals, _ = compute_subsidy(
+        start, end, nodes, rnodes,
+    )
+    actual_rewards, actual_totals, _ = compute_subsidy_daily(
+        start, end, snapshots,
+    )
+
+    for addr, amt in expected_rewards.items():
+        assert actual_rewards[addr] == pytest.approx(amt)
+    assert actual_totals["period_total_aleph"] == pytest.approx(
+        expected_totals["period_total_aleph"]
+    )
+    assert actual_totals["unallocated_aleph"] == pytest.approx(0.0)
+
+
+def test_compute_subsidy_daily_sum_equals_single_window_total():
+    """Integral additivity: per-day totals must sum to the single-window
+    integral, regardless of snapshot rotation. This is the invariant the
+    audit post relies on (network total is unchanged by the switch)."""
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
+    start = parse_wage_start() + 12 * 3600      # mid-day start (partial day 1)
+    end   = parse_wage_start() + (5 * 86400) + 6 * 3600  # mid-day end (partial day 6)
+
+    nodes_a = {"n1": _node("n1", "active", 0.9, "0xCCN1",
+                            stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes_a = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+    nodes_b = {"n1": _node("n1", "active", 0.5, "0xCCN1",
+                            stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes_b = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+
+    snapshots = [
+        (parse_wage_start() - 3600, nodes_a, rnodes_a),
+        (parse_wage_start() + 3 * 86400, nodes_b, rnodes_b),
+    ]
+
+    _, totals, _ = compute_subsidy_daily(start, end, snapshots)
+
+    expected_period = compute_period_subsidy(start, end)
+    assert totals["period_total_aleph"] == pytest.approx(expected_period)
+    assert totals["split"]["ccn"] == pytest.approx(
+        expected_period * settings.wage_ccn_share
+    )
+
+
+def test_compute_subsidy_daily_snapshot_rotation_changes_attribution():
+    """If the network composition changes mid-period (e.g. a CRN goes
+    `linked` → `unlinked`), the daily variant must reflect that: days
+    before the change attribute to the original CRN owner, days after
+    do not. The single-snapshot path would mis-attribute the whole
+    period to the final snapshot's state."""
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
+    start = parse_wage_start()
+    end = start + 4 * 86400        # 4 full days
+
+    # Day 0-1: CRN linked → 0xCRN1 gets CRN pool
+    # Day 2-3: CRN unlinked → CRN pool unallocated
+    nodes = {"n1": _node("n1", "active", 0.9, "0xCCN1",
+                          stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes_linked   = {"r1": _rnode("r1", "linked",   0.9, "0xCRN1")}
+    rnodes_unlinked = {"r1": _rnode("r1", "unlinked", 0.9, "0xCRN1")}
+
+    # snap2 ts is *after* day-1's win_end (start+2*86400) so day-1 still
+    # resolves to snap1; *before* day-2's win_end (start+3*86400) so day-2
+    # picks it up. Result: days 0-1 linked, days 2-3 unlinked.
+    snapshots = [
+        (start - 3600,            nodes, rnodes_linked),
+        (start + 2 * 86400 + 1,   nodes, rnodes_unlinked),
+    ]
+
+    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots)
+
+    # Curve decays, so days 0-1 weigh more than days 2-3. Compute the
+    # exact per-day integrals; can't assume "half the period = half the
+    # pool".
+    linked_total   = (compute_period_subsidy(start,              start + 86400)
+                    + compute_period_subsidy(start + 86400,      start + 2 * 86400))
+    unlinked_total = (compute_period_subsidy(start + 2 * 86400,  start + 3 * 86400)
+                    + compute_period_subsidy(start + 3 * 86400,  start + 4 * 86400))
+
+    assert rewards["0xCRN1"] == pytest.approx(
+        linked_total * settings.wage_crn_share
+    )
+    assert totals["unallocated_aleph"] == pytest.approx(
+        unlinked_total * settings.wage_crn_share
+    )
+
+
+def test_compute_subsidy_daily_empty_snapshots_records_unallocated():
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
+    start = parse_wage_start()
+    end = start + 2 * 86400
+
+    rewards, totals, detailed = compute_subsidy_daily(start, end, [])
+
+    assert rewards == {}
+    assert detailed == {}
+    expected_period = compute_period_subsidy(start, end)
+    assert totals["period_total_aleph"] == pytest.approx(expected_period)
+    assert totals["unallocated_aleph"]  == pytest.approx(expected_period)
+
+
+def test_compute_subsidy_daily_period_before_any_snapshot_falls_back_to_last():
+    """Mirrors api-credit's `?? snapshots[snapshots.length - 1]`: if the
+    period begins before any snapshot's ts, the daily lookup still
+    succeeds by falling back to the most recent snapshot."""
+    settings.wage_start_date = "2026-05-01T00:00:00+00:00"
+    start = parse_wage_start()
+    end = start + 86400
+
+    nodes = {"n1": _node("n1", "active", 0.9, "0xCCN1",
+                          stakers={"0xS1": 1}, resource_nodes=["r1"])}
+    rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
+    # Snapshot lives AFTER the period — bisect_right returns 0, so the
+    # at-or-before lookup must fall back to snapshots[-1] (this one).
+    snapshots = [(end + 86400, nodes, rnodes)]
+
+    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots)
+
+    expected_period = compute_period_subsidy(start, end)
+    assert totals["period_total_aleph"] == pytest.approx(expected_period)
+    assert totals["unallocated_aleph"]  == pytest.approx(0.0)
+    assert sum(rewards.values()) == pytest.approx(expected_period)
+
+
+def test_compute_subsidy_daily_rejects_inverted_range():
+    with pytest.raises(ValueError):
+        compute_subsidy_daily(100, 50, [])

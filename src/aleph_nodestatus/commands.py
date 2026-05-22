@@ -47,7 +47,7 @@ from .status import process
 from .storage import close_dbs, get_dbs
 from .wage_subsidy import (
     compute_period_subsidy,
-    compute_subsidy,
+    compute_subsidy_daily,
     months_since_start,
 )
 
@@ -396,14 +396,16 @@ async def process_credit_distribution(
     }
     if flags.get("wage"):
         if snapshots:
-            # Design choice: use the most recent snapshot as the canonical
-            # weighting for the whole period. Intermediate node/staker state
-            # changes within the window are intentionally collapsed — the
-            # wage subsidy is a CCN/CRN/staker pool split, not a per-block
-            # reward, so the latest snapshot is treated as authoritative.
-            _, nodes, resource_nodes = snapshots[-1]
-            wage_rewards, wage_totals, wage_detailed = compute_subsidy(
-                start_time, end_time, nodes, resource_nodes, web3=web3,
+            # Per-UTC-day attribution: each day's wage pool is split with
+            # the snapshot most recently observed at or before that day's
+            # end (mirrors aleph-api-credit's `computeAndPersistDay` +
+            # `findSnapshotAtOrBeforeByTs(snaps, t1Ms)`). The integral is
+            # additive, so the network total is unchanged; only the per-
+            # address attribution tracks mid-period state changes (CRN
+            # link/unlink, score crossings, staker movements) instead of
+            # collapsing them onto the final snapshot.
+            wage_rewards, wage_totals, wage_detailed = compute_subsidy_daily(
+                start_time, end_time, snapshots, web3=web3,
             )
         else:
             period_total = compute_period_subsidy(start_time, end_time)

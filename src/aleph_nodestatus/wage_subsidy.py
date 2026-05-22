@@ -4,15 +4,17 @@ The curve is W0·(1 - t/T) ALEPH per month, where t is months since
 settings.wage_start_date and T = settings.wage_duration_months.
 """
 
+import bisect
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from .distribution import compute_score_multiplier
 from .settings import settings
 from .utils import get_reward_address
 
 MONTH_SECONDS = 30 * 86400
+DAY_SECONDS   = 86400
 
 
 def wage_integral(t: float) -> float:
@@ -160,3 +162,105 @@ def compute_subsidy(
         },
     }
     return rewards, totals, detailed
+
+
+def compute_subsidy_daily(
+    start_time: float,
+    end_time: float,
+    snapshots: List[Tuple[float, dict, dict]],
+    web3=None,
+) -> Tuple[Dict[str, float], dict, Dict[str, Dict[str, float]]]:
+    """Per-UTC-day variant of `compute_subsidy` mirroring aleph-api-credit.
+
+    Splits [start_time, end_time] into UTC day buckets. For each bucket
+    (clipped to the period at the edges), the wage subsidy is computed
+    with the snapshot most recently observed at or before that bucket's
+    end. The integral is additive, so summing per-day totals reproduces
+    `compute_period_subsidy(start_time, end_time)` exactly; only the
+    *attribution* differs from the single-snapshot path because each day
+    uses its own network composition.
+
+    `snapshots` is a list of (ts_seconds, nodes_dict, resource_nodes_dict)
+    sorted by ts ascending — the shape produced by
+    `credit_distribution.fetch_node_snapshots`.
+
+    If `snapshots` is empty the entire period total is returned as
+    unallocated, matching the no-snapshot branch in commands.py.
+    """
+    if end_time <= start_time:
+        raise ValueError(
+            f"end_time ({end_time}) must be > start_time ({start_time})"
+        )
+
+    rewards: Dict[str, float] = {}
+    detailed: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    total_period = 0.0
+    total_unallocated = 0.0
+
+    if not snapshots:
+        period_total = compute_period_subsidy(start_time, end_time)
+        totals = {
+            "start_t_months":     months_since_start(start_time),
+            "end_t_months":       months_since_start(end_time),
+            "period_total_aleph": period_total,
+            "unallocated_aleph":  period_total,
+            "split": {
+                "ccn":    period_total * settings.wage_ccn_share,
+                "crn":    period_total * settings.wage_crn_share,
+                "staker": period_total * settings.wage_staker_share,
+            },
+        }
+        return {}, totals, {}
+
+    snap_times = [s[0] for s in snapshots]
+    last_snap_idx = len(snapshots) - 1
+
+    # Walk UTC-day buckets [day_start, day_start + 86400) covering the
+    # period. Edge days get clipped to [start_time, end_time]; clipping
+    # at the integral boundary keeps `sum(per-day total) == period total`.
+    day_start = (int(start_time) // DAY_SECONDS) * DAY_SECONDS
+    while day_start < end_time:
+        day_end = day_start + DAY_SECONDS
+        win_start = max(day_start, start_time)
+        win_end   = min(day_end,   end_time)
+        day_start = day_end
+        if win_end <= win_start:
+            continue
+
+        # Snapshot for this day: latest snapshot at or before the window
+        # end (matches api-credit's `findSnapshotAtOrBeforeByTs(snaps, t1Ms)`).
+        # Fall back to the last available snapshot when the period starts
+        # before any snapshot exists — same semantics as api-credit's
+        # `?? snapshots[snapshots.length - 1]`.
+        idx = bisect.bisect_right(snap_times, win_end) - 1
+        if idx < 0:
+            idx = last_snap_idx
+        _, nodes, resource_nodes = snapshots[idx]
+
+        day_total = compute_period_subsidy(win_start, win_end)
+        day_rewards, day_unalloc, day_detailed = split_subsidy(
+            day_total, nodes, resource_nodes, web3,
+        )
+
+        total_period += day_total
+        total_unallocated += day_unalloc
+        for addr, amt in day_rewards.items():
+            rewards[addr] = rewards.get(addr, 0.0) + amt
+        for addr, comps in day_detailed.items():
+            for k, v in comps.items():
+                detailed[addr][k] += v
+
+    totals = {
+        "start_t_months":     months_since_start(start_time),
+        "end_t_months":       months_since_start(end_time),
+        "period_total_aleph": total_period,
+        "unallocated_aleph":  total_unallocated,
+        "split": {
+            "ccn":    total_period * settings.wage_ccn_share,
+            "crn":    total_period * settings.wage_crn_share,
+            "staker": total_period * settings.wage_staker_share,
+        },
+    }
+    return rewards, totals, {a: dict(d) for a, d in detailed.items()}
