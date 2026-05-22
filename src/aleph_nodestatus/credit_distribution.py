@@ -424,7 +424,9 @@ async def _iter_posts_dedup(client, post_filter, last_end_height=None):
             break
 
 
-async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
+async def fetch_node_snapshots(
+    api_server, start_time, end_time, sender=None, out_hashes=None,
+):
     """
     Fetch historical corechannel aggregate snapshots for the period via
     the SDK's auto-paginated message iterator.
@@ -438,6 +440,11 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
         match the consumption-time semantics used by the expense path —
         an amended aggregate could otherwise drift the snapshot away
         from its real point in time.
+
+    `out_hashes`, when supplied, is appended with the item_hash of each
+    accepted snapshot message. Used by the dry-run debug path to dump
+    the source-message set actually consumed by the calculation so it
+    can be diffed against other services' inputs.
     """
     if sender is None:
         sender = settings.status_sender
@@ -476,6 +483,10 @@ async def fetch_node_snapshots(api_server, start_time, end_time, sender=None):
             resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
 
             snapshots.append((ts, nodes_dict, resource_nodes_dict))
+            if out_hashes is not None:
+                h = msg.get("item_hash")
+                if h:
+                    out_hashes.append(h)
 
     snapshots.sort(key=lambda x: x[0])
     LOGGER.info(f"Fetched {len(snapshots)} node status snapshots")
@@ -918,6 +929,7 @@ async def compute_rewards(
     include_holder_tier=False, sender=None,
     dbs=None, end_height=None, web3=None,
     snapshots=None, last_end_height=None,
+    out_expense_hashes=None,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -935,6 +947,11 @@ async def compute_rewards(
     `fetch_node_snapshots` result with the downstream wage-subsidy step.
     Aggregate-by-date queries on the Aleph API take tens of seconds per
     page, so doing them twice in one run doubles wall-time for nothing.
+
+    `out_expense_hashes`, when supplied, is appended with the item_hash
+    of every expense post that contributed to the calculation. Used by
+    the dry-run debug path to surface the exact input set for diffing
+    against other services.
     """
     api_server = PublishMode.get_publish_api_server()
     sender = sender or settings.credit_expense_sender
@@ -965,12 +982,14 @@ async def compute_rewards(
 
     if full_resync:
         result = await _compute_rewards_full_resync(
-            dbs, end_height, msgs, include_holder_tier, web3
+            dbs, end_height, msgs, include_holder_tier, web3,
+            out_expense_hashes=out_expense_hashes,
         )
     else:
         result = await _compute_rewards_snapshots(
             api_server, start_time, end_time, msgs, include_holder_tier, web3,
             snapshots=snapshots,
+            out_expense_hashes=out_expense_hashes,
         )
 
     credit_totals = result["credit_revenue"][1]
@@ -988,13 +1007,24 @@ async def compute_rewards(
     return result
 
 
-def _parse_expenses(msgs):
-    """Parse a list of raw expense post dicts into sorted (ts_s, type, expense)."""
+def _parse_expenses(msgs, out_hashes=None):
+    """Parse a list of raw expense post dicts into sorted (ts_s, type, expense).
+
+    `out_hashes`, when supplied, is appended with each expense post's
+    `item_hash` for every message that survives parsing (confirmed, has
+    a usable ts, has either type_storage or type_execution tag). Used by
+    the dry-run debug path to dump the exact expense set fed into the
+    distribution math.
+    """
     parsed = []
     for msg in msgs:
         ts_s, exp_type, expense = _parse_message(msg)
         if expense is not None:
             parsed.append((ts_s, exp_type, expense))
+            if out_hashes is not None:
+                h = msg.get("item_hash")
+                if h:
+                    out_hashes.append(h)
     parsed.sort(key=lambda x: x[0])
     return parsed
 
@@ -1070,7 +1100,7 @@ def _apply_expenses_to_snapshots(
 
 async def _compute_rewards_snapshots(
     api_server, start_time, end_time, msgs, include_holder_tier, web3,
-    snapshots=None,
+    snapshots=None, out_expense_hashes=None,
 ):
     if snapshots is None:
         snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
@@ -1079,7 +1109,7 @@ async def _compute_rewards_snapshots(
             "No node status snapshots found. "
             "Use --full-resync or ensure nodestatus is running."
         )
-    parsed = _parse_expenses(msgs)
+    parsed = _parse_expenses(msgs, out_hashes=out_expense_hashes)
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
     )
@@ -1087,6 +1117,7 @@ async def _compute_rewards_snapshots(
 
 async def _compute_rewards_full_resync(
     dbs, end_height, msgs, include_holder_tier, web3,
+    out_expense_hashes=None,
 ):
     """Same math as snapshot mode, but snapshots are reconstructed from
     base-data replay (ERC20, staking, balances, scores) instead of read
@@ -1147,7 +1178,7 @@ async def _compute_rewards_full_resync(
     if not snapshots:
         raise ValueError("State machine produced no snapshots")
 
-    parsed = _parse_expenses(msgs)
+    parsed = _parse_expenses(msgs, out_hashes=out_expense_hashes)
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
     )

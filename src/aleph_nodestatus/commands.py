@@ -353,12 +353,19 @@ async def process_credit_distribution(
     # full_resync drives credit revenue from the local state machine, so
     # it doesn't need snapshots there — but wage still does.
     api_server = PublishMode.get_publish_api_server()
+    # Dry-run only: collect the source item_hashes (snapshots + expenses)
+    # actually consumed by the calculation so they can be diffed against
+    # other services' input sets. The fetchers append to these lists
+    # opportunistically — `None` is a no-op in the production path.
+    snapshot_hashes = [] if dry_run else None
+    expense_hashes  = [] if dry_run else None
     snapshots = None
     if (flags.get("credit_revenue") and not full_resync) or flags.get("wage"):
         # Call through the module so test-time monkeypatching of
         # `credit_distribution.fetch_node_snapshots` is observed here.
         snapshots = await credit_distribution.fetch_node_snapshots(
             api_server, start_time, end_time,
+            out_hashes=snapshot_hashes,
         )
 
     # === Step 2: credit_revenue + holder_tier rewards ===
@@ -376,6 +383,7 @@ async def process_credit_distribution(
             dbs=dbs, end_height=end_height, web3=web3,
             snapshots=snapshots,
             last_end_height=last_end,
+            out_expense_hashes=expense_hashes,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
@@ -573,6 +581,25 @@ async def process_credit_distribution(
             click.echo(
                 json.dumps(by_address_detailed, indent=2, default=str)
             )
+            # Source item_hashes actually consumed by the calculation.
+            # Sorted so the output can be diffed against other services'
+            # input sets (e.g. aleph-api-credit) to localize input-set
+            # discrepancies. Lists are None outside dry-run and empty
+            # when the corresponding fetch path didn't run (e.g. snapshots
+            # under full_resync without wage).
+            click.echo(
+                "\n=== source item_hashes (dry-run debug; not published) ==="
+            )
+            click.echo(json.dumps({
+                "snapshots": {
+                    "count":  len(snapshot_hashes or []),
+                    "hashes": sorted(snapshot_hashes or []),
+                },
+                "expenses": {
+                    "count":  len(expense_hashes or []),
+                    "hashes": sorted(expense_hashes or []),
+                },
+            }, indent=2, default=str))
 
     # === Step 7: failed-batch summary ===
     # Surface failed batches at run end so operators don't have to scroll
