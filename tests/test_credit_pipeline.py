@@ -72,6 +72,17 @@ def patched_pipeline(monkeypatch):
         fake_fetch_snaps,
     )
 
+    # Finality witness check (added with credit_dist_safety_blocks): stub
+    # to True so the orchestrator proceeds. The fixture timestamps used
+    # here predate the test invocation, so a real network call would
+    # also typically succeed — but the stub keeps the test offline.
+    async def fake_witness(*a, **kw):
+        return True
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.has_expense_witness_after",
+        fake_witness,
+    )
+
     # Stub get_dbs so we don't open the on-disk LevelDB.
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
@@ -123,6 +134,7 @@ def test_dry_run_does_not_post_or_transfer(patched_pipeline):
         "--dry-run",
         "--start-height", "10",
         "--end-height",   "20",
+        "--safety-blocks", "0",
     ])
     assert result.exit_code == 0, result.output
     assert patched_pipeline["posts"] == []
@@ -137,6 +149,7 @@ def test_dry_run_includes_wage_and_credit_in_summary(patched_pipeline):
         "--dry-run",
         "--start-height", "10",
         "--end-height",   "20",
+        "--safety-blocks", "0",
     ])
     assert result.exit_code == 0, result.output
     # The summary preview JSON should mention these top-level keys
@@ -162,6 +175,7 @@ def test_calculation_published_post_excludes_rewards_by_source(patched_pipeline)
     result = runner.invoke(distribute_credits, [
         "--start-height", "10",
         "--end-height",   "20",
+        "--safety-blocks", "0",
     ])
     assert result.exit_code == 0, result.output
     posts = patched_pipeline["posts"]
@@ -199,6 +213,17 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
         fake_fetch_snaps,
     )
 
+    # Finality witness check (added with credit_dist_safety_blocks): stub
+    # to True so the orchestrator proceeds. The fixture timestamps used
+    # here predate the test invocation, so a real network call would
+    # also typically succeed — but the stub keeps the test offline.
+    async def fake_witness(*a, **kw):
+        return True
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.has_expense_witness_after",
+        fake_witness,
+    )
+
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
     monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
@@ -234,6 +259,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
             "--dry-run", "--no-credit-revenue",
             "--start-height", "10",
             "--end-height",   "20",
+            "--safety-blocks", "0",
         ])
         assert result.exit_code == 0, result.output
         # The console output prints the distribution preview JSON
@@ -281,6 +307,17 @@ def test_balance_safety_aborts_when_short(monkeypatch):
         fake_fetch_snaps,
     )
 
+    # Finality witness check (added with credit_dist_safety_blocks): stub
+    # to True so the orchestrator proceeds. The fixture timestamps used
+    # here predate the test invocation, so a real network call would
+    # also typically succeed — but the stub keeps the test offline.
+    async def fake_witness(*a, **kw):
+        return True
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.has_expense_witness_after",
+        fake_witness,
+    )
+
     import aleph_nodestatus.commands as cmd_module
     monkeypatch.setattr(cmd_module, "get_dbs", lambda: {})
     monkeypatch.setattr(cmd_module, "CREDIT_DIST_FLOOR_HEIGHT", 0)
@@ -318,6 +355,7 @@ def test_balance_safety_aborts_when_short(monkeypatch):
         "--act", "--enable-holder-tier", "--no-wage",
         "--start-height", "10",
         "--end-height",   "20",
+        "--safety-blocks", "0",
     ])
     assert result.exit_code != 0, result.output
     assert "ABORT" in result.output
@@ -348,6 +386,17 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
         fake_fetch_snaps,
+    )
+
+    # Finality witness check (added with credit_dist_safety_blocks): stub
+    # to True so the orchestrator proceeds. The fixture timestamps used
+    # here predate the test invocation, so a real network call would
+    # also typically succeed — but the stub keeps the test offline.
+    async def fake_witness(*a, **kw):
+        return True
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.has_expense_witness_after",
+        fake_witness,
     )
 
     import aleph_nodestatus.commands as cmd_module
@@ -386,6 +435,7 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
         "--act", "--no-holder-tier", "--no-wage",
         "--start-height", "10",
         "--end-height",   "20",
+        "--safety-blocks", "0",
     ])
     assert result.exit_code != 0, result.output
     assert "ABORT" in result.output

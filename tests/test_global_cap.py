@@ -39,6 +39,31 @@ def _patch_orchestrator(monkeypatch, final_rewards):
             {},
         ),
     )
+
+    # Witness check makes a real API call when credit_revenue=True. Stub
+    # to True so these cap-focused tests don't depend on the network.
+    async def _fake_witness(*a, **kw):
+        return True
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.has_expense_witness_after",
+        _fake_witness,
+    )
+
+    # Avoid real network calls inside compute_rewards / snapshots fetch.
+    # The cap math doesn't depend on actual expenses — `merge_rewards` is
+    # already patched to inject the rewards we want to test against.
+    async def _fake_fetch_msgs(*a, **kw):
+        return []
+    async def _fake_fetch_snaps(*a, **kw):
+        return []
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        _fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        _fake_fetch_snaps,
+    )
     return web3_mock
 
 

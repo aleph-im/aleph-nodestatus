@@ -1209,6 +1209,38 @@ async def _compute_rewards_full_resync(
     )
 
 
+async def has_expense_witness_after(api_server, end_time, sender):
+    """Return True if at least one confirmed `aleph_credit_expense` post
+    exists whose `expense.end_date > end_time`. Witness for finality: the
+    publisher has progressed past the period under calculation.
+
+    Filters via the publish-time window `(end_time, end_time + 7200]` —
+    a 2h forward window is plenty given the measured p99 execution
+    publish_lag of ~22 min, while keeping the query cheap. The
+    `_iter_posts_dedup` helper guarantees only ETH-confirmed posts are
+    considered, but we re-check `_is_eth_confirmed` defensively in case
+    the helper's contract changes.
+    """
+    post_filter = PostFilter(
+        types=["aleph_credit_expense"],
+        addresses=[sender] if sender else None,
+        start_date=float(end_time),
+        end_date=float(end_time + 7200),
+    )
+    async with _aleph_client(api_server) as client:
+        async for post in _iter_posts_dedup(client, post_filter):
+            if not _is_eth_confirmed(post):
+                continue
+            expense = (post.get("content") or {}).get("expense") or {}
+            ed_raw = expense.get("end_date")
+            if ed_raw is None:
+                continue
+            ed_s = _normalize_ts_to_seconds(ed_raw)
+            if ed_s is not None and ed_s > end_time:
+                return True
+    return False
+
+
 def should_skip_run(last_end_height, current_height, min_interval_blocks,
                     force=False):
     """Return True if we should skip the run because the min interval

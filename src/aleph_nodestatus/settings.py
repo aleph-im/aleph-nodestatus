@@ -159,6 +159,19 @@ class Settings(BaseSettings):
     credit_dist_min_interval_blocks: int = 10 * 7130
     credit_dist_dust_threshold_aleph: float = 0.01
 
+    # Right-edge finality margin: cap `end_height` at `current_block - N` so
+    # that by the time we compute, expenses whose end_date ∈ [start_time, end_time]
+    # have already been published. Default sized for mainnet ETH (~12s/block):
+    # 500 blocks ≈ 100 min, comfortably above the measured p99 execution
+    # publish_lag of ~22 min plus one full cadence cycle (~60 min).
+    credit_dist_safety_blocks: int = 500
+
+    # Require at least one confirmed `aleph_credit_expense` post whose
+    # `expense.end_date > end_time` as evidence that the publisher has
+    # progressed past the period. Default: abort the run if absent (the
+    # operator can downgrade to a warning via the CLI flag).
+    credit_dist_require_expense_witness: bool = True
+
     # Per-request total timeout for the Aleph HTTP API. The default aiohttp
     # 5-minute cap is too tight: AGGREGATE+date-filtered first-page queries
     # over a multi-week window have been observed to take longer than that

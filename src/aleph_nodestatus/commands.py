@@ -281,13 +281,33 @@ async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
     flags=None, reward_sender=None, full_resync=False,
+    safety_blocks=None, require_witness=None,
 ):
     flags = flags or {}
     dbs = get_dbs()
     web3 = get_web3()
 
+    if safety_blocks is None:
+        safety_blocks = settings.credit_dist_safety_blocks
+    if require_witness is None:
+        require_witness = settings.credit_dist_require_expense_witness
+
     if end_height in (None, -1):
         end_height = web3.eth.block_number
+
+    # Right-edge finality margin. See settings.credit_dist_safety_blocks for
+    # rationale. If the caller passed an explicit end_height that's already
+    # below current_block - safety, leave it alone — they know what they're
+    # doing (replays, audits, etc.). Otherwise cap.
+    current_block = web3.eth.block_number
+    max_allowed = current_block - safety_blocks
+    if end_height > max_allowed:
+        original = end_height
+        end_height = max_allowed
+        click.echo(
+            f"Capping end_height {original} -> {end_height} "
+            f"(safety_blocks={safety_blocks}, ~{safety_blocks * 12 // 60}min finality buffer)"
+        )
 
     # === Cadence guard ===
     # Fires unconditionally when --act is set, regardless of how start_height
@@ -346,6 +366,30 @@ async def process_credit_distribution(
 
     start_time = web3.eth.get_block(start_height).timestamp
     end_time = web3.eth.get_block(end_height).timestamp
+
+    # Right-edge finality witness. An expense whose `end_date ∈ [start_time,
+    # end_time]` may not yet be published when NS runs, so the safety-blocks
+    # cap alone is not enough — confirm the publisher has actually moved
+    # past `end_time` by finding at least one confirmed expense post with
+    # `expense.end_date > end_time`. Skipped if credit_revenue is off
+    # (no expense math anyway).
+    if flags.get("credit_revenue"):
+        witness_ok = await credit_distribution.has_expense_witness_after(
+            PublishMode.get_publish_api_server(),
+            end_time,
+            settings.credit_expense_sender,
+        )
+        if not witness_ok:
+            msg = (
+                f"No confirmed expense witness found with end_date > end_time "
+                f"({end_time}). Publisher may be stalled or end_time is in "
+                f"the future."
+            )
+            if require_witness:
+                click.echo(f"ABORT: {msg}")
+                sys.exit(2)
+            else:
+                LOGGER.warning(msg)
 
     # Aleph API `messages.json` AGGREGATE+date queries are slow (~80s per
     # page), so fetch node snapshots once and share between the credit
@@ -664,12 +708,16 @@ async def process_credit_distribution(
               help="Don't post the Aleph distribution record")
 @click.option("--reward-sender", default=None,
               help="Address used to look up the previous distribution")
+@click.option("--safety-blocks", "safety_blocks", type=int, default=None,
+              help="Right-edge finality buffer. Default from settings (500).")
+@click.option("--no-witness-required", "no_witness_required", is_flag=True,
+              help="Downgrade missing-expense-witness abort to a warning.")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        start_height, end_height, full_resync,
                        no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
-                       reward_sender):
+                       reward_sender, safety_blocks, no_witness_required):
     """Credit-based distribution script (new tokenomics)."""
     setup_logging(verbose)
 
@@ -704,11 +752,19 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
     click.echo(f"Mode: {mode}")
     click.echo(f"Flags: {flags}")
 
+    # `--no-witness-required` is a flag, so absence means "use settings
+    # default" (None passes through; process_credit_distribution resolves
+    # it). Setting it to True only when the flag is present preserves the
+    # settings-driven default behavior.
+    require_witness = False if no_witness_required else None
+
     asyncio.run(process_credit_distribution(
         start_height=start_height, end_height=end_height,
         act=act, dry_run=dry_run, force=force, force_cap=force_cap,
         flags=flags, reward_sender=reward_sender,
         full_resync=full_resync,
+        safety_blocks=safety_blocks,
+        require_witness=require_witness,
     ))
 
 
