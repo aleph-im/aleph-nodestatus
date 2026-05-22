@@ -12,9 +12,6 @@ try:
     from web3.contract import get_event_data
 except ImportError:
     from web3._utils.events import get_event_data
-from web3.gas_strategies.rpc import rpc_gas_price_strategy
-from web3.middleware import geth_poa_middleware, local_filter_middleware
-
 from .ethereum import get_logs, get_web3
 from .settings import settings
 
@@ -159,7 +156,7 @@ async def update_balances(account, height, balances):
 
 
 async def sablier_monitoring_process():
-    from .ethereum import get_account
+    from .ethereum import get_aleph_account
 
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()

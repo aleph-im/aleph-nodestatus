@@ -33,16 +33,20 @@ def compute_score_multiplier(score: float) -> float:
         return (score - 0.2) / 0.6
 
 
-async def create_distribution_tx_post(distribution, post_type="staking-rewards-distribution"):
-    """Post distribution record to the API server based on PublishMode."""
+async def create_distribution_tx_post(distribution, post_type="staking-rewards-distribution", ref=None):
+    """Post distribution record to the API server based on PublishMode.
+
+    If ref is provided, creates an amend post referencing the original.
+    """
     api_server = PublishMode.get_publish_api_server()
     mode = "TESTNET" if PublishMode.is_testnet() else "MAINNET"
-    print(f"Posting distribution to {mode}: {api_server}")
-    print(f"Distribution: {distribution}")
+    actual_post_type = "amend" if ref else post_type
+    print(f"Posting distribution to {mode}: {api_server} (type={actual_post_type})")
     async with AuthenticatedAlephHttpClient(get_aleph_account(), api_server=api_server) as client:
         post = await client.create_post(
             distribution,
-            post_type=post_type,
+            post_type=actual_post_type,
+            ref=ref,
             channel=settings.aleph_channel
         )
     return post
@@ -63,10 +67,19 @@ async def get_latest_successful_distribution(sender=None):
     current_post = None
     current_end_height = 0
     for post in posts.posts:
-        successful = False
-        if post.content["status"] != "distribution":
-            pass
+        status = post.content.get("status")
+        if status not in ("distribution", "pending"):
+            continue
 
+        # A pending record means transfers may have started — treat it
+        # the same as a successful distribution to avoid double-payment.
+        if status == "pending":
+            if post.content.get("end_height", 0) >= current_end_height:
+                current_post = post
+                current_end_height = post.content["end_height"]
+            continue
+
+        successful = False
         for target in post.content.get("targets", []):
             if target["success"]:
                 successful = True
@@ -76,7 +89,6 @@ async def get_latest_successful_distribution(sender=None):
             if post.content["end_height"] >= current_end_height:
                 current_post = post
                 current_end_height = post.content["end_height"]
-                continue
 
     if current_post is not None:
         return current_end_height, current_post.content
