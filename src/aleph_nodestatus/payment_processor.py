@@ -111,8 +111,8 @@ def simulate_process(
         except ImportError:
             contract_logic_error_cls = Exception
 
-    data = processor.encodeABI(
-        fn_name="process",
+    data = processor.encode_abi(
+        abi_element_identifier="process",
         args=[token, amount_in, min_out, ttl],
     )
     try:
