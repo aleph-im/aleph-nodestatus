@@ -84,7 +84,7 @@ def test_simulate_process_success_returns_no_error(monkeypatch):
     w3 = MagicMock()
     w3.eth.call.return_value = b""
     processor = MagicMock()
-    processor.encodeABI.return_value = b"\xab\xcd"
+    processor.encode_abi.return_value = "0xabcd"
 
     err = simulate_process(
         w3, processor,
@@ -101,7 +101,7 @@ def test_simulate_process_revert_returns_message(monkeypatch):
     w3 = MagicMock()
     w3.eth.call.side_effect = ContractLogicError("InsufficientOutput()")
     processor = MagicMock()
-    processor.encodeABI.return_value = b"\xab\xcd"
+    processor.encode_abi.return_value = "0xabcd"
 
     err = simulate_process(
         w3, processor,
@@ -129,7 +129,7 @@ def test_execute_process_signs_and_sends(monkeypatch):
     acct = MagicMock()
     acct.address = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
     signed = MagicMock()
-    signed.rawTransaction = b"\xde\xad"
+    signed.raw_transaction = b"\xde\xad"
     acct.sign_transaction.return_value = signed
 
     w3.eth.send_raw_transaction.return_value.hex.return_value = "0xfeedbeef"
@@ -384,3 +384,121 @@ def test_extract_aleph_zero_balance_skipped(monkeypatch):
     )
     for entry in result["tokens"]:
         assert entry["skipped_reason"] == "zero_balance"
+
+
+# ---------------------------------------------------------------------------
+# Real-Contract regression tests for simulate_process
+#
+# The MagicMock-based tests above auto-vivify ANY attribute name on the
+# processor mock, so they silently survived the web3.py v6 → v7
+# `encodeABI` → `encode_abi` rename that broke production. The tests
+# below build a real `Contract` from the vendored AlephPaymentProcessor
+# ABI; any future API rename trips an AttributeError instead of passing
+# CI and exploding at runtime.
+# ---------------------------------------------------------------------------
+
+from web3 import Web3
+
+from aleph_nodestatus.payment_processor import _load_abi
+from aleph_nodestatus.settings import settings as _pp_settings
+
+
+def _real_processor_contract():
+    """A real (offline) Contract bound to the configured processor address
+    and the vendored AlephPaymentProcessor ABI. No RPC required for
+    encode_abi / decode_function_input."""
+    w3 = Web3()
+    contract = w3.eth.contract(
+        address=w3.to_checksum_address(_pp_settings.payment_processor_address),
+        abi=_load_abi("AlephPaymentProcessor"),
+    )
+    return w3, contract
+
+
+def test_simulate_process_uses_real_v7_contract_api():
+    """Regression: the actual web3.py v7 Contract.encode_abi method exists,
+    is called with the correct kwargs, and produces the ABI-encoded
+    process() payload that gets handed to eth_call.
+
+    If web3.py ever renames encode_abi again, this test fails loudly
+    at import/call time, instead of waiting for the docker cron to
+    crash."""
+    w3, contract = _real_processor_contract()
+    captured: dict = {}
+
+    def fake_call(tx, *args, **kwargs):
+        captured.update(tx)
+        return b""
+    w3.eth.call = fake_call
+
+    token = Web3.to_checksum_address("0x" + "aa" * 20)
+    from_addr = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    err = simulate_process(
+        w3, contract,
+        from_address=from_addr,
+        token=token,
+        amount_in=1_000_000, min_out=950_000, ttl=1800,
+    )
+    assert err is None
+    assert captured["from"] == from_addr
+    assert captured["to"] == w3.to_checksum_address(
+        _pp_settings.payment_processor_address,
+    )
+    # 4-byte selector + 4 × 32-byte words, hex-encoded with "0x"
+    assert isinstance(captured["data"], str) and len(captured["data"]) == 2 + 8 + 4 * 64
+    expected_selector = Web3.keccak(
+        text="process(address,uint128,uint128,uint48)",
+    ).hex()[:8]
+    assert captured["data"][2:10].lower() == expected_selector.lower()
+
+    fn, decoded = contract.decode_function_input(captured["data"])
+    assert fn.fn_name == "process"
+    assert decoded["_token"].lower() == token.lower()
+    assert decoded["_amountIn"] == 1_000_000
+    assert decoded["_amountOutMinimum"] == 950_000
+    assert decoded["_ttl"] == 1800
+
+
+def test_simulate_process_revert_on_real_contract_surfaces_message():
+    """Regression: a ContractLogicError from eth_call (the realistic revert
+    surface) is caught and returned as an error string — using a real
+    Contract, not a MagicMock that would mask the encoding path."""
+    from web3.exceptions import ContractLogicError
+
+    w3, contract = _real_processor_contract()
+
+    def fake_call(tx, *args, **kwargs):
+        raise ContractLogicError("InsufficientOutput()")
+    w3.eth.call = fake_call
+
+    err = simulate_process(
+        w3, contract,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        token=Web3.to_checksum_address("0x" + "aa" * 20),
+        amount_in=1_000_000, min_out=10**18, ttl=1800,
+    )
+    assert err is not None
+    assert "InsufficientOutput" in err
+
+
+def test_simulate_process_calls_v7_encode_abi_kwargs():
+    """Lock the v7 encode_abi keyword surface (`abi_element_identifier`,
+    `args`) so a future rename — or an accidental revert to the legacy
+    `fn_name=` kwarg — is caught at unit-test time, not at runtime."""
+    w3 = MagicMock()
+    w3.eth.call.return_value = b""
+    processor = MagicMock()
+    processor.encode_abi.return_value = "0x" + "00" * 4
+
+    simulate_process(
+        w3, processor,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        token="0xUSDC", amount_in=1_000_000, min_out=999_000, ttl=1800,
+    )
+
+    processor.encode_abi.assert_called_once_with(
+        abi_element_identifier="process",
+        args=["0xUSDC", 1_000_000, 999_000, 1800],
+    )
+    # The legacy camelCase entry point must NOT be invoked.
+    assert not processor.encodeABI.called
