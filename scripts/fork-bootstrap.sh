@@ -25,11 +25,25 @@
 # mainnet writes, no real pkeys required.
 #
 # Usage:
-#   scripts/fork-bootstrap.sh --mode <extract|distribute|all> \
+#   scripts/fork-bootstrap.sh --mode <extract|distribute|all|none> \
 #                             [--signer <addr>] \
 #                             [--rpc <url>] \
 #                             [--admin <addr>] \
 #                             [--dist-recipient <addr>]
+#
+# Modes:
+#   extract    — grant ADMIN_ROLE + fund processor (USDC/ETH/ALEPH)
+#   distribute — top up signer with ALEPH
+#   all        — extract + distribute
+#   none       — verify Anvil is up, do NOT mutate fork state.
+#                Use this for true mainnet-state verification: the
+#                signer MUST be the real admin / distribution
+#                recipient with the corresponding production pkey
+#                (otherwise extract reverts with
+#                AccessControlUnauthorizedAccount or distribute reverts
+#                with "Balance not enough" — which is exactly the
+#                behaviour you'd see on mainnet today, so the audit
+#                output reflects production reality).
 #
 # Defaults (all overridable via flags or env vars of the same name):
 #   --signer            0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
@@ -106,8 +120,8 @@ if [[ -z "$MODE" ]]; then
   echo "ERROR: --mode is required (extract | distribute | all)" >&2
   exit 2
 fi
-if [[ ! "$MODE" =~ ^(extract|distribute|all)$ ]]; then
-  echo "ERROR: --mode must be one of: extract, distribute, all" >&2
+if [[ ! "$MODE" =~ ^(extract|distribute|all|none)$ ]]; then
+  echo "ERROR: --mode must be one of: extract, distribute, all, none" >&2
   exit 2
 fi
 command -v cast >/dev/null || {
@@ -234,6 +248,31 @@ case "$MODE" in
   extract)    bootstrap_extract ;;
   distribute) bootstrap_distribute ;;
   all)        bootstrap_extract; echo ""; bootstrap_distribute ;;
+  none)
+    # Mainnet-state verification: explicitly do NOT mutate fork state.
+    # The fork is left exactly as it was at the forked block — same
+    # roles, same balances, same allowances.
+    echo "--- mode=none: no bootstrap (mainnet-state verification) ---"
+    echo "  fork state left untouched."
+    echo "  the signer must hold ADMIN_ROLE / ALEPH balance on its OWN" \
+         "(use the real production pkey via -e *_pkey=…), otherwise" \
+         "extract or distribute will revert exactly as they would on" \
+         "mainnet right now."
+    # Soft heuristic: warn if the user is about to combine `--mode none`
+    # with the default Anvil dev address. The signer almost never has
+    # the right role/balance in that combination, so the run is
+    # guaranteed to revert — usually that's an oversight, not intent.
+    DEFAULT_ANVIL="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+    if [[ "$SIGNER_LC" == "$DEFAULT_ANVIL" ]]; then
+      echo ""
+      echo "  WARNING: signer is Anvil dev account #0 AND --mode=none."
+      echo "  This combination has no realistic path through extract or"
+      echo "  distribute — Anvil's dev address has no ADMIN_ROLE and no"
+      echo "  ALEPH balance on mainnet. Either pass --signer with the"
+      echo "  real admin / distribution_recipient, or pick a mode that"
+      echo "  actually bootstraps."
+    fi
+    ;;
 esac
 
 echo ""

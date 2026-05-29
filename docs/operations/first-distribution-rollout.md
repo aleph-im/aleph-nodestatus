@@ -170,10 +170,32 @@ scripts/fork-bootstrap.sh --mode extract \
 scripts/fork-bootstrap.sh --mode extract --signer 0xMY_TEST_ADDR
 ```
 
-All three are idempotent — re-running against the same fork only
-re-funds and re-grants, nothing breaks. Use `--mode all` instead of
-`--mode extract` to bootstrap distribute at the same time (covered
-in Phase 4.5).
+**Scenario D — mainnet-state verification (no bootstrap):**
+
+When the goal is "show me what the next `--act` run would do
+*right now*, against the real on-chain state" — i.e. you don't
+want synthetic balances or a granted role muddying the picture.
+
+```bash
+scripts/fork-bootstrap.sh --mode none \
+  --signer 0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E
+```
+
+The script confirms Anvil is up, prints a "no mutation" banner, and
+exits. The fork stays exactly as mainnet was at the fork block:
+the configured admin holds `ADMIN_ROLE`, the processor's balances
+are whatever they actually were on chain. **You must use the real
+production pkey** for the nodestatus run (`-e
+payment_processor_admin_pkey=<real_admin_pkey>`); any other signer
+would revert exactly as it would in mainnet, which is the *whole
+point* of this mode but easy to misread as a bug. The script
+prints a warning if it sees `--mode none` combined with the Anvil
+dev account because that combination is almost always an oversight.
+
+All four are idempotent — re-running against the same fork only
+re-funds and re-grants (or, for `none`, does nothing). Use
+`--mode all` instead of `--mode extract` to bootstrap distribute at
+the same time (covered in Phase 4.5).
 
 ### Run (another terminal: nodestatus inside docker)
 
@@ -417,6 +439,18 @@ scripts/fork-bootstrap.sh --mode distribute \
 
 ```bash
 scripts/fork-bootstrap.sh --mode distribute --signer 0xMY_TEST_ADDR
+```
+
+**Scenario D — mainnet-state verification (no bootstrap):**
+
+Same as the Phase 1.5 Scenario D: skip funding so the
+distribution recipient's actual mainnet ALEPH balance is what
+gets exercised. Use the real `ethereum_pkey` of
+`distribution_recipient` for the nodestatus run.
+
+```bash
+scripts/fork-bootstrap.sh --mode none \
+  --signer 0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25
 ```
 
 If you're verifying both phases in the same Anvil session, do one
