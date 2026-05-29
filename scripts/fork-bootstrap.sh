@@ -99,6 +99,10 @@ SIGNER="${SIGNER:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
 ANVIL_RPC="${ANVIL_RPC:-http://localhost:8545}"
 ADMIN="${ADMIN:-0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E}"
 DIST_RECIPIENT="${DIST_RECIPIENT:-0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25}"
+# Optional explicit grantor for ADMIN_ROLE. If empty, the script
+# auto-discovers via Ownable.owner() and the configured admin. See
+# `find_role_grantor` below for the resolution chain.
+ADMIN_GRANTOR="${ADMIN_GRANTOR:-}"
 
 # Anvil-launch defaults (overridable via CLI flags below).
 ETHEREUM_API_SERVER_CLI=""
@@ -107,6 +111,14 @@ LAUNCH_ANVIL=1
 ANVIL_PORT=8545
 ANVIL_BLOCK=""
 ANVIL_LOG="${ANVIL_LOG:-/tmp/anvil-fork-bootstrap.log}"
+# When the script launches Anvil itself, the default is to keep it
+# alive in the foreground after bootstrap (Ctrl-C → clean shutdown).
+# Set DETACH=1 (or pass --detach) for the old behaviour where the
+# script exits leaving Anvil orphaned in the background.
+DETACH="${DETACH:-0}"
+# PID of the launched Anvil. Empty when --no-anvil or when we reused
+# an existing instance — the EXIT trap distinguishes both.
+ANVIL_PID=""
 
 # Project root — resolved relative to this script so the env-file
 # scanner finds `docker/.env.extract` regardless of cwd.
@@ -138,12 +150,14 @@ while [[ $# -gt 0 ]]; do
     --signer)                SIGNER="$2"; shift 2 ;;
     --rpc)                   ANVIL_RPC="$2"; shift 2 ;;
     --admin)                 ADMIN="$2"; shift 2 ;;
+    --admin-grantor)         ADMIN_GRANTOR="$2"; shift 2 ;;
     --dist-recipient)        DIST_RECIPIENT="$2"; shift 2 ;;
     --ethereum-api-server)   ETHEREUM_API_SERVER_CLI="$2"; shift 2 ;;
     --env-file)              ENV_FILE_CLI="$2"; shift 2 ;;
     --no-anvil)              LAUNCH_ANVIL=0; shift ;;
     --anvil-port)            ANVIL_PORT="$2"; shift 2 ;;
     --anvil-block-number)    ANVIL_BLOCK="$2"; shift 2 ;;
+    --detach)                DETACH=1; shift ;;
     -h|--help)
       sed -n '1,/^set -euo pipefail$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -322,6 +336,74 @@ echo "  dist_recipient  : $DIST_RECIPIENT"
 echo "  block (fork)    : $(cast block-number --rpc-url "$ANVIL_RPC")"
 echo ""
 
+# Find an address that can grant `role` on the processor. Order:
+#
+#   1. --admin-grantor flag, if the operator supplied one (and it
+#      actually holds the role's admin)
+#   2. Ownable.owner() — by far the most common case on OZ contracts
+#      where the deployer holds both ownership and DEFAULT_ADMIN_ROLE
+#   3. The configured operational admin ($ADMIN — may or may not be
+#      the role-admin; on AlephPaymentProcessor it's the operator
+#      that calls process(), which holds ADMIN_ROLE but NOT
+#      DEFAULT_ADMIN_ROLE)
+#
+# Each candidate is `hasRole`-checked against `getRoleAdmin(role)`
+# before being returned; a wrong guess is rejected silently and the
+# next candidate is tried.
+find_role_grantor() {
+  local role="$1"
+  local role_admin
+  role_admin=$(cast call "$PROCESSOR" "getRoleAdmin(bytes32)(bytes32)" \
+    "$role" --rpc-url "$ANVIL_RPC" 2>/dev/null) || {
+      echo "ERROR: getRoleAdmin call failed — is $PROCESSOR really" \
+           "the processor contract on this fork?" >&2
+      return 1
+    }
+  echo "  role-admin of target role: $role_admin" >&2
+
+  local candidates=()
+  [[ -n "$ADMIN_GRANTOR" ]] && candidates+=("$ADMIN_GRANTOR")
+
+  # Try Ownable.owner(). Wrapped in `|| true` because the call reverts
+  # on non-Ownable contracts — we just fall through to the next
+  # candidate then.
+  local owner=""
+  owner=$(cast call "$PROCESSOR" "owner()(address)" \
+    --rpc-url "$ANVIL_RPC" 2>/dev/null || true)
+  if [[ -n "$owner" && "$owner" != "0x0000000000000000000000000000000000000000" ]]; then
+    candidates+=("$owner")
+  fi
+
+  # Last fallback: the configured operational admin. On most projects
+  # this *is* the role-admin too; on AlephPaymentProcessor it isn't,
+  # which is exactly why this auto-discovery exists.
+  candidates+=("$ADMIN")
+
+  for c in "${candidates[@]}"; do
+    local has
+    has=$(cast call "$PROCESSOR" "hasRole(bytes32,address)(bool)" \
+      "$role_admin" "$c" --rpc-url "$ANVIL_RPC" 2>/dev/null) || has="false"
+    if [[ "$has" == "true" ]]; then
+      echo "  found grantor: $c (holds $role_admin)" >&2
+      echo "$c"
+      return 0
+    else
+      echo "  [skip] $c does not hold role-admin $role_admin" >&2
+    fi
+  done
+
+  cat >&2 <<EOF
+ERROR: no candidate holds the role-admin for the target role.
+  Find the actual holder via Etherscan:
+    1. Open $PROCESSOR on etherscan.io
+    2. Read Contract → getRoleAdmin(<target_role>) → $role_admin
+    3. Filter the contract's "RoleGranted" events by role = $role_admin
+       and grab the most recent grantee that wasn't subsequently revoked.
+    4. Re-run with --admin-grantor <that_address>.
+EOF
+  return 1
+}
+
 # Generic helper: impersonate an address, ensure it has gas, run a
 # `cast send` from it. Stops impersonation at the end regardless of
 # success — leaves the fork in a clean state for the next caller.
@@ -345,16 +427,19 @@ bootstrap_extract() {
   if [[ "$has_role" == "true" ]]; then
     echo "  [skip] signer already has ADMIN_ROLE"
   else
-    echo "  granting ADMIN_ROLE → $SIGNER (impersonating $ADMIN)"
-    send_as "$ADMIN" "$PROCESSOR" \
+    local grantor
+    grantor=$(find_role_grantor "$ADMIN_ROLE") || exit 3
+    echo "  granting ADMIN_ROLE → $SIGNER (impersonating $grantor)"
+    send_as "$grantor" "$PROCESSOR" \
       "grantRole(bytes32,address)" "$ADMIN_ROLE" "$SIGNER"
     local after
     after=$(cast call "$PROCESSOR" "hasRole(bytes32,address)(bool)" \
       "$ADMIN_ROLE" "$SIGNER" --rpc-url "$ANVIL_RPC")
     [[ "$after" == "true" ]] || {
-      echo "ERROR: grantRole did not stick. Likely the configured" \
-           "admin no longer holds ADMIN_ROLE on mainnet — find the" \
-           "current admin via RoleGranted events on Etherscan." >&2
+      echo "ERROR: grantRole did not stick even though $grantor was" \
+           "reported to hold the role-admin. The tx likely reverted" \
+           "for an unrelated reason — re-run with verbose Anvil logs" \
+           "(tail -f $ANVIL_LOG) to see the revert reason." >&2
       exit 3
     }
   fi
@@ -445,4 +530,45 @@ case "$MODE" in
 esac
 
 echo ""
-echo "=== done — fork ready for nodestatus --fork-rpc=$ANVIL_RPC ==="
+echo "=== bootstrap done — fork ready for nodestatus --fork-rpc=$ANVIL_RPC ==="
+
+# If we launched Anvil ourselves and the operator didn't ask for the
+# detach-then-exit behaviour, hold the script open so Anvil's lifetime
+# matches the script's lifetime. The trap converts Ctrl-C (or SIGTERM
+# from the orchestrator) into a clean Anvil shutdown — no orphaned
+# processes, no stale port bindings the next run has to detect.
+if [[ -n "$ANVIL_PID" ]] && (( DETACH == 0 )); then
+  cleanup_anvil() {
+    # Idempotent — both INT/TERM and EXIT may fire on a normal Ctrl-C.
+    if [[ -n "${ANVIL_PID:-}" ]] && kill -0 "$ANVIL_PID" 2>/dev/null; then
+      echo ""
+      echo "Stopping Anvil (PID $ANVIL_PID) …"
+      kill "$ANVIL_PID" 2>/dev/null || true
+      # Give it 5s to drain; SIGKILL if it lingers.
+      for _ in 1 2 3 4 5; do
+        kill -0 "$ANVIL_PID" 2>/dev/null || break
+        sleep 1
+      done
+      kill -9 "$ANVIL_PID" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_anvil INT TERM EXIT
+  echo ""
+  echo "Anvil keeps running at $ANVIL_RPC (log: $ANVIL_LOG)."
+  echo "Press Ctrl-C in this terminal to stop it."
+  echo "Run your nodestatus verification in another terminal, e.g.:"
+  echo "  docker compose -f docker/docker-compose.yml run --rm --no-deps \\"
+  echo "    -e ethereum_api_server=\"http://host.docker.internal:$ANVIL_PORT\" \\"
+  echo "    --entrypoint /usr/local/bin/nodestatus-extract-credits \\"
+  echo "    nodestatus-extract --dry-run --fork-rpc=http://host.docker.internal:$ANVIL_PORT -v"
+  # `wait` returns when Anvil exits (Ctrl-C, oom, …) — the trap fires
+  # on the way out, so even an abnormal Anvil death is cleaned up
+  # consistently.
+  wait "$ANVIL_PID" 2>/dev/null || true
+elif [[ -n "$ANVIL_PID" && $DETACH -eq 1 ]]; then
+  echo ""
+  echo "DETACH=1 / --detach — leaving Anvil running in the background."
+  echo "  PID:    $ANVIL_PID"
+  echo "  log:    $ANVIL_LOG"
+  echo "  stop:   kill $ANVIL_PID"
+fi

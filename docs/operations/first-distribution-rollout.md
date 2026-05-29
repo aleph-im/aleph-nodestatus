@@ -91,6 +91,11 @@ That single command:
 - launches `anvil --fork-url <resolved> --chain-id 1 --host 0.0.0.0
   --port 8545` in the background (PID + log path printed),
 - runs the bootstrap (grant `ADMIN_ROLE`, fund the processor).
+- **stays in the foreground** holding Anvil alive — Ctrl-C in this
+  terminal tears down both cleanly. Use a second terminal for the
+  `docker compose run` (the script even prints the exact command).
+  Pass `--detach` if you want the old "bootstrap then exit, Anvil
+  orphaned in the background" behaviour for automation.
 
 Override the upstream when needed:
 
@@ -107,6 +112,8 @@ Other useful overrides:
 | `--anvil-port <N>` | Change the Anvil port (default 8545). |
 | `--anvil-block-number <N>` | Pin Anvil to a specific block (e.g. for reproducibility or to dodge archive-pruning). |
 | `--no-anvil` | Skip launching Anvil; expect it to already be running at `--rpc`. |
+| `--admin-grantor <addr>` | Override the address used to grant `ADMIN_ROLE`. The script auto-discovers via `owner()` then the configured admin; pass this if neither holds the role-admin. |
+| `--detach` | Bootstrap, then exit. Anvil stays alive in the background (PID printed); operator kills it manually. |
 
 Anvil keeps running after the script exits. The script prints its
 PID and log path so you can `tail -f $LOG` while iterating and
