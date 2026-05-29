@@ -121,7 +121,14 @@ def test_execute_process_signs_and_sends(monkeypatch):
     w3.to_wei.return_value = 1_000_000_000
     w3.eth.get_block.return_value.baseFeePerGas = 5_000_000_000
 
-    fake_built = {"chainId": 1, "nonce": 7}
+    # `build_transaction` in real web3 always includes "to" (the contract
+    # address) on top of whatever overrides the caller supplied — keep
+    # the fixture consistent with that so audit-path consumers don't
+    # KeyError on the returned tx_info["built_tx"]["to"].
+    fake_built = {
+        "chainId": 1, "nonce": 7,
+        "to": "0x6b55F32Ea969910838defd03746Ced5E2AE8cB8B",
+    }
     processor = MagicMock()
     processor.functions.process.return_value.estimate_gas.return_value = 200_000
     processor.functions.process.return_value.build_transaction.return_value = fake_built
@@ -502,3 +509,244 @@ def test_simulate_process_calls_v7_encode_abi_kwargs():
     )
     # The legacy camelCase entry point must NOT be invoked.
     assert not processor.encodeABI.called
+
+
+# ---------------------------------------------------------------------------
+# audit_process_tx — fork-mode reconciliation
+#
+# Builds a synthetic receipt whose `logs` contain a real
+# TokenPaymentsProcessed event for the audited token. The audit helper
+# must decode it, populate entry["audit"], and either pass or hard-fail
+# based on the realized-vs-expected delta against `reconcile_bps`.
+# ---------------------------------------------------------------------------
+
+from aleph_nodestatus.payment_processor import (
+    audit_process_tx, _TOKEN_PAYMENTS_PROCESSED_EVENT_ABI,
+)
+
+
+def _mk_token_payments_log(
+    w3, *, token: str, sender: str,
+    amount: int, swap_amount: int, aleph_received: int,
+    burned: int = 0,
+    to_distribution: int = None,
+    to_developers: int = 0,
+    swap_version: int = 4,
+    is_stable: bool = True,
+):
+    """Build a TokenPaymentsProcessed log dict in the exact shape
+    `eth_getTransactionReceipt` returns — `topics` is a list of bytes
+    and `data` is the ABI-encoded non-indexed payload."""
+    if to_distribution is None:
+        to_distribution = aleph_received  # default: nothing held back
+    topic0 = w3.keccak(text=(
+        "TokenPaymentsProcessed(address,address,uint256,uint256,uint256,"
+        "uint256,uint256,uint256,uint8,bool)"
+    ))
+    # Indexed addresses are left-padded to 32 bytes.
+    pad_addr = lambda a: bytes(12) + bytes.fromhex(a[2:].rjust(40, "0"))
+    topics = [topic0, pad_addr(token), pad_addr(sender)]
+    data = w3.codec.encode(
+        ["uint256", "uint256", "uint256", "uint256", "uint256",
+         "uint256", "uint8", "bool"],
+        [amount, swap_amount, aleph_received, burned,
+         to_distribution, to_developers, swap_version, is_stable],
+    )
+    return {
+        "address":          "0x6b55F32Ea969910838defd03746Ced5E2AE8cB8B",
+        "topics":           topics,
+        "data":             data,
+        "blockNumber":      19_482_103,
+        "transactionIndex": 0,
+        "logIndex":         0,
+        "transactionHash":  b"\xab" * 32,
+        "blockHash":        b"\xcd" * 32,
+        "removed":          False,
+    }
+
+
+def _mk_audit_tx_info(receipt_logs, *, tx_hash="0xabc", gas_used=234_812):
+    """Mimic execute_process's return shape with a synthetic receipt."""
+    return {
+        "tx_hash":  tx_hash,
+        "status":   1,
+        "receipt":  {
+            "status":      1,
+            "blockNumber": 19_482_103,
+            "gasUsed":     gas_used,
+            "logs":        receipt_logs,
+        },
+        "built_tx": {
+            "from":    "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+            "to":      "0x6b55F32Ea969910838defd03746Ced5E2AE8cB8B",
+            "gas":     250_000, "nonce": 42, "chainId": 1,
+            "fn":      "process",
+            "args":    {"token": "0xUSDC", "amountIn": 1, "minOut": 1, "ttl": 1800},
+        },
+    }
+
+
+def _mk_real_w3():
+    """A Web3 with no provider — only for codec/keccak helpers."""
+    from web3 import Web3
+    return Web3()
+
+
+def test_audit_process_tx_clean_match_returns_true(capsys):
+    """Realized output exactly equal to expected_out → reconciliation
+    passes, entry["audit"] populated, no fail flag."""
+    w3 = _mk_real_w3()
+    token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+    log = _mk_token_payments_log(
+        w3, token=token, sender="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        amount=582_330_000, swap_amount=553_213_500,
+        aleph_received=27_827_564_813_933_937_875_752,
+        to_distribution=27_827_564_813_933_937_875_752,
+        to_developers=29_116_500,
+    )
+    entry = {"symbol": "USDC", "token": token}
+    # Stub out the decimals lookup — `_token_decimals` would otherwise try
+    # an on-chain call against a real ERC20 we don't have.
+    import aleph_nodestatus.payment_processor as pp
+    orig = pp._token_decimals
+    pp._token_decimals = lambda w3, addr: 6 if addr == token else 18
+
+    try:
+        ok = audit_process_tx(
+            w3, processor=None,
+            tx_info=_mk_audit_tx_info([log]),
+            entry=entry, token=token,
+            expected_out=27_827_564_813_933_937_875_752,
+            min_out=27_549_289_165_794_598_496_994,
+            reconcile_bps=200,
+        )
+    finally:
+        pp._token_decimals = orig
+
+    assert ok is True
+    assert entry["audit"]["reconcile_failed"] is False
+    assert entry["audit"]["delta_expected_bps"] == 0
+    assert entry["audit"]["aleph_received"] == "27827564813933937875752"
+    out = capsys.readouterr().out
+    assert "=== Extract tx audit: USDC === PASS" in out
+    assert "TokenPaymentsProcessed" in out
+    assert "reconciliation" in out
+
+
+def test_audit_process_tx_delta_above_threshold_fails(capsys):
+    """Realized 5% below expected with reconcile_bps=200 (2%) → fail flag
+    set, function returns False, audit block prints FAIL."""
+    w3 = _mk_real_w3()
+    token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    expected = 27_827_564_813_933_937_875_752
+    realized = expected * 95 // 100  # 5% below expected, well past 2%
+
+    log = _mk_token_payments_log(
+        w3, token=token, sender="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        amount=582_330_000, swap_amount=553_213_500,
+        aleph_received=realized,
+        to_developers=29_116_500,
+    )
+    entry = {"symbol": "USDC", "token": token}
+    import aleph_nodestatus.payment_processor as pp
+    orig = pp._token_decimals
+    pp._token_decimals = lambda w3, addr: 6 if addr == token else 18
+
+    try:
+        ok = audit_process_tx(
+            w3, processor=None,
+            tx_info=_mk_audit_tx_info([log]),
+            entry=entry, token=token,
+            expected_out=expected,
+            min_out=expected * 99 // 100,
+            reconcile_bps=200,
+        )
+    finally:
+        pp._token_decimals = orig
+
+    assert ok is False
+    assert entry["audit"]["reconcile_failed"] is True
+    # 5% below expected → -500 bps ± 1 due to integer floor.
+    assert entry["audit"]["delta_expected_bps"] in (-501, -500)
+    out = capsys.readouterr().out
+    assert "=== Extract tx audit: USDC === FAIL" in out
+
+
+def test_audit_process_tx_missing_event_marks_failure(capsys):
+    """Receipt has no TokenPaymentsProcessed log for this token → audit
+    records reason, marks failure, returns False."""
+    w3 = _mk_real_w3()
+    token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    entry = {"symbol": "USDC", "token": token}
+
+    ok = audit_process_tx(
+        w3, processor=None,
+        tx_info=_mk_audit_tx_info([]),  # empty logs
+        entry=entry, token=token,
+        expected_out=27_827_564_813_933_937_875_752,
+        min_out=27_549_289_165_794_598_496_994,
+        reconcile_bps=200,
+    )
+    assert ok is False
+    assert entry["audit"]["reconcile_failed"] is True
+    assert "no TokenPaymentsProcessed" in entry["audit"]["reason"]
+    out = capsys.readouterr().out
+    assert "=== Extract tx audit: USDC === FAIL" in out
+
+
+def test_audit_process_tx_filters_other_token_events(capsys):
+    """Receipt has TokenPaymentsProcessed for a DIFFERENT token (ETH) but
+    not for the audited one (USDC) → still treated as missing for USDC."""
+    w3 = _mk_real_w3()
+    usdc  = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    other = "0x0000000000000000000000000000000000000000"  # ETH sentinel
+    log = _mk_token_payments_log(
+        w3, token=other, sender="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        amount=1, swap_amount=1, aleph_received=1,
+    )
+    entry = {"symbol": "USDC", "token": usdc}
+
+    ok = audit_process_tx(
+        w3, processor=None,
+        tx_info=_mk_audit_tx_info([log]),
+        entry=entry, token=usdc,
+        expected_out=1, min_out=1, reconcile_bps=200,
+    )
+    assert ok is False
+    assert entry["audit"]["reconcile_failed"] is True
+
+
+def test_audit_process_tx_aleph_passthrough_matches(capsys):
+    """ALEPH passthrough: expected_out == balance, realized == balance
+    (no swap). The reconciliation must accept this as a clean match
+    even though swapAmount is 0."""
+    w3 = _mk_real_w3()
+    aleph = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
+    balance = 1_573_493 * 10**18
+    log = _mk_token_payments_log(
+        w3, token=aleph, sender="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        amount=balance, swap_amount=0, aleph_received=balance,
+        to_distribution=balance, to_developers=0,
+        swap_version=0, is_stable=False,
+    )
+    entry = {"symbol": "ALEPH", "token": aleph}
+    import aleph_nodestatus.payment_processor as pp
+    orig = pp._token_decimals
+    pp._token_decimals = lambda w3, addr: 18
+
+    try:
+        ok = audit_process_tx(
+            w3, processor=None,
+            tx_info=_mk_audit_tx_info([log]),
+            entry=entry, token=aleph,
+            expected_out=balance, min_out=0, reconcile_bps=200,
+        )
+    finally:
+        pp._token_decimals = orig
+
+    assert ok is True
+    assert entry["audit"]["reconcile_failed"] is False
+    assert entry["audit"]["aleph_received"] == str(balance)
+    assert entry["audit"]["delta_expected_bps"] == 0
+    # min_out was 0 → delta_min_bps is 0 by convention (we don't divide).
+    assert entry["audit"]["delta_min_bps"] == 0

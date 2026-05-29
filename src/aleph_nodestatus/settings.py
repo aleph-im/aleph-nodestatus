@@ -203,6 +203,18 @@ class Settings(BaseSettings):
     extract_max_deviation_bps: int        = 200
     chainlink_max_age_seconds: int        = 3600
 
+    # === Fork-verified dry-run ===
+    # Optional URL of a local mainnet fork (typically `anvil --fork-url …`).
+    # When set, `extract-credits --dry-run` upgrades to full sign+broadcast
+    # against the fork, audits each receipt against the on-chain
+    # `TokenPaymentsProcessed` event, and hard-asserts that the realized
+    # ALEPH output is within `extract_max_reconcile_delta_bps` of the
+    # quoter's `expected_out`. CLI flag `--fork-rpc` overrides this value.
+    # MUST be a loopback/host.docker.internal URL — the CLI refuses other
+    # hosts to prevent accidentally signing mainnet broadcasts.
+    extract_fork_rpc: str                  = ""
+    extract_max_reconcile_delta_bps: int   = 200
+
     uniswap_v3_factory_address: str       = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
     uniswap_v4_state_view_address: str    = "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"
 

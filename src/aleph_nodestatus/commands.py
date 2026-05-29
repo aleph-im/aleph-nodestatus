@@ -898,6 +898,22 @@ def reset_balances(verbose, testnet, chain: str):
     asyncio.run(do_reset_balances(chain))
 
 
+_FORK_RPC_SAFE_HOSTS = ("localhost", "127.0.0.1", "host.docker.internal")
+
+
+def _fork_rpc_is_safe(url: str) -> bool:
+    """Refuse anything that isn't a loopback / Docker host. The fork-mode
+    path signs and broadcasts real txs; a non-loopback URL is almost
+    always either a remote node by mistake or a mainnet RPC, both of
+    which would turn the dry-run into a real extract."""
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _FORK_RPC_SAFE_HOSTS
+
+
 @click.command()
 @click.option("-v", "--verbose", count=True)
 @click.option("-a", "--act", help="Broadcast process() txs", is_flag=True)
@@ -909,7 +925,19 @@ def reset_balances(verbose, testnet, chain: str):
               help="Skip the anti-MEV random delay (manual retries)")
 @click.option("--slippage-bps", "slippage_bps", default=None, type=int,
               help="Override per-run slippage tolerance")
-def extract_credits(verbose, act, dry_run, no_transfer, immediate, slippage_bps):
+@click.option("--fork-rpc", "fork_rpc", default=None,
+              help="URL of a local mainnet fork (e.g. http://localhost:8545 "
+                   "for `anvil --fork-url …`). Requires --dry-run; refused "
+                   "with --act. Upgrades dry-run into a full sign+broadcast "
+                   "+ receipt audit against the fork. Overrides "
+                   "settings.extract_fork_rpc.")
+@click.option("--reconcile-bps", "reconcile_bps", default=None, type=int,
+              help="Max acceptable delta between realized alephReceived and "
+                   "quoter expected_out, in bps. Default from "
+                   "settings.extract_max_reconcile_delta_bps (200 = 2%). "
+                   "Only applies in --fork-rpc mode.")
+def extract_credits(verbose, act, dry_run, no_transfer, immediate,
+                    slippage_bps, fork_rpc, reconcile_bps):
     """Extract ALEPH from the AlephPaymentProcessor (no Aleph publish)."""
     setup_logging(verbose)
 
@@ -917,22 +945,67 @@ def extract_credits(verbose, act, dry_run, no_transfer, immediate, slippage_bps)
         click.echo("ERROR: --act and --dry-run are mutually exclusive")
         sys.exit(2)
 
+    # Resolve fork-rpc: CLI flag wins, else settings (env). Empty string
+    # in settings is treated as "unset" so the user can keep an
+    # `extract_fork_rpc=` line commented or empty in `.env`.
+    resolved_fork_rpc = fork_rpc or (settings.extract_fork_rpc or None)
+
+    if resolved_fork_rpc:
+        if act:
+            click.echo(
+                "ERROR: --fork-rpc / extract_fork_rpc cannot be combined "
+                "with --act. The fork path signs real txs against the "
+                "configured RPC; running --act with a fork URL active "
+                "would either broadcast to the fork (no mainnet effect, "
+                "misleading) or — if the fork URL was a typo for a real "
+                "node — execute live. Either drop --act to verify, or "
+                "clear extract_fork_rpc to extract for real."
+            )
+            sys.exit(2)
+        if not dry_run:
+            click.echo(
+                "ERROR: --fork-rpc / extract_fork_rpc requires --dry-run "
+                "(calculation-only mode has nothing to broadcast)."
+            )
+            sys.exit(2)
+        if not _fork_rpc_is_safe(resolved_fork_rpc):
+            click.echo(
+                f"ERROR: fork RPC host must be one of {_FORK_RPC_SAFE_HOSTS}. "
+                f"Got: {resolved_fork_rpc}. Refusing to sign real txs "
+                f"against a non-loopback endpoint."
+            )
+            sys.exit(2)
+
     transfer = not no_transfer
     if dry_run or not act:
         transfer = False
+    # Fork mode is a `--dry-run` that DOES broadcast (to the fork), so
+    # flip the transfer flag back on. The signing path needs to run.
+    if resolved_fork_rpc:
+        transfer = True
 
     mode = (
-        "DRY-RUN"        if dry_run else
-        "LIVE EXTRACT"   if act else
+        "DRY-RUN (FORK)"  if resolved_fork_rpc else
+        "DRY-RUN"         if dry_run else
+        "LIVE EXTRACT"    if act else
         "CALCULATION ONLY"
     )
     click.echo(f"Mode: {mode}")
+    if resolved_fork_rpc:
+        click.echo(f"Fork RPC: {resolved_fork_rpc}")
 
-    asyncio.run(process_credit_extraction(
+    exit_code = asyncio.run(process_credit_extraction(
         act=act, dry_run=dry_run, transfer=transfer,
         immediate=(immediate or dry_run),
         slippage_bps=slippage_bps,
+        fork_rpc=resolved_fork_rpc,
+        reconcile_bps=(
+            reconcile_bps if reconcile_bps is not None
+            else settings.extract_max_reconcile_delta_bps
+        ),
     ))
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def run():
