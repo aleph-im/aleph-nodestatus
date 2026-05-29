@@ -67,6 +67,14 @@ side-effects.
 
 ### Setup (one terminal: Anvil fork)
 
+If Foundry (which ships `anvil`) isn't installed yet:
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+```
+
+Then bring up the fork:
+
 ```bash
 anvil --fork-url "https://<your-rpc>" \
       --chain-id 1 \
