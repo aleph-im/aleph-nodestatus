@@ -77,6 +77,34 @@ anvil --fork-url "https://<your-rpc>" \
 Keep this running for the duration of the verification. `--host
 0.0.0.0` is required so the docker container can reach it.
 
+> **Linux host gotcha:** `host.docker.internal` only resolves out of
+> the box on Docker Desktop (macOS/Windows). On Linux (including
+> production servers) the alias must be mapped explicitly to the
+> bridge gateway via `extra_hosts`. The compose services in
+> `docker/docker-compose.yml` already do this, so the command below
+> works as-is. If you're using a stand-alone `docker run`, add
+> `--add-host=host.docker.internal:host-gateway`. Requires Docker
+> ≥ 20.10.
+
+### Pre-flight (verify the fork is reachable from inside the container)
+
+5-second sanity check before burning a full run on a hostname that
+can't be resolved or a port that's closed:
+
+```bash
+docker compose run --rm --no-deps --entrypoint /bin/bash \
+  nodestatus-extract -c \
+  'getent hosts host.docker.internal && \
+   (exec 3<>/dev/tcp/host.docker.internal/8545 && echo "8545 open") \
+   || echo "FAIL"'
+```
+
+Expect: a non-loopback IP followed by `8545 open`. If you see
+`FAIL` it's one of (in decreasing likelihood): Anvil bound to
+`127.0.0.1` instead of `0.0.0.0`, a host firewall blocking the
+bridge subnet, or the host running a Docker too old for
+`host-gateway`.
+
 ### Run (another terminal: nodestatus inside docker)
 
 ```bash
@@ -281,7 +309,10 @@ anvil --fork-url "https://<your-rpc>" \
 ```
 
 Same as Phase 1.5; if Anvil is already running for the extract
-verification, reuse it.
+verification, reuse it. The Linux host-gateway gotcha (see Phase
+1.5) and the pre-flight `getent hosts host.docker.internal` check
+apply equally here — `extra_hosts` in `docker/docker-compose.yml`
+already handles the alias for the `nodestatus-dist` service.
 
 ### Run (another terminal: nodestatus inside docker)
 
