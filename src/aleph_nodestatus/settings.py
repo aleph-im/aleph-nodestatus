@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # Dev fund (not distributed, tracked for accounting)
     credit_dev_fund_share: float = 0.05
 
+    # Route upstream `rewards` entries (holder-tier executions, paid from the
+    # incentives pool rather than deducted from users) through the same split
+    # as `credits`. Upstream tagged this @temporary — disable to ignore.
+    credit_hold_rewards_enabled: bool = True
+
     crn_inactivity_threshold_days: int = 90
     crn_inactivity_cutoff_height: int = 20840959
 
