@@ -18,6 +18,7 @@ point where on-chain transactions get broadcast (steps 2 and 6).
 | 2 | Extract one-shot `--act` | broadcasts process() txs | RPC + admin pkey + ETH for gas |
 | 3 | Extract cron mode | hourly `--act` | same as 2 |
 | 4 | Distribute dry-run | none | RPC |
+| 4.5 | Distribute fork-verified dry-run *(optional)* | only on local Anvil fork | RPC + signer pkey + Anvil |
 | 5 | Distribute testnet one-shot | publishes calc post to Aleph testnet | RPC + signer pkey |
 | 6 | Distribute one-shot `--act` | broadcasts batchTransfer + publishes mainnet post | RPC + signer pkey + ALEPH balance |
 | 7 | Distribute cron mode | every 10 days, `--act` | same as 6 |
@@ -254,6 +255,115 @@ no prior distribution to clash with.
 
 ---
 
+## Phase 4.5 — Distribute fork-verified dry-run (optional but recommended)
+
+Same as Phase 4 except every `batchTransfer` is signed, broadcast,
+and confirmed against a **local Anvil fork**, with every Transfer
+event reconciled against the calculated per-recipient amount. This
+is the only mode that exercises the full transfer code path
+(`transfer_tokens_audited`, gas estimation, nonce sequencing, mining
+order across batches) without writing anything to mainnet. Catches:
+
+- Per-recipient drift (a recipient gets the wrong amount).
+- Unexpected transfers (a Transfer event lands on an address not in
+  the batch — which would only happen if the token contract grew a
+  hook between deploy and now).
+- Reverted batches (the fork mines status=0, fails the audit cleanly
+  instead of leaving the run in an ambiguous state).
+
+### Setup (one terminal: Anvil fork)
+
+```bash
+anvil --fork-url "https://<your-rpc>" \
+      --chain-id 1 \
+      --host 0.0.0.0 \
+      --port 8545
+```
+
+Same as Phase 1.5; if Anvil is already running for the extract
+verification, reuse it.
+
+### Run (another terminal: nodestatus inside docker)
+
+```bash
+docker compose run --rm --no-deps \
+  -e ethereum_api_server="http://host.docker.internal:8545" \
+  -e ethereum_pkey="0x<distribution_signer_pkey>" \
+  --entrypoint /usr/local/bin/nodestatus-distribute-credits \
+  nodestatus-dist --dry-run \
+    --fork-rpc=http://host.docker.internal:8545 \
+    --reconcile-bps=0 -v
+```
+
+The CLI refuses (same guards as the extract variant):
+
+- `--fork-rpc` combined with `--act`
+- `--fork-rpc` combined with `--testnet`
+- `--fork-rpc` without `--dry-run`
+- URL outside `{localhost, 127.0.0.1, host.docker.internal}`
+
+`--reconcile-bps=0` is the default and means **exact-wei matching** —
+the off-chain reward map produces integer wei amounts, the Transfer
+events must echo them exactly. Any non-zero delta fails the batch.
+Raise this only if you knowingly accept rounding drift (very rare).
+
+`distribute_fork_rpc` can live in `.env.dist` for convenience — the
+CLI flag wins when both are set. The hard guard against `--act` and
+`--testnet` applies to either source.
+
+### What gets printed (per batch)
+
+```
+Batch 1: transferring to 50 recipients (nonce=7)
+
+=== Distribute tx audit: Batch 1 (50 recipients) === PASS
+  built_tx:
+    from    : 0x3a5C…2C25
+    to      : 0x2770…F628 (ALEPH token)
+    fn      : batchTransfer(
+                recipients = [50 addresses],
+                amounts    = [50 uint256, sum=12_345_678_…_000 wei])
+    gas     : 1_030_000
+    nonce   : 7
+    chainId : 1
+  sample (first 3 + last):
+    0xabc…001  →  100_000_000_000_000_000_000 wei  (100.000000 ALEPH)
+    0xabc…002  →   75_000_000_000_000_000_000 wei  (75.000000 ALEPH)
+    0xabc…003  →   12_500_000_000_000_000_000 wei  (12.500000 ALEPH)
+    … 46 more …
+    0xabc…050  →    1_337_000_000_000_000_000 wei  (1.337000 ALEPH)
+  receipt:
+    tx_hash : 0xfeed…beef (FORK)
+    status  : 1
+    block   : 19_482_103
+    gas_used: 987_654
+  Transfer events:
+    matching ALEPH transfers from sender: 50
+    total expected (wei): 12_345_678_901_234_567_890_000
+    total realized (wei): 12_345_678_901_234_567_890_000
+    delta         (wei): 0
+  reconciliation:
+    per-recipient matched: 50/50 (limit ±0 bps)
+```
+
+If a batch fails, mismatched recipients are listed (first 5) along
+with any "unexpected" Transfers (recipients not in the batch).
+At end of run a fork audit summary aggregates pass/fail across
+batches and the process exits non-zero.
+
+**Pass criteria:**
+
+- Mode banner: `Mode: DRY-RUN (FORK)`.
+- Every batch ends with `=== … === PASS`.
+- `=== Distribute fork audit summary ===` reports `failed: 0`.
+- Exit code is `0`.
+
+This is the highest-confidence way to verify the calculator's
+recipient list and amounts match what the chain will actually
+transfer, without touching mainnet.
+
+---
+
 ## Phase 5 — Distribute testnet one-shot
 
 Publishes the calculation post to the Aleph **testnet** API
@@ -382,14 +492,18 @@ verbatim.
 | `ethereum_api_server` | all modes | RPC URL; reads on-chain state even on testnet. |
 | `aleph_testnet_api_server` | optional override (testnet) | Default `https://api.twentysix.testnet.network`. |
 | `filter_tag` | optional | Default `"mainnet"`. Override to e.g. `"testnet-rc"` to isolate testnet posts. |
+| `distribute_fork_rpc` | optional (Phase 4.5) | URL of a local Anvil fork. Enables fork-verified dry-run. CLI flag `--fork-rpc` overrides. Refused with `--act` or `--testnet`. |
+| `distribute_max_reconcile_delta_bps` | optional (Phase 4.5) | Default 0 (exact wei match). Per-recipient max delta vs calculated reward in fork mode. CLI flag `--reconcile-bps` overrides. |
 
 ---
 
 ## Abort / rollback notes
 
-- **Phases 1, 4, 5:** abort by Ctrl-C. Nothing on-chain happened.
-  Testnet post (Phase 5) stays on the testnet API but is harmless
-  (clearly tagged `status="calculation"`).
+- **Phases 1, 1.5, 4, 4.5, 5:** abort by Ctrl-C. Nothing on mainnet
+  happened. Fork phases (1.5, 4.5) leave state on the Anvil fork
+  which evaporates when you kill Anvil; testnet post (Phase 5)
+  stays on the testnet API but is harmless (clearly tagged
+  `status="calculation"`).
 - **Phase 2:** once a `process()` tx is broadcast it cannot be
   unbroadcast. Subsequent retries with `--act` are idempotent for
   zero-balance tokens, so re-running after partial success only
