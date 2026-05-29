@@ -65,25 +65,64 @@ but, when actually executed (slippage, fee-on-transfer interactions,
 hooks), produces less ALEPH than the quoter promised. Zero mainnet
 side-effects.
 
-### Setup (one terminal: Anvil fork)
+### Setup (one terminal: Anvil fork + bootstrap, single command)
 
-If Foundry (which ships `anvil`) isn't installed yet:
+If Foundry (which ships `anvil` and `cast`) isn't installed yet:
 
 ```bash
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 ```
 
-Then bring up the fork:
+Then run `fork-bootstrap.sh` — it launches Anvil in the background
+(reading `ethereum_api_server` from your `.env.extract` / `.env.dist`
+/ `.env` the same way the nodestatus CLI does), waits for it to
+come up, and applies whatever bootstrap mode you ask for. Picks
+the upstream from the same files in the same order as the CLI:
+
+```bash
+scripts/fork-bootstrap.sh --mode extract
+```
+
+That single command:
+
+- resolves the upstream RPC from `docker/.env.extract` →
+  `docker/.env.dist` → `.env`,
+- pings the upstream to fail fast if the URL is wrong,
+- launches `anvil --fork-url <resolved> --chain-id 1 --host 0.0.0.0
+  --port 8545` in the background (PID + log path printed),
+- runs the bootstrap (grant `ADMIN_ROLE`, fund the processor).
+
+Override the upstream when needed:
+
+```bash
+scripts/fork-bootstrap.sh --mode extract \
+  --ethereum-api-server https://eth.llamarpc.com
+```
+
+Other useful overrides:
+
+| Flag | Purpose |
+|---|---|
+| `--env-file <path>` | Read `ethereum_api_server` from a non-default file. |
+| `--anvil-port <N>` | Change the Anvil port (default 8545). |
+| `--anvil-block-number <N>` | Pin Anvil to a specific block (e.g. for reproducibility or to dodge archive-pruning). |
+| `--no-anvil` | Skip launching Anvil; expect it to already be running at `--rpc`. |
+
+Anvil keeps running after the script exits. The script prints its
+PID and log path so you can `tail -f $LOG` while iterating and
+`kill $PID` when you're done.
+
+If you'd rather manage Anvil yourself (e.g. you have a long-lived
+fork session for an afternoon of verification):
 
 ```bash
 anvil --fork-url "https://<your-rpc>" \
-      --chain-id 1 \
-      --host 0.0.0.0 \
-      --port 8545
+      --chain-id 1 --host 0.0.0.0 --port 8545
+# in another terminal:
+scripts/fork-bootstrap.sh --mode extract --no-anvil
 ```
 
-Keep this running for the duration of the verification. `--host
-0.0.0.0` is required so the docker container can reach it.
+`--host 0.0.0.0` is required so the docker container can reach it.
 
 > **Linux host gotcha:** `host.docker.internal` only resolves out of
 > the box on Docker Desktop (macOS/Windows). On Linux (including
@@ -391,21 +430,27 @@ order across batches) without writing anything to mainnet. Catches:
 - Reverted batches (the fork mines status=0, fails the audit cleanly
   instead of leaving the run in an ambiguous state).
 
-### Setup (one terminal: Anvil fork)
+### Setup (one terminal: Anvil + distribute bootstrap, single command)
 
 ```bash
-anvil --fork-url "https://<your-rpc>" \
-      --chain-id 1 \
-      --host 0.0.0.0 \
-      --port 8545
+scripts/fork-bootstrap.sh --mode distribute
 ```
 
-Same as Phase 1.5; if Anvil is already running for the extract
-verification, reuse it. The Linux host-gateway gotcha (see Phase
-1.5), the pre-flight `getent hosts host.docker.internal` check, and
-the upstream-archive caveat apply equally here — `extra_hosts` in
+Same one-command flow as Phase 1.5 — the script reads
+`ethereum_api_server` from `.env.dist` / `.env.extract` / `.env`,
+launches Anvil if it isn't already up, and tops up the signer
+with ALEPH. The Linux host-gateway gotcha (see Phase 1.5), the
+pre-flight `getent hosts host.docker.internal` check, and the
+upstream-archive caveat apply equally here — `extra_hosts` in
 `docker/docker-compose.yml` already handles the alias for the
 `nodestatus-dist` service.
+
+If you're already running Anvil for the extract verification, pass
+`--no-anvil` to reuse it:
+
+```bash
+scripts/fork-bootstrap.sh --mode distribute --no-anvil
+```
 
 ### Fork bootstrap (top up signer with ALEPH)
 

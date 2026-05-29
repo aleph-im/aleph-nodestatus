@@ -29,7 +29,12 @@
 #                             [--signer <addr>] \
 #                             [--rpc <url>] \
 #                             [--admin <addr>] \
-#                             [--dist-recipient <addr>]
+#                             [--dist-recipient <addr>] \
+#                             [--ethereum-api-server <url>] \
+#                             [--env-file <path>] \
+#                             [--no-anvil] \
+#                             [--anvil-port <N>] \
+#                             [--anvil-block-number <N>]
 #
 # Modes:
 #   extract    — grant ADMIN_ROLE + fund processor (USDC/ETH/ALEPH)
@@ -44,6 +49,20 @@
 #                with "Balance not enough" — which is exactly the
 #                behaviour you'd see on mainnet today, so the audit
 #                output reflects production reality).
+#
+# Anvil lifecycle:
+#   By default the script LAUNCHES Anvil itself, reading the upstream
+#   RPC URL from `ethereum_api_server` the same way extract/distribute
+#   do (CLI flag → env var → docker/.env.extract → docker/.env.dist →
+#   ./.env). Anvil runs in the background and survives this script's
+#   exit; the PID + log path are printed so the operator can kill it
+#   afterwards. If Anvil is already running on the target port the
+#   script detects it and reuses it.
+#
+#   Pass --no-anvil to opt out (e.g. you already manage Anvil with
+#   another supervisor); the script then expects it to be reachable
+#   at --rpc (default http://localhost:8545) and only does the
+#   bootstrap.
 #
 # Defaults (all overridable via flags or env vars of the same name):
 #   --signer            0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
@@ -81,6 +100,18 @@ ANVIL_RPC="${ANVIL_RPC:-http://localhost:8545}"
 ADMIN="${ADMIN:-0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E}"
 DIST_RECIPIENT="${DIST_RECIPIENT:-0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25}"
 
+# Anvil-launch defaults (overridable via CLI flags below).
+ETHEREUM_API_SERVER_CLI=""
+ENV_FILE_CLI=""
+LAUNCH_ANVIL=1
+ANVIL_PORT=8545
+ANVIL_BLOCK=""
+ANVIL_LOG="${ANVIL_LOG:-/tmp/anvil-fork-bootstrap.log}"
+
+# Project root — resolved relative to this script so the env-file
+# scanner finds `docker/.env.extract` regardless of cwd.
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 # Canonical addresses — these mirror src/aleph_nodestatus/settings.py.
 # If the deployment changes, edit settings.py first, then this script.
 PROCESSOR=0x6b55F32Ea969910838defd03746Ced5E2AE8cB8B
@@ -103,11 +134,16 @@ ETH_GAS_BUFFER=0xDE0B6B3A7640000     # 1 ETH (for impersonated senders)
 # Parse args
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mode)            MODE="$2"; shift 2 ;;
-    --signer)          SIGNER="$2"; shift 2 ;;
-    --rpc)             ANVIL_RPC="$2"; shift 2 ;;
-    --admin)           ADMIN="$2"; shift 2 ;;
-    --dist-recipient)  DIST_RECIPIENT="$2"; shift 2 ;;
+    --mode)                  MODE="$2"; shift 2 ;;
+    --signer)                SIGNER="$2"; shift 2 ;;
+    --rpc)                   ANVIL_RPC="$2"; shift 2 ;;
+    --admin)                 ADMIN="$2"; shift 2 ;;
+    --dist-recipient)        DIST_RECIPIENT="$2"; shift 2 ;;
+    --ethereum-api-server)   ETHEREUM_API_SERVER_CLI="$2"; shift 2 ;;
+    --env-file)              ENV_FILE_CLI="$2"; shift 2 ;;
+    --no-anvil)              LAUNCH_ANVIL=0; shift ;;
+    --anvil-port)            ANVIL_PORT="$2"; shift 2 ;;
+    --anvil-block-number)    ANVIL_BLOCK="$2"; shift 2 ;;
     -h|--help)
       sed -n '1,/^set -euo pipefail$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -130,10 +166,142 @@ command -v cast >/dev/null || {
   exit 2
 }
 
-# Sanity: Anvil is up and responding
+# Resolve the upstream RPC URL using the same priority chain as the
+# nodestatus Settings loader: explicit CLI flag → process env var →
+# explicit --env-file → docker/.env.extract → docker/.env.dist →
+# project-root .env. The first source that defines a non-empty
+# `ethereum_api_server` wins. Echoes the resolved URL on stdout (so
+# callers can `RPC=$(... | tail -1)`) and the source on stderr.
+resolve_upstream_rpc() {
+  local v=""
+  if [[ -n "$ETHEREUM_API_SERVER_CLI" ]]; then
+    echo "[upstream RPC ← --ethereum-api-server flag]" >&2
+    echo "$ETHEREUM_API_SERVER_CLI"
+    return 0
+  fi
+  if [[ -n "${ETHEREUM_API_SERVER:-}" ]]; then
+    echo "[upstream RPC ← \$ETHEREUM_API_SERVER env var]" >&2
+    echo "$ETHEREUM_API_SERVER"
+    return 0
+  fi
+  # Helper: grep one assignment out of a .env file, strip optional
+  # surrounding quotes, ignore comments / leading whitespace. Same
+  # tolerance as pydantic-settings reads the file with.
+  read_env_var() {
+    local f="$1" key="$2"
+    [[ -r "$f" ]] || return 1
+    local line
+    line=$(grep -E "^[[:space:]]*${key}=" "$f" | head -1) || return 1
+    [[ -n "$line" ]] || return 1
+    local raw="${line#*=}"
+    raw="${raw%$'\r'}"
+    raw="${raw#\"}"; raw="${raw%\"}"
+    raw="${raw#\'}"; raw="${raw%\'}"
+    [[ -n "$raw" ]] && { echo "$raw"; return 0; }
+    return 1
+  }
+  if [[ -n "$ENV_FILE_CLI" ]]; then
+    if v=$(read_env_var "$ENV_FILE_CLI" "ethereum_api_server"); then
+      echo "[upstream RPC ← $ENV_FILE_CLI]" >&2
+      echo "$v"; return 0
+    fi
+  fi
+  for f in "$PROJECT_ROOT/docker/.env.extract" \
+           "$PROJECT_ROOT/docker/.env.dist" \
+           "$PROJECT_ROOT/.env"; do
+    if v=$(read_env_var "$f" "ethereum_api_server"); then
+      echo "[upstream RPC ← $f]" >&2
+      echo "$v"; return 0
+    fi
+  done
+  return 1
+}
+
+# Launch Anvil in the background, fork from $UPSTREAM_RPC. Idempotent:
+# if the target port is already serving (e.g. another Anvil instance
+# is up), it's reused instead of starting a duplicate.
+launch_anvil() {
+  local upstream="$1"
+  local port="$2"
+  local block="${3:-}"
+  local target_rpc="http://localhost:${port}"
+
+  if cast block-number --rpc-url "$target_rpc" >/dev/null 2>&1; then
+    echo "  [reuse] Anvil already responding on port $port"
+    ANVIL_RPC="$target_rpc"
+    return 0
+  fi
+
+  command -v anvil >/dev/null || {
+    echo "ERROR: \`anvil\` not on PATH. Install Foundry: " \
+         "curl -L https://foundry.paradigm.xyz | bash && foundryup" >&2
+    exit 2
+  }
+
+  # Sanity-ping the upstream so we fail fast if the URL is wrong /
+  # unreachable, rather than waiting 30s for Anvil to time out.
+  local latest_upstream
+  if ! latest_upstream=$(cast block-number --rpc-url "$upstream" 2>&1); then
+    echo "ERROR: upstream RPC not reachable at $upstream:" >&2
+    echo "  $latest_upstream" >&2
+    exit 3
+  fi
+  echo "  upstream ok (latest block $latest_upstream)"
+
+  local cmd=(anvil --fork-url "$upstream" --chain-id 1
+                   --host 0.0.0.0 --port "$port")
+  [[ -n "$block" ]] && cmd+=(--fork-block-number "$block")
+  echo "  launching: ${cmd[*]} (log: $ANVIL_LOG)"
+  : > "$ANVIL_LOG"
+  nohup "${cmd[@]}" > "$ANVIL_LOG" 2>&1 &
+  ANVIL_PID=$!
+  echo "  Anvil PID: $ANVIL_PID — kill with: kill $ANVIL_PID"
+
+  # Wait up to ~30s for the JSON-RPC port to come alive. Anvil
+  # typically takes 1–4s to fork; we poll at 0.5s and abort early
+  # if the process died (e.g. bad upstream URL slipped through the
+  # cheap ping).
+  local i=0
+  until cast block-number --rpc-url "$target_rpc" >/dev/null 2>&1; do
+    i=$((i + 1))
+    if (( i > 60 )); then
+      echo "ERROR: Anvil did not come up within 30s. Tail of log:" >&2
+      tail -30 "$ANVIL_LOG" >&2
+      exit 3
+    fi
+    if ! kill -0 "$ANVIL_PID" 2>/dev/null; then
+      echo "ERROR: Anvil process exited before listening. Log:" >&2
+      tail -30 "$ANVIL_LOG" >&2
+      exit 3
+    fi
+    sleep 0.5
+  done
+  ANVIL_RPC="$target_rpc"
+  echo "  Anvil ready at $ANVIL_RPC"
+}
+
+if (( LAUNCH_ANVIL == 1 )); then
+  echo "=== anvil launch ==="
+  if ! UPSTREAM_RPC=$(resolve_upstream_rpc); then
+    echo "ERROR: could not resolve upstream RPC URL." >&2
+    echo "  Pass --ethereum-api-server <url>, set " \
+         "ETHEREUM_API_SERVER, or define ethereum_api_server in one " \
+         "of: docker/.env.extract, docker/.env.dist, .env" >&2
+    exit 2
+  fi
+  launch_anvil "$UPSTREAM_RPC" "$ANVIL_PORT" "$ANVIL_BLOCK"
+  echo ""
+fi
+
+# Sanity: whatever Anvil we're targeting (just-launched or reused or
+# externally-managed via --no-anvil), confirm it's responding before
+# the bootstrap mutates anything.
 if ! cast block-number --rpc-url "$ANVIL_RPC" >/dev/null 2>&1; then
-  echo "ERROR: Anvil not reachable at $ANVIL_RPC. Start it with:" >&2
-  echo "  anvil --fork-url <your-archive-rpc> --chain-id 1 --host 0.0.0.0 --port 8545" >&2
+  echo "ERROR: Anvil not reachable at $ANVIL_RPC." >&2
+  if (( LAUNCH_ANVIL == 0 )); then
+    echo "  --no-anvil was set; start Anvil yourself, e.g.:" >&2
+    echo "  anvil --fork-url <url> --chain-id 1 --host 0.0.0.0 --port 8545" >&2
+  fi
   exit 2
 fi
 
@@ -146,7 +314,8 @@ DIST_LC=$(to_lower "$DIST_RECIPIENT")
 
 echo "=== fork-bootstrap config ==="
 echo "  mode            : $MODE"
-echo "  rpc             : $ANVIL_RPC"
+echo "  upstream RPC    : ${UPSTREAM_RPC:-(external — anvil managed elsewhere)}"
+echo "  anvil endpoint  : $ANVIL_RPC"
 echo "  signer          : $SIGNER"
 echo "  admin           : $ADMIN"
 echo "  dist_recipient  : $DIST_RECIPIENT"
