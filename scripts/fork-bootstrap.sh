@@ -119,6 +119,18 @@ DETACH="${DETACH:-0}"
 # PID of the launched Anvil. Empty when --no-anvil or when we reused
 # an existing instance — the EXIT trap distinguishes both.
 ANVIL_PID=""
+# Default: stream Anvil's log into this process's output after the
+# bootstrap finishes (so the operator sees every JSON-RPC call the
+# docker container is making against the fork in real time). Set
+# QUIET_ANVIL=1 / --quiet-anvil if you'd rather have a clean
+# terminal — the log file is still written, you can `tail -f` it
+# manually.
+QUIET_ANVIL="${QUIET_ANVIL:-0}"
+# PID of the background `tail -f` that streams Anvil output. Tracked
+# so the EXIT trap can kill it; otherwise the tail process would
+# survive the script and keep printing into the terminal after
+# Anvil's gone.
+TAIL_PID=""
 
 # Project root — resolved relative to this script so the env-file
 # scanner finds `docker/.env.extract` regardless of cwd.
@@ -158,6 +170,7 @@ while [[ $# -gt 0 ]]; do
     --anvil-port)            ANVIL_PORT="$2"; shift 2 ;;
     --anvil-block-number)    ANVIL_BLOCK="$2"; shift 2 ;;
     --detach)                DETACH=1; shift ;;
+    --quiet-anvil)           QUIET_ANVIL=1; shift ;;
     -h|--help)
       sed -n '1,/^set -euo pipefail$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -540,6 +553,11 @@ echo "=== bootstrap done — fork ready for nodestatus --fork-rpc=$ANVIL_RPC ===
 if [[ -n "$ANVIL_PID" ]] && (( DETACH == 0 )); then
   cleanup_anvil() {
     # Idempotent — both INT/TERM and EXIT may fire on a normal Ctrl-C.
+    # Stop the tail FIRST so its `tail: write error` on a closing
+    # terminal doesn't get printed on top of our shutdown banner.
+    if [[ -n "${TAIL_PID:-}" ]] && kill -0 "$TAIL_PID" 2>/dev/null; then
+      kill "$TAIL_PID" 2>/dev/null || true
+    fi
     if [[ -n "${ANVIL_PID:-}" ]] && kill -0 "$ANVIL_PID" 2>/dev/null; then
       echo ""
       echo "Stopping Anvil (PID $ANVIL_PID) …"
@@ -561,6 +579,22 @@ if [[ -n "$ANVIL_PID" ]] && (( DETACH == 0 )); then
   echo "    -e ethereum_api_server=\"http://host.docker.internal:$ANVIL_PORT\" \\"
   echo "    --entrypoint /usr/local/bin/nodestatus-extract-credits \\"
   echo "    nodestatus-extract --dry-run --fork-rpc=http://host.docker.internal:$ANVIL_PORT -v"
+
+  if (( QUIET_ANVIL == 0 )); then
+    echo ""
+    echo "--- anvil output (streaming; suppress with --quiet-anvil) ---"
+    # `tail -n +1 -F` replays from the start AND follows new lines,
+    # so the Anvil startup banner (versions, fork height, the 10
+    # pre-funded dev accounts) is visible from the first line — not
+    # just whatever happens *after* the bootstrap completes. `-F`
+    # over `-f` is intentional in case Anvil ever rotates its log.
+    # `sed` prefixes every line so Anvil output is visually
+    # distinguishable from anything else this script prints.
+    tail -n +1 -F "$ANVIL_LOG" 2>/dev/null \
+      | sed -u 's/^/[anvil] /' &
+    TAIL_PID=$!
+  fi
+
   # `wait` returns when Anvil exits (Ctrl-C, oom, …) — the trap fires
   # on the way out, so even an abnormal Anvil death is cleaned up
   # consistently.

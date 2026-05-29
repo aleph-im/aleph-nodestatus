@@ -96,6 +96,11 @@ That single command:
   `docker compose run` (the script even prints the exact command).
   Pass `--detach` if you want the old "bootstrap then exit, Anvil
   orphaned in the background" behaviour for automation.
+- streams Anvil's log into this terminal (prefixed with `[anvil] `)
+  so every JSON-RPC call the docker container makes against the
+  fork is visible in real time. Suppress with `--quiet-anvil` if
+  you prefer a quiet terminal — the log file is still written, you
+  can `tail -f` it manually.
 
 Override the upstream when needed:
 
@@ -114,6 +119,7 @@ Other useful overrides:
 | `--no-anvil` | Skip launching Anvil; expect it to already be running at `--rpc`. |
 | `--admin-grantor <addr>` | Override the address used to grant `ADMIN_ROLE`. The script auto-discovers via `owner()` then the configured admin; pass this if neither holds the role-admin. |
 | `--detach` | Bootstrap, then exit. Anvil stays alive in the background (PID printed); operator kills it manually. |
+| `--quiet-anvil` | Don't stream Anvil's log into the script's terminal. The log file is still written. |
 
 Anvil keeps running after the script exits. The script prints its
 PID and log path so you can `tail -f $LOG` while iterating and
