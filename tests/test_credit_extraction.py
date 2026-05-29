@@ -390,3 +390,75 @@ async def test_stdout_summary_renders_price_deviation(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "USDC" in out and "price_deviation" in out
     assert "350" in out  # deviation bps shown
+
+
+# ---------------------------------------------------------------------------
+# Pkey validation — catches the three operator mistakes that previously
+# surfaced as `binascii.Error: Non-hexadecimal digit found` from inside
+# `Account.from_key(HexBytes(...))` with no useful context.
+# ---------------------------------------------------------------------------
+
+from aleph_nodestatus.credit_extraction import _validate_pkey
+
+
+def test_validate_pkey_accepts_64_hex_chars_with_prefix():
+    assert _validate_pkey("0x" + "ab" * 32, source="ethereum_pkey") is None
+
+
+def test_validate_pkey_accepts_64_hex_chars_without_prefix():
+    assert _validate_pkey("ab" * 32, source="ethereum_pkey") is None
+
+
+def test_validate_pkey_empty_returns_clear_error():
+    err = _validate_pkey("", source="payment_processor_admin_pkey")
+    assert err is not None
+    assert "empty" in err.lower()
+    assert "payment_processor_admin_pkey" in err
+
+
+def test_validate_pkey_none_returns_clear_error():
+    err = _validate_pkey(None, source="ethereum_pkey")
+    assert err is not None
+    assert "empty" in err.lower()
+
+
+def test_validate_pkey_template_placeholder_caught(capsys):
+    """`.env` left with the example template (`<processor_admin_private_key>`)
+    must produce a clear error pointing at the source file, not a
+    binascii traceback. This is the foot-gun the user actually hit."""
+    err = _validate_pkey(
+        "<processor_admin_private_key>",
+        source="payment_processor_admin_pkey",
+    )
+    assert err is not None
+    msg = err.lower()
+    assert ".env.extract" in msg or ".env.dist" in msg
+    # Either the length check or the hex-char check would catch it;
+    # we don't pin which, but both must produce something actionable.
+    assert "placeholder" in msg or "non-hex" in msg or "wrong length" in msg
+
+
+def test_validate_pkey_wrong_length_reports_actual_length():
+    err = _validate_pkey("0xabcd", source="ethereum_pkey")
+    assert err is not None
+    assert "len=4" in err  # body length after stripping 0x
+    assert "64" in err
+
+
+def test_validate_pkey_invalid_hex_char_caught():
+    """A single non-hex character (e.g. an accidental `g` or stray
+    quote) must be flagged with the bad characters echoed back so
+    the operator can find them in the env file."""
+    bad = "0x" + "g" + "a" * 63
+    err = _validate_pkey(bad, source="ethereum_pkey")
+    assert err is not None
+    assert "non-hex" in err.lower()
+    assert "'g'" in err  # the bad chars are echoed
+
+
+def test_validate_pkey_fork_mode_intro_mentions_fork():
+    err = _validate_pkey("", source="ethereum_pkey",
+                         fork_rpc="http://localhost:8545")
+    assert err is not None
+    assert "fork" in err.lower()
+

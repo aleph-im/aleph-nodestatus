@@ -34,6 +34,61 @@ from .settings import settings
 LOGGER = logging.getLogger(__name__)
 
 
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _validate_pkey(
+    pk: Optional[str], *,
+    source: str,
+    fork_rpc: Optional[str] = None,
+) -> Optional[str]:
+    """Return None if `pk` is a syntactically valid 32-byte hex private
+    key, else a CLI-ready error string describing what's wrong.
+
+    Catches the three common operator mistakes that previously surfaced
+    as a `binascii.Error: Non-hexadecimal digit found` traceback from
+    `HexBytes(...)`:
+
+      - the value is missing (`.env` was never edited from the template);
+      - the value still contains placeholder syntax like
+        `<processor_admin_private_key>` (angle brackets, underscores);
+      - the value has the right length but the wrong character set
+        (stray whitespace, quotes, BOM, smart quotes from a copy/paste).
+    """
+    intro = (
+        "Fork mode signs real txs against the fork; a real key is required."
+        if fork_rpc else
+        "A real signing key is required."
+    )
+    if not pk:
+        return (
+            f"ERROR: {source} is empty. {intro} "
+            "Edit docker/.env.extract (or .env.dist) and set "
+            "payment_processor_admin_pkey or ethereum_pkey to a 32-byte "
+            "hex private key (0x-prefixed)."
+        )
+    body = pk[2:] if pk.lower().startswith("0x") else pk
+    if len(body) != 64:
+        # Length-first because it's the most diagnostic single signal.
+        return (
+            f"ERROR: {source} is the wrong length "
+            f"(len={len(body)}, expected 64 hex chars / 32 bytes). "
+            f"Got something starting with {pk[:8]!r}. "
+            f"If you copied .env.extract from .env.extract.example, "
+            f"replace the placeholder. {intro}"
+        )
+    bad = [c for c in body if c not in _HEX_CHARS]
+    if bad:
+        return (
+            f"ERROR: {source} contains non-hex characters {bad[:5]!r}. "
+            f"Likely a stray placeholder, quote, BOM, or whitespace in "
+            f"docker/.env.extract (or .env.dist). Open the file and make "
+            f"sure the value is exactly 0x + 64 hex chars on one line. "
+            f"{intro}"
+        )
+    return None
+
+
 async def process_credit_extraction(
     *, act: bool, dry_run: bool, transfer: bool,
     immediate: bool = False,
@@ -64,22 +119,25 @@ async def process_credit_extraction(
     # resolution as live --act.
     needs_signer = (act and not dry_run and transfer) or bool(fork_rpc)
     if needs_signer:
-        pk = settings.payment_processor_admin_pkey or settings.ethereum_pkey
-        if not pk:
-            click.echo(
-                "ERROR: signing key required "
-                "(payment_processor_admin_pkey or ethereum_pkey). Fork "
-                "mode signs real txs against the fork." if fork_rpc else
-                "ERROR: payment_processor_admin_pkey or ethereum_pkey "
-                "required for --act."
-            )
+        pk_raw = (
+            settings.payment_processor_admin_pkey or settings.ethereum_pkey
+        )
+        err = _validate_pkey(
+            pk_raw,
+            source="payment_processor_admin_pkey"
+                   if settings.payment_processor_admin_pkey
+                   else "ethereum_pkey",
+            fork_rpc=fork_rpc,
+        )
+        if err:
+            click.echo(err)
             return 2
         if not settings.payment_processor_admin_pkey:
             LOGGER.warning(
                 "payment_processor_admin_pkey not set; falling back to "
                 "ethereum_pkey"
             )
-        admin_account = Account.from_key(HexBytes(pk))
+        admin_account = Account.from_key(HexBytes(pk_raw))
         admin_address = admin_account.address
 
     if act and not dry_run and transfer:

@@ -592,14 +592,17 @@ async def process_credit_distribution(
         # of this file — re-importing it here would make Python treat it
         # as a function-local for the whole of `process_credit_distribution`
         # and break the live --act path at line ~560.
+        from .credit_extraction import _validate_pkey
         from .ethereum import (
             audit_distribution_tx, transfer_tokens_audited,
         )
-        if not settings.ethereum_pkey:
-            click.echo(
-                "ERROR: ethereum_pkey required for --fork-rpc (signing is "
-                "real even on a fork)."
-            )
+        err = _validate_pkey(
+            settings.ethereum_pkey,
+            source="ethereum_pkey",
+            fork_rpc=fork_rpc,
+        )
+        if err:
+            click.echo(err)
             return 2
         signer = Account.from_key(HexBytes(settings.ethereum_pkey))
         contract = get_token_contract(web3)
