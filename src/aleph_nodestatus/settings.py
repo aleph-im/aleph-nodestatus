@@ -215,6 +215,15 @@ class Settings(BaseSettings):
     extract_fork_rpc: str                  = ""
     extract_max_reconcile_delta_bps: int   = 200
 
+    # Same fork mode for `distribute-credits --dry-run`. Reconciliation
+    # for distribute is per-recipient: each ERC20 Transfer event from the
+    # batchTransfer receipt is matched against the calculated reward
+    # amount for that recipient. There's no Uniswap involved in
+    # distribute, so the natural default tolerance is 0 bps — every wei
+    # must match. Raise only if you knowingly accept rounding drift.
+    distribute_fork_rpc: str                  = ""
+    distribute_max_reconcile_delta_bps: int   = 0
+
     uniswap_v3_factory_address: str       = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
     uniswap_v4_state_view_address: str    = "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"
 

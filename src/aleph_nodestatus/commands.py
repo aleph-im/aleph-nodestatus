@@ -12,6 +12,9 @@ import time as time_mod
 from decimal import Decimal
 
 import click
+from eth_account import Account
+from hexbytes import HexBytes
+
 from aleph_nodestatus import __version__
 from aleph_nodestatus.sablier import sablier_monitoring_process
 
@@ -282,10 +285,19 @@ async def process_credit_distribution(
     act=False, dry_run=False, force=False, force_cap=False,
     flags=None, reward_sender=None, full_resync=False,
     safety_blocks=None, require_witness=None,
+    fork_rpc=None, reconcile_bps=0,
 ):
     flags = flags or {}
     dbs = get_dbs()
-    web3 = get_web3()
+    if fork_rpc:
+        # Fork mode: stand up a Web3 pointed at the local fork, leaving
+        # the cached `get_web3()` alone so anything else this process
+        # touches still talks to the production RPC settings dictated.
+        # The cron and live --act path are untouched.
+        from web3 import HTTPProvider, Web3 as _W3
+        web3 = _W3(HTTPProvider(fork_rpc))
+    else:
+        web3 = get_web3()
 
     if safety_blocks is None:
         safety_blocks = settings.credit_dist_safety_blocks
@@ -330,7 +342,7 @@ async def process_credit_distribution(
                 f"Cadence guard: only {end_height - last_end} blocks "
                 f"since last distribution. Skipping; use --force to override."
             )
-            return
+            return 0
 
     if start_height in (None, -1):
         if last_end is None:
@@ -568,7 +580,80 @@ async def process_credit_distribution(
     # === Step 5: transfer (or simulate) ===
     is_testnet = PublishMode.is_testnet()
     transfer_metadata = {"sources": list(by_source.keys()), "targets": []}
-    if flags.get("transfer") and act and not is_testnet:
+    # Fork-mode audit accumulator. Populated only when fork_rpc is set;
+    # surfaces at the end of the function as the process exit code.
+    audit_results = []
+    if fork_rpc and flags.get("transfer"):
+        # Fork-verified batchTransfer: full sign + broadcast + receipt
+        # + per-recipient reconciliation against ERC20 Transfer events.
+        # Mirrors the extract fork audit. Does NOT publish (--no-publish
+        # is implied by --dry-run).
+        # NOTE: get_token_contract is already module-imported at the top
+        # of this file — re-importing it here would make Python treat it
+        # as a function-local for the whole of `process_credit_distribution`
+        # and break the live --act path at line ~560.
+        from .ethereum import (
+            audit_distribution_tx, transfer_tokens_audited,
+        )
+        if not settings.ethereum_pkey:
+            click.echo(
+                "ERROR: ethereum_pkey required for --fork-rpc (signing is "
+                "real even on a fork)."
+            )
+            return 2
+        signer = Account.from_key(HexBytes(settings.ethereum_pkey))
+        contract = get_token_contract(web3)
+        click.echo(
+            f"Executing batchTransfer on fork (signer={signer.address}) …"
+        )
+        max_items = settings.ethereum_batch_size
+        items = list(final_rewards.items())
+        nonce = web3.eth.get_transaction_count(signer.address)
+        for i in range(math.ceil(len(items) / max_items)):
+            step = dict(items[max_items*i:max_items*(i+1)])
+            click.echo(
+                f"Batch {i+1}: transferring to {len(step)} recipients "
+                f"(nonce={nonce})"
+            )
+            try:
+                tx_info = transfer_tokens_audited(
+                    web3, contract, signer, step, nonce=nonce,
+                )
+            except Exception as e:
+                click.echo(f"  batch broadcast FAILED: {e!r}")
+                audit_results.append({
+                    "batch_index": i + 1, "reconcile_failed": True,
+                    "error": repr(e),
+                })
+                continue
+            nonce += 1
+            if tx_info["status"] == 0:
+                click.echo(f"  batch reverted on fork (tx_hash="
+                           f"{tx_info['tx_hash']})")
+                audit_results.append({
+                    "batch_index": i + 1, "reconcile_failed": True,
+                    "error": "tx_reverted_on_fork",
+                    "tx_hash": tx_info["tx_hash"],
+                })
+                continue
+            audit_results.append(audit_distribution_tx(
+                web3,
+                tx_info=tx_info, batch_targets=step, batch_index=i + 1,
+                token_address=settings.ethereum_token_contract,
+                sender_address=signer.address,
+                reconcile_bps=reconcile_bps,
+            ))
+            # Mirror the production transfer_metadata shape so downstream
+            # consumers (the distribution post body, the failed-batch
+            # summary) see a familiar structure.
+            transfer_metadata["targets"].append({
+                "success": True, "status": "fork_mined",
+                "tx": tx_info["tx_hash"], "chain": "ETH-FORK",
+                "sender": signer.address,
+                "targets": step,
+                "total": sum(step.values()),
+            })
+    elif flags.get("transfer") and act and not is_testnet:
         click.echo("Executing batchTransfer …")
         max_items = settings.ethereum_batch_size
         items = list(final_rewards.items())
@@ -670,6 +755,29 @@ async def process_credit_distribution(
                 "AMEND the post to mark them success=true."
             )
 
+    # === Fork-mode summary ===
+    if fork_rpc:
+        n_failed = sum(1 for a in audit_results if a.get("reconcile_failed"))
+        n_total  = len(audit_results)
+        click.echo(
+            f"\n=== Distribute fork audit summary ==="
+            f"\n  batches audited : {n_total}"
+            f"\n  matched         : {n_total - n_failed}"
+            f"\n  failed          : {n_failed}"
+        )
+        if n_failed:
+            click.echo("  failing batches:")
+            for a in audit_results:
+                if not a.get("reconcile_failed"):
+                    continue
+                click.echo(
+                    f"    batch {a.get('batch_index')}: "
+                    f"{a.get('error') or 'reconciliation mismatch'}"
+                )
+            click.echo("  !!! RECONCILIATION FAILED — exit code 2")
+            return 2
+    return 0
+
 
 @click.command()
 @click.option("-v", "--verbose", count=True)
@@ -712,12 +820,24 @@ async def process_credit_distribution(
               help="Right-edge finality buffer. Default from settings (500).")
 @click.option("--no-witness-required", "no_witness_required", is_flag=True,
               help="Downgrade missing-expense-witness abort to a warning.")
+@click.option("--fork-rpc", "fork_rpc", default=None,
+              help="URL of a local mainnet fork (e.g. http://localhost:8545 "
+                   "for `anvil --fork-url …`). Requires --dry-run; refused "
+                   "with --act or --testnet. Upgrades dry-run into a full "
+                   "sign+broadcast+receipt audit of each batchTransfer "
+                   "against the fork. Overrides settings.distribute_fork_rpc.")
+@click.option("--reconcile-bps", "reconcile_bps", default=None, type=int,
+              help="Max acceptable delta between realized and expected "
+                   "per-recipient amount in fork mode (bps). Default 0 "
+                   "(exact wei match). Override "
+                   "settings.distribute_max_reconcile_delta_bps.")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                        start_height, end_height, full_resync,
                        no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
-                       reward_sender, safety_blocks, no_witness_required):
+                       reward_sender, safety_blocks, no_witness_required,
+                       fork_rpc, reconcile_bps):
     """Credit-based distribution script (new tokenomics)."""
     setup_logging(verbose)
 
@@ -732,6 +852,41 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
                    "mutually exclusive")
         sys.exit(2)
 
+    # Resolve fork-rpc: CLI flag wins, else settings (env). Same
+    # mutual-exclusion guards as extract: never accept fork mode in any
+    # configuration that could touch mainnet or the Aleph testnet API,
+    # because the broadcast path signs real txs.
+    resolved_fork_rpc = fork_rpc or (settings.distribute_fork_rpc or None)
+    if resolved_fork_rpc:
+        if act:
+            click.echo(
+                "ERROR: --fork-rpc / distribute_fork_rpc cannot be combined "
+                "with --act. Fork mode broadcasts to the configured RPC; "
+                "running --act with a fork URL active would either silently "
+                "execute against the fork or — if the URL was a typo for a "
+                "real node — execute live. Clear distribute_fork_rpc to "
+                "distribute for real."
+            )
+            sys.exit(2)
+        if testnet:
+            click.echo(
+                "ERROR: --fork-rpc / distribute_fork_rpc cannot be combined "
+                "with --testnet. Pick one verification path."
+            )
+            sys.exit(2)
+        if not dry_run:
+            click.echo(
+                "ERROR: --fork-rpc / distribute_fork_rpc requires --dry-run."
+            )
+            sys.exit(2)
+        if not _fork_rpc_is_safe(resolved_fork_rpc):
+            click.echo(
+                f"ERROR: fork RPC host must be one of {_FORK_RPC_SAFE_HOSTS}. "
+                f"Got: {resolved_fork_rpc}. Refusing to sign real txs "
+                f"against a non-loopback endpoint."
+            )
+            sys.exit(2)
+
     if testnet:
         PublishMode.set_testnet(True)
 
@@ -742,14 +897,22 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
         no_transfer=no_transfer, no_publish=no_publish,
         act=act, dry_run=dry_run,
     )
+    # In fork mode we want the transfer step to actually run (against
+    # the fork). The flag-resolution above set transfer=False because
+    # `act=False`; flip it back on.
+    if resolved_fork_rpc:
+        flags["transfer"] = True
 
     mode = (
-        "DRY-RUN" if dry_run else
+        "DRY-RUN (FORK)"        if resolved_fork_rpc else
+        "DRY-RUN"               if dry_run else
         "TESTNET (calculation)" if testnet else
-        "LIVE DISTRIBUTION" if act else
+        "LIVE DISTRIBUTION"     if act else
         "CALCULATION ONLY"
     )
     click.echo(f"Mode: {mode}")
+    if resolved_fork_rpc:
+        click.echo(f"Fork RPC: {resolved_fork_rpc}")
     click.echo(f"Flags: {flags}")
 
     # `--no-witness-required` is a flag, so absence means "use settings
@@ -758,14 +921,21 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
     # settings-driven default behavior.
     require_witness = False if no_witness_required else None
 
-    asyncio.run(process_credit_distribution(
+    exit_code = asyncio.run(process_credit_distribution(
         start_height=start_height, end_height=end_height,
         act=act, dry_run=dry_run, force=force, force_cap=force_cap,
         flags=flags, reward_sender=reward_sender,
         full_resync=full_resync,
         safety_blocks=safety_blocks,
         require_witness=require_witness,
+        fork_rpc=resolved_fork_rpc,
+        reconcile_bps=(
+            reconcile_bps if reconcile_bps is not None
+            else settings.distribute_max_reconcile_delta_bps
+        ),
     ))
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def _resolve_feature_flags(*, no_credit_revenue, no_wage,

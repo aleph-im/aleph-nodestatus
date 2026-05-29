@@ -35,7 +35,7 @@ def test_cli_dry_run_invokes_orchestrator_with_transfer_false(monkeypatch):
     captured = {}
     async def fake_orch(**kwargs):
         captured.update(kwargs)
-        return {"tokens": [], "errors": []}
+        return 0  # new orchestrator contract returns an exit code
     monkeypatch.setattr(cmd, "process_credit_extraction", fake_orch)
 
     runner = CliRunner()
@@ -66,7 +66,7 @@ def test_cli_immediate_forwarded_to_orchestrator(monkeypatch):
     captured = {}
     async def fake_orch(**kwargs):
         captured.update(kwargs)
-        return {"tokens": [], "errors": []}
+        return 0  # new orchestrator contract returns an exit code
     monkeypatch.setattr(cmd, "process_credit_extraction", fake_orch)
 
     runner = CliRunner()
@@ -84,7 +84,7 @@ def test_cli_dry_run_implies_immediate(monkeypatch):
     captured = {}
     async def fake_orch(**kwargs):
         captured.update(kwargs)
-        return {"tokens": [], "errors": []}
+        return 0  # new orchestrator contract returns an exit code
     monkeypatch.setattr(cmd, "process_credit_extraction", fake_orch)
 
     runner = CliRunner()

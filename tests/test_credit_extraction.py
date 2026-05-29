@@ -46,15 +46,11 @@ async def test_process_credit_extraction_calls_extract_aleph(monkeypatch):
         act=False, dry_run=False, transfer=False, immediate=True,
     )
 
-    assert result == {
-        "tokens": [{
-            "symbol": "ALEPH", "token": "0xB", "amount_in": "0",
-            "swap_amount_in": None, "min_out": None, "expected_out": None,
-            "tx_hash": None, "simulated_only": False,
-            "skipped_reason": "zero_balance", "error": None,
-        }],
-        "errors": [],
-    }
+    # process_credit_extraction now returns an exit code (int), not the
+    # raw extract_block dict — the dict is consumed via _print_summary
+    # and the orchestrator surfaces only the exit-code contract the CLI
+    # needs. Calc-only path with no errors → 0.
+    assert result == 0
     # calculation-only path: dry_run forwarded as True (because transfer=False)
     assert captured["dry_run"] is True
     assert captured["transfer_enabled"] is False
