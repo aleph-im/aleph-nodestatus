@@ -113,6 +113,68 @@ Expect: a non-loopback IP followed by `8545 open`. If you see
 bridge subnet, or the host running a Docker too old for
 `host-gateway`.
 
+> **RPC archive gotcha:** Anvil resolves contract state by querying
+> the upstream RPC. Free providers without archive support reject
+> those queries with `historical state … is not available`, which
+> kills the audit before it can read a single `balanceOf`. Verify
+> the upstream first: `cast call <ALEPH_TOKEN>
+> "balanceOf(address)(uint256)" <ADDR> --rpc-url $YOUR_RPC` from the
+> Anvil host. If it errors, switch to an archive-capable upstream
+> (e.g. `https://eth.llamarpc.com`) or pin Anvil to an older block:
+> `--fork-block-number $(( $(cast block-number --rpc-url $YOUR_RPC)
+> - 32 ))`.
+
+### Fork bootstrap (grant roles + seed balances)
+
+After Anvil is up, the fork has the mainnet state at the chosen
+block — which means the AlephPaymentProcessor still gates
+`process()` by `ADMIN_ROLE`, and whatever USDC / ETH / ALEPH
+balances were in the processor at the fork moment are what extract
+will see. Two things you almost always need to do:
+
+1. Give the signing address `ADMIN_ROLE` so `process()` doesn't
+   revert with `AccessControlUnauthorizedAccount`.
+2. Top up the processor with USDC, ETH, and ALEPH so all three
+   token paths actually have something to sweep (otherwise extract
+   just prints `skipped=zero_balance` and you've verified nothing).
+
+The helper script `scripts/fork-bootstrap.sh` automates both via
+`cast rpc anvil_impersonateAccount` + `anvil_setBalance`. Pick the
+scenario that matches how you'll sign:
+
+**Scenario A — no production pkey (sign as Anvil dev account #0):**
+
+```bash
+scripts/fork-bootstrap.sh --mode extract
+# then later, in the docker compose run:
+#   -e payment_processor_admin_pkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+```
+
+The script grants `ADMIN_ROLE` to `0xf39F…2266` (Anvil dev #0) by
+impersonating the configured admin (no real pkey involved), then
+funds the processor.
+
+**Scenario B — you have the real admin pkey, just need the
+balances seeded:**
+
+```bash
+scripts/fork-bootstrap.sh --mode extract \
+  --signer 0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E
+# the role grant becomes a no-op because the admin already holds it;
+# only the USDC / ETH / ALEPH funding happens.
+```
+
+**Scenario C — throwaway address you generated for testing:**
+
+```bash
+scripts/fork-bootstrap.sh --mode extract --signer 0xMY_TEST_ADDR
+```
+
+All three are idempotent — re-running against the same fork only
+re-funds and re-grants, nothing breaks. Use `--mode all` instead of
+`--mode extract` to bootstrap distribute at the same time (covered
+in Phase 4.5).
+
 ### Run (another terminal: nodestatus inside docker)
 
 ```bash
@@ -318,9 +380,51 @@ anvil --fork-url "https://<your-rpc>" \
 
 Same as Phase 1.5; if Anvil is already running for the extract
 verification, reuse it. The Linux host-gateway gotcha (see Phase
-1.5) and the pre-flight `getent hosts host.docker.internal` check
-apply equally here — `extra_hosts` in `docker/docker-compose.yml`
-already handles the alias for the `nodestatus-dist` service.
+1.5), the pre-flight `getent hosts host.docker.internal` check, and
+the upstream-archive caveat apply equally here — `extra_hosts` in
+`docker/docker-compose.yml` already handles the alias for the
+`nodestatus-dist` service.
+
+### Fork bootstrap (top up signer with ALEPH)
+
+`batchTransfer` requires the signer to actually hold the ALEPH it's
+transferring. Anvil's dev account #0 has zero ALEPH on mainnet;
+even your throwaway test address won't. Run the same helper script
+in distribute mode:
+
+**Scenario A — no production pkey (sign as Anvil dev account #0):**
+
+```bash
+scripts/fork-bootstrap.sh --mode distribute
+# then later:
+#   -e ethereum_pkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+```
+
+Impersonates the configured `distribution_recipient` on the fork
+and transfers 1,000,000 ALEPH to Anvil dev #0 (enough for any
+realistic distribution batch).
+
+**Scenario B — you have the real distribution-recipient pkey:**
+
+```bash
+scripts/fork-bootstrap.sh --mode distribute \
+  --signer 0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25
+# ALEPH top-up becomes a no-op — the recipient's mainnet balance
+# is inherited by the fork. Only the gas top-up runs.
+```
+
+**Scenario C — throwaway address:**
+
+```bash
+scripts/fork-bootstrap.sh --mode distribute --signer 0xMY_TEST_ADDR
+```
+
+If you're verifying both phases in the same Anvil session, do one
+combined pass:
+
+```bash
+scripts/fork-bootstrap.sh --mode all [--signer 0x…]
+```
 
 ### Run (another terminal: nodestatus inside docker)
 
