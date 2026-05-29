@@ -2,9 +2,10 @@
 
 import json
 import logging
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional, Set
 
 from .pool_oracle import check_swap_price_deviation
 from .settings import settings
@@ -51,6 +52,154 @@ def quote_amount_out(quoters: dict, swap_config: dict, amount_in: int,
         result = quoter.functions.quoteExactInput(params).call()
         return result[0]
     raise ValueError(f"Unknown swap version: {v}")
+
+
+def bisect_swap_amount_for_impact(
+    quoters: dict, swap_config: dict, *,
+    token_in: str,
+    upper_amount_in: int,
+    min_amount_in: int,
+    ref_amount_in: int,
+    threshold_bps: int,
+    dev_pct: int = 0,
+    is_stable: bool = False,
+    max_iters: int = 30,
+) -> dict:
+    """Find the largest `amount_in` in `[min_amount_in, upper_amount_in]`
+    whose realized price impact stays within `threshold_bps`.
+
+    All amounts are in *input* wei (before the contract's stable
+    `dev_pct` trim). Internally, every quote is taken on
+    `swap_amount = amount_in × (100 - dev_pct) / 100` when stable,
+    matching what hits the on-chain pool.
+
+    Method (two phases):
+
+      1. **Halving**: starting from `upper_amount_in`, divide by 2 until
+         either the impact falls under the threshold (→ `low_ok`) or
+         the candidate drops below `min_amount_in` (→ nothing fits).
+
+      2. **Bisection**: refine between `(high_bad, low_ok)` until the
+         interval is below `delta = max(min_amount_in, low_ok // 100)`
+         — i.e. precision of ~1% of the current best fit, but never
+         finer than the operator's floor.
+
+    Capped at `max_iters` quoter calls to keep latency bounded; the
+    `delta` heuristic typically converges in 10-15 iterations.
+
+    Returns a trace dict:
+
+      ``{
+        "settled_amount_in":      int,   # 0 if even min didn't fit
+        "iterations":             list,  # each: amount_in, swap_amount,
+                                         #       quote_out, expected_no_impact,
+                                         #       impact_bps
+        "unit_price_quote_out":   int,
+        "unit_price_swap_amount": int,
+      }``
+
+    The trace is intentionally rich — operators reviewing
+    `extract-credits.log` need to see why the script chose half (or
+    a tenth) of the available balance.
+    """
+    def _swap_amount_of(amount_in: int) -> int:
+        if is_stable and dev_pct > 0:
+            return amount_in * (100 - dev_pct) // 100
+        return amount_in
+
+    ref_swap = _swap_amount_of(ref_amount_in)
+    if ref_swap <= 0:
+        # `ref_amount_in` was so small the dev_pct trim floored to 0,
+        # which means we can't take a reference quote at all. Fall back
+        # to "no search" so the caller proceeds with the unconstrained
+        # amount — the on-chain slippage guard (`process_slippage_bps`)
+        # is still the safety net.
+        return {
+            "settled_amount_in": upper_amount_in,
+            "iterations": [],
+            "unit_price_quote_out": 0,
+            "unit_price_swap_amount": 0,
+            "note": "degenerate_ref_amount",
+        }
+
+    ref_out = quote_amount_out(
+        quoters, swap_config, ref_swap, token_in=token_in,
+    )
+    iters: list = []
+
+    def _measure(amount_in: int) -> int:
+        swap = _swap_amount_of(amount_in)
+        actual = quote_amount_out(
+            quoters, swap_config, swap, token_in=token_in,
+        )
+        # Linear extrapolation of the reference quote. A "no impact"
+        # swap of size `swap` would return `swap × (ref_out / ref_swap)`;
+        # the gap to the realized `actual` is the price impact.
+        expected = swap * ref_out // ref_swap
+        impact_bps = (
+            (expected - actual) * 10_000 // expected
+            if expected > 0 else 0
+        )
+        iters.append({
+            "amount_in":          amount_in,
+            "swap_amount":        swap,
+            "quote_out":          actual,
+            "expected_no_impact": expected,
+            "impact_bps":         impact_bps,
+        })
+        return impact_bps
+
+    # Phase 1: test the upper bound. If it already fits, we're done.
+    if _measure(upper_amount_in) <= threshold_bps:
+        return {
+            "settled_amount_in":      upper_amount_in,
+            "iterations":             iters,
+            "unit_price_quote_out":   ref_out,
+            "unit_price_swap_amount": ref_swap,
+        }
+
+    # Phase 1b: halving down to find the first amount under threshold.
+    high_bad = upper_amount_in
+    low_ok = 0
+    candidate = upper_amount_in // 2
+    while candidate >= min_amount_in and len(iters) < max_iters:
+        if _measure(candidate) <= threshold_bps:
+            low_ok = candidate
+            break
+        high_bad = candidate
+        candidate //= 2
+
+    if low_ok == 0:
+        # Even the min-floor (or the smallest halving step above it)
+        # exceeded the threshold. Caller turns this into a skip with
+        # `skipped_reason="price_impact_too_high"` so the next cron
+        # cycle gets a fresh shot once the pool has rebalanced.
+        return {
+            "settled_amount_in":      0,
+            "iterations":             iters,
+            "unit_price_quote_out":   ref_out,
+            "unit_price_swap_amount": ref_swap,
+        }
+
+    # Phase 2: bisect (low_ok, high_bad) for the largest amount that fits.
+    # `delta` ties precision to the operator's floor — once the interval
+    # is below that, more iterations can't improve the decision.
+    delta = max(min_amount_in, low_ok // 100)
+    while high_bad - low_ok > delta and len(iters) < max_iters:
+        mid = (low_ok + high_bad) // 2
+        if mid < min_amount_in:
+            break
+        if _measure(mid) <= threshold_bps:
+            low_ok = mid
+        else:
+            high_bad = mid
+
+    return {
+        "settled_amount_in":      low_ok,
+        "iterations":             iters,
+        "unit_price_quote_out":   ref_out,
+        "unit_price_swap_amount": ref_swap,
+    }
 
 
 @lru_cache(maxsize=None)
@@ -223,6 +372,19 @@ def _token_decimals(w3, token_address: str) -> int:
     if token_address.lower() == ETH_SENTINEL.lower():
         return 18
     return int(_erc20_contract(w3, token_address).functions.decimals().call())
+
+
+def _human_to_wei(w3, token_address: str, human_amount: Decimal) -> int:
+    """Convert a human-units amount (e.g. Decimal("1000") for 1000 USDC)
+    to integer wei, using the token's on-chain `decimals()`. The ETH
+    sentinel resolves to 18 dp via `_token_decimals`.
+
+    Decimal arithmetic keeps the result exact; the final `int()` truncates
+    any sub-wei fraction, matching Solidity's integer semantics.
+    """
+    dec = _token_decimals(w3, token_address)
+    scale = Decimal(10) ** dec
+    return int(Decimal(human_amount) * scale)
 
 
 def _fmt_amount(value: int, decimals: int, *, max_dp: int = 6) -> str:
@@ -469,15 +631,42 @@ def extract_aleph(
     slippage_bps: int = None,
     audit_tx: bool = False,
     reconcile_bps: int = 200,
+    token_filter: Optional[Set[str]] = None,
+    max_amounts: Optional[Mapping[str, Decimal]] = None,
+    min_amounts: Optional[Mapping[str, Decimal]] = None,
+    max_price_impact_bps: int = 0,
 ) -> dict:
     """Run process() per token in settings.process_tokens. Returns the
     extract block for the audit post.
+
+    Per-token sizing knobs (all keyed by token symbol, e.g. "USDC"):
+
+    - `token_filter`: if non-empty, restricts the loop to these symbols.
+      Other tokens are skipped entirely (no balance read, no entry).
+    - `max_amounts`: cap the swap input per token, in *human units*
+      (e.g. Decimal("1000") for 1000 USDC). Converted to wei via the
+      token's on-chain `decimals()`. The cap is `amount_in = min(balance, cap_wei)`.
+    - `min_amounts`: skip the token with reason "below_min_amount" if
+      the effective (post-cap) amount is below this threshold, also in
+      human units. Reads alongside `max_amounts` so a cap that lands
+      below the floor short-circuits without burning gas on a dust swap.
+
+    Auto-sizing (price-impact aware):
+
+    - `max_price_impact_bps`: when > 0, the loop probes the quoter at a
+      small-size reference amount and at the candidate (post-cap)
+      amount, derives the implied price impact, and bisects down until
+      the impact fits. The leftover stays in the contract for the next
+      cron cycle. 0 disables the search and falls back to the cap/min
+      behaviour above.
     """
     aleph_address = aleph_address or _aleph_token_address()
     effective_slippage = (
         slippage_bps if slippage_bps is not None
         else settings.process_slippage_bps
     )
+    max_amounts = max_amounts or {}
+    min_amounts = min_amounts or {}
     out = {"tokens": [], "errors": []}
 
     # Read protocol-wide percentages once. For stable tokens the contract
@@ -497,6 +686,13 @@ def extract_aleph(
         dev_pct = 0
 
     for token_symbol, raw_token in settings.process_tokens:
+        # token_filter is a positive allowlist: when non-empty, skip
+        # everything else BEFORE the on-chain balance read so a
+        # narrow --token run doesn't waste RPC calls on tokens the
+        # operator didn't ask for.
+        if token_filter and token_symbol not in token_filter:
+            continue
+
         # Checksum once at the loop head so every downstream call
         # (getSwapConfig, quote_amount_out, simulate_process,
         # execute_process, the audit-post entry) sees the same
@@ -509,6 +705,7 @@ def extract_aleph(
         balance = _balance_of(w3, contract_address, token)
         entry = {
             "symbol": token_symbol, "token": token,
+            "balance": str(balance),
             "amount_in": str(balance), "skipped_reason": None,
             "swap_amount_in": None,
             "min_out": None, "expected_out": None,
@@ -520,22 +717,38 @@ def extract_aleph(
             entry["skipped_reason"] = "zero_balance"
             continue
 
+        # Per-token sizing: cap then min-skip. Conversion human → wei
+        # happens here so the caller can pass plain Decimals without
+        # knowing decimals() for each token.
+        effective_amount = balance
+        if token_symbol in max_amounts:
+            cap_wei = _human_to_wei(w3, token, max_amounts[token_symbol])
+            if cap_wei < balance:
+                effective_amount = cap_wei
+                entry["amount_in"] = str(effective_amount)
+                entry["capped_from_balance"] = True
+        if token_symbol in min_amounts:
+            min_wei = _human_to_wei(w3, token, min_amounts[token_symbol])
+            if effective_amount < min_wei:
+                entry["skipped_reason"] = "below_min_amount"
+                entry["min_amount_wei"] = str(min_wei)
+                continue
+
         if token_lc == aleph_address.lower():
-            # ALEPH passthrough: no swap. expected_out is the full balance
-            # (the processor just routes it onward); min_out stays at 0
-            # because there's nothing to lose to slippage. Mirror those
-            # into the entry so audit reconciliation has values to compare
-            # against (previously these stayed None, which the audit path
-            # would have mis-treated as a missing quote).
+            # ALEPH passthrough: no swap. expected_out is the effective
+            # amount (the processor just routes it onward); min_out stays
+            # at 0 because there's nothing to lose to slippage. Mirror
+            # those into the entry so audit reconciliation has values to
+            # compare against (previously these stayed None, which the
+            # audit path would have mis-treated as a missing quote).
             min_out = 0
-            expected_out = balance
+            expected_out = effective_amount
             entry["expected_out"] = str(expected_out)
             entry["min_out"]      = str(min_out)
         else:
-            # Quote against the amount the contract will *actually* swap.
-            # For stables that's `balance × (100 - dev_pct) / 100` because
-            # the dev cut is removed from the input pre-swap; for the rest
-            # it's the full balance.
+            # Hoisted reads: is_stable + swap_config are needed both by
+            # the auto-size search (when enabled) and by the final
+            # quote, so fetch them once.
             try:
                 is_stable = bool(
                     processor.functions.isStableToken(token).call()
@@ -546,17 +759,6 @@ def extract_aleph(
                     token_symbol, e,
                 )
                 is_stable = False
-            if is_stable and dev_pct > 0:
-                # Integer floor-division. For balances < 100/dev_pct wei
-                # this truncates the swap_amount to 0 (e.g., balance=1
-                # USDC-wei with dev_pct=5 yields 0). Such balances are
-                # economically meaningless — USDC has 6 decimals so 1 wei
-                # is $0.000001 — and the contract's own ZeroAmount check
-                # would revert downstream, so we just accept the floor.
-                swap_amount = balance * (100 - dev_pct) // 100
-            else:
-                swap_amount = balance
-            entry["swap_amount_in"] = str(swap_amount)
             try:
                 swap_config = processor.functions.getSwapConfig(token).call()
                 cfg = _swap_config_to_dict(swap_config)
@@ -577,6 +779,68 @@ def extract_aleph(
                     "ref_price":     oracle.ref_price,
                 }
                 continue
+
+            # Auto-sizing: shrink `effective_amount` until the implied
+            # price impact fits under `max_price_impact_bps`. Skipped
+            # for ALEPH (no swap) and when the threshold is 0 (opt-in).
+            if max_price_impact_bps > 0:
+                # Reference amount for the "unit price" probe: the
+                # operator's --min-amount floor when set, otherwise 1
+                # token unit. 1 wei would round to 0 in the quoter for
+                # tight-decimal tokens, so we use a realistic floor.
+                if token_symbol in min_amounts:
+                    min_in_wei = _human_to_wei(
+                        w3, token, min_amounts[token_symbol],
+                    )
+                else:
+                    min_in_wei = 1
+                if token_symbol in min_amounts:
+                    ref_in_wei = min_in_wei
+                else:
+                    ref_in_wei = 10 ** _token_decimals(w3, token)
+                try:
+                    search = bisect_swap_amount_for_impact(
+                        quoters, cfg,
+                        token_in=token,
+                        upper_amount_in=effective_amount,
+                        min_amount_in=min_in_wei,
+                        ref_amount_in=ref_in_wei,
+                        threshold_bps=max_price_impact_bps,
+                        dev_pct=dev_pct,
+                        is_stable=is_stable,
+                    )
+                except Exception as e:
+                    LOGGER.exception(
+                        "Price-impact search failed for token %s: %r",
+                        token_symbol, e,
+                    )
+                    entry["error"] = f"price_impact_search_failed: {e!r}"
+                    out["errors"].append(entry)
+                    continue
+                entry["price_impact_search"] = search
+                if search["settled_amount_in"] == 0:
+                    entry["skipped_reason"] = "price_impact_too_high"
+                    continue
+                if search["settled_amount_in"] < effective_amount:
+                    effective_amount = search["settled_amount_in"]
+                    entry["amount_in"] = str(effective_amount)
+                    entry["auto_sized"] = True
+
+            # Quote against the amount the contract will *actually* swap.
+            # For stables that's `effective_amount × (100 - dev_pct) / 100`
+            # because the dev cut is removed from the input pre-swap; for
+            # the rest it's the full effective amount.
+            if is_stable and dev_pct > 0:
+                # Integer floor-division. For balances < 100/dev_pct wei
+                # this truncates the swap_amount to 0 (e.g., balance=1
+                # USDC-wei with dev_pct=5 yields 0). Such balances are
+                # economically meaningless — USDC has 6 decimals so 1 wei
+                # is $0.000001 — and the contract's own ZeroAmount check
+                # would revert downstream, so we just accept the floor.
+                swap_amount = effective_amount * (100 - dev_pct) // 100
+            else:
+                swap_amount = effective_amount
+            entry["swap_amount_in"] = str(swap_amount)
 
             try:
                 expected_out = quote_amount_out(
@@ -600,7 +864,7 @@ def extract_aleph(
         err = simulate_process(
             w3, processor,
             from_address=from_address,
-            token=token, amount_in=balance, min_out=min_out,
+            token=token, amount_in=effective_amount, min_out=min_out,
             ttl=settings.process_ttl_seconds,
         )
         if err:
@@ -615,7 +879,7 @@ def extract_aleph(
         try:
             tx_info = execute_process(
                 w3, processor, account,
-                token=token, amount_in=balance, min_out=min_out,
+                token=token, amount_in=effective_amount, min_out=min_out,
                 ttl=settings.process_ttl_seconds,
             )
             entry["tx_hash"] = tx_info["tx_hash"]

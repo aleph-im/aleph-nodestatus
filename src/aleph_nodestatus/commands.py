@@ -1087,6 +1087,57 @@ def _fork_rpc_is_safe(url: str) -> bool:
     return host in _FORK_RPC_SAFE_HOSTS
 
 
+def _parse_amount_kv(values, *, flag_name: str, configured_symbols: set):
+    """Parse a click `multiple=True` list of 'SYMBOL=AMOUNT' strings into
+    `{SYMBOL: Decimal(AMOUNT)}`. Each SYMBOL must be in `configured_symbols`
+    (i.e. settings.process_tokens). Duplicate SYMBOLs are rejected to
+    surface "did the operator mean +500 or =500?" ambiguity at the CLI
+    boundary instead of silently using the last-wins value.
+
+    Click-style errors via UsageError so the user sees a normal CLI
+    "Error: ..." message and a non-zero exit, not a stack trace.
+    """
+    from decimal import InvalidOperation
+    out = {}
+    for raw in values:
+        if "=" not in raw:
+            raise click.UsageError(
+                f"--{flag_name} expects SYMBOL=AMOUNT (e.g. USDC=1000), "
+                f"got: {raw!r}"
+            )
+        symbol, _, amount_s = raw.partition("=")
+        symbol = symbol.strip()
+        amount_s = amount_s.strip()
+        if not symbol or not amount_s:
+            raise click.UsageError(
+                f"--{flag_name} expects SYMBOL=AMOUNT (e.g. USDC=1000), "
+                f"got: {raw!r}"
+            )
+        if symbol not in configured_symbols:
+            raise click.UsageError(
+                f"--{flag_name}: symbol {symbol!r} is not in "
+                f"settings.process_tokens ({sorted(configured_symbols)}). "
+                f"Add it to the configured token list first."
+            )
+        if symbol in out:
+            raise click.UsageError(
+                f"--{flag_name}: duplicate entry for {symbol!r}. "
+                f"Pass the option once per token."
+            )
+        try:
+            value = Decimal(amount_s)
+        except InvalidOperation:
+            raise click.UsageError(
+                f"--{flag_name}: {amount_s!r} is not a valid decimal number"
+            )
+        if value <= 0:
+            raise click.UsageError(
+                f"--{flag_name}: {symbol}={value} must be > 0"
+            )
+        out[symbol] = value
+    return out
+
+
 @click.command()
 @click.option("-v", "--verbose", count=True)
 @click.option("-a", "--act", help="Broadcast process() txs", is_flag=True)
@@ -1098,6 +1149,33 @@ def _fork_rpc_is_safe(url: str) -> bool:
               help="Skip the anti-MEV random delay (manual retries)")
 @click.option("--slippage-bps", "slippage_bps", default=None, type=int,
               help="Override per-run slippage tolerance")
+@click.option("-t", "--token", "tokens", multiple=True,
+              help="Restrict extract to this token symbol (repeatable). "
+                   "Must be one of settings.process_tokens. Default: all.")
+@click.option("--max-amount", "max_amount_kv", multiple=True,
+              help="Cap swap amount per token in human units: "
+                   "SYMBOL=AMOUNT (repeatable). Example: "
+                   "--max-amount USDC=1000 swaps at most 1000 USDC even if "
+                   "the contract balance is higher. Useful when pool "
+                   "liquidity is thin and a full-balance swap would move "
+                   "the price too much.")
+@click.option("--min-amount", "min_amount_kv", multiple=True,
+              help="Skip the token if its (post-cap) amount is below this "
+                   "threshold in human units: SYMBOL=AMOUNT (repeatable). "
+                   "Example: --min-amount USDC=100 skips USDC when the "
+                   "extractable amount drops below 100 USDC — avoids "
+                   "paying gas on dust-sized swaps. Stacks with "
+                   "--max-amount: cap first, then min-skip.")
+@click.option("--max-price-impact-bps", "max_price_impact_bps", default=None,
+              type=int,
+              help="Enable auto-sizing: bisect the swap amount until the "
+                   "implied price impact (vs a small-size reference quote) "
+                   "fits under this threshold, in bps. 100 = 1 percent. "
+                   "Overrides settings.extract_max_price_impact_bps. "
+                   "0 disables the search and uses the full (or capped) "
+                   "balance. Leftover stays in the contract for next "
+                   "cron cycle — the pool gets time to rebalance via "
+                   "arbitrage between swaps.")
 @click.option("--fork-rpc", "fork_rpc", default=None,
               help="URL of a local mainnet fork (e.g. http://localhost:8545 "
                    "for `anvil --fork-url …`). Requires --dry-run; refused "
@@ -1110,13 +1188,61 @@ def _fork_rpc_is_safe(url: str) -> bool:
                    "settings.extract_max_reconcile_delta_bps (200 = 2%). "
                    "Only applies in --fork-rpc mode.")
 def extract_credits(verbose, act, dry_run, no_transfer, immediate,
-                    slippage_bps, fork_rpc, reconcile_bps):
+                    slippage_bps, tokens, max_amount_kv, min_amount_kv,
+                    max_price_impact_bps, fork_rpc, reconcile_bps):
     """Extract ALEPH from the AlephPaymentProcessor (no Aleph publish)."""
     setup_logging(verbose)
 
     if act and dry_run:
         click.echo("ERROR: --act and --dry-run are mutually exclusive")
         sys.exit(2)
+
+    configured_symbols = {sym for sym, _ in settings.process_tokens}
+    token_filter = set(tokens) if tokens else None
+    if token_filter:
+        unknown = token_filter - configured_symbols
+        if unknown:
+            click.echo(
+                f"ERROR: --token {sorted(unknown)} not in "
+                f"settings.process_tokens ({sorted(configured_symbols)}). "
+                f"Add to the configured list first."
+            )
+            sys.exit(2)
+    try:
+        max_amounts = _parse_amount_kv(
+            max_amount_kv, flag_name="max-amount",
+            configured_symbols=configured_symbols,
+        )
+        cli_min_amounts = _parse_amount_kv(
+            min_amount_kv, flag_name="min-amount",
+            configured_symbols=configured_symbols,
+        )
+    except click.UsageError as e:
+        click.echo(f"ERROR: {e.message}")
+        sys.exit(2)
+    # Defaults from settings.extract_default_min_amounts merge under the
+    # CLI values: any --min-amount SYM=N overrides the default for that
+    # symbol, but tokens the operator didn't mention still get the
+    # configured floor. Filter defaults to configured_symbols so a stale
+    # entry (e.g. a removed token) is silently ignored instead of
+    # erroring out the CLI.
+    default_min_amounts = {
+        sym: Decimal(str(amt))
+        for sym, amt in settings.extract_default_min_amounts.items()
+        if sym in configured_symbols
+    }
+    min_amounts = {**default_min_amounts, **cli_min_amounts}
+    # If both are set for the same token, cap must be >= min — otherwise
+    # the cap deterministically forces the min-skip and the run is a no-op
+    # for that token. Reject at the CLI so the operator notices.
+    for sym in max_amounts.keys() & min_amounts.keys():
+        if max_amounts[sym] < min_amounts[sym]:
+            click.echo(
+                f"ERROR: --max-amount {sym}={max_amounts[sym]} is below "
+                f"--min-amount {sym}={min_amounts[sym]}; the cap would "
+                f"always trigger the min-skip. Adjust one of them."
+            )
+            sys.exit(2)
 
     # Resolve fork-rpc: CLI flag wins, else settings (env). Empty string
     # in settings is treated as "unset" so the user can keep an
@@ -1171,6 +1297,13 @@ def extract_credits(verbose, act, dry_run, no_transfer, immediate,
         act=act, dry_run=dry_run, transfer=transfer,
         immediate=(immediate or dry_run),
         slippage_bps=slippage_bps,
+        tokens=tuple(tokens),
+        max_amounts=max_amounts,
+        min_amounts=min_amounts,
+        max_price_impact_bps=(
+            max_price_impact_bps if max_price_impact_bps is not None
+            else settings.extract_max_price_impact_bps
+        ),
         fork_rpc=resolved_fork_rpc,
         reconcile_bps=(
             reconcile_bps if reconcile_bps is not None

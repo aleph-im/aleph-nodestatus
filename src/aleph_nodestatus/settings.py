@@ -203,6 +203,33 @@ class Settings(BaseSettings):
     extract_max_deviation_bps: int        = 200
     chainlink_max_age_seconds: int        = 3600
 
+    # Auto-sizing of the swap input to stay under a self-impact ceiling.
+    # When > 0 (in bps), the extractor probes the configured quoter at a
+    # small-size "unit" amount and at the candidate swap amount, derives
+    # the implied price impact, and bisects downward until the impact
+    # fits within the threshold (or no amount above the per-token
+    # `--min-amount` floor fits, in which case the token is skipped).
+    # The leftover stays in the contract for the next cron cycle, giving
+    # arbitrage bots time to rebalance the pool. 0 disables the search;
+    # 100 = 1% impact ceiling, sized to absorb USDC/ETH pool depth on
+    # the configured Uniswap paths. CLI flag `--max-price-impact-bps`
+    # overrides for one-off ops runs.
+    extract_max_price_impact_bps: int     = 100
+
+    # Per-token floor on the swap amount (human units, decimals-aware).
+    # If the extractable amount drops below this for a given token, the
+    # cron skips it that cycle so the gas cost doesn't dominate the
+    # value moved. Floor reasoning: at typical mainnet gas a process()
+    # call costs ~$3-10, so a ~$100-value floor caps gas overhead at
+    # ~10%. CLI `--min-amount SYMBOL=N` overrides per token (per-run,
+    # not persistent). Override the whole map in .env if you change the
+    # token list.
+    extract_default_min_amounts: Dict[str, str] = {
+        "USDC":  "100",
+        "ETH":   "0.025",
+        "ALEPH": "500",
+    }
+
     # === Fork-verified dry-run ===
     # Optional URL of a local mainnet fork (typically `anvil --fork-url …`).
     # When set, `extract-credits --dry-run` upgrades to full sign+broadcast

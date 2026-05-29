@@ -394,6 +394,489 @@ def test_extract_aleph_zero_balance_skipped(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Per-token sizing knobs: token_filter, max_amounts, min_amounts
+# ---------------------------------------------------------------------------
+
+def _mk_erc20_mock(balance: int, decimals: int = 6):
+    """ERC20 mock used by the cap/min tests. Real USDC has 6 decimals;
+    the human-units → wei conversion in `extract_aleph` reads decimals
+    from this mock for any token that has a cap or floor configured."""
+    m = MagicMock()
+    m.functions.balanceOf.return_value.call.return_value = balance
+    m.functions.decimals.return_value.call.return_value = decimals
+    return m
+
+
+def test_extract_aleph_token_filter_restricts_to_subset(monkeypatch):
+    """Passing token_filter={'USDC'} short-circuits the other configured
+    tokens BEFORE the balance read — they don't even appear in the
+    result entries."""
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=1_000_000)
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+    )
+
+    # ETH and ALEPH should be entirely absent — not "skipped".
+    assert [e["symbol"] for e in result["tokens"]] == ["USDC"]
+
+
+def test_extract_aleph_max_amount_caps_swap_input(monkeypatch):
+    """max_amounts caps the amount_in passed to simulate/execute below
+    the full contract balance. USDC has 6 decimals; cap of 500 USDC
+    becomes 500_000_000 wei. simulate_process sees the capped value."""
+    from decimal import Decimal
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    # Balance = 1000 USDC = 1_000_000_000 wei (6 dp)
+    erc20_mock = _mk_erc20_mock(balance=1_000_000_000, decimals=6)
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    simulate_kwargs = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: simulate_kwargs.append(kw) or None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        max_amounts={"USDC": Decimal("500")},
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["balance"]   == "1000000000"   # full on-chain balance
+    assert usdc["amount_in"] == "500000000"    # capped to 500 USDC
+    assert usdc.get("capped_from_balance") is True
+    # simulate_process saw the capped amount, not the original balance.
+    assert simulate_kwargs[0]["amount_in"] == 500_000_000
+
+
+def test_extract_aleph_max_amount_above_balance_is_noop(monkeypatch):
+    """If the configured cap exceeds the on-chain balance, the cap has
+    no effect — amount_in stays at balance and `capped_from_balance` is
+    not set. Prevents a confusing "(capped)" label in the summary when
+    nothing was actually capped."""
+    from decimal import Decimal
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=100_000_000, decimals=6)  # 100 USDC
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        max_amounts={"USDC": Decimal("500")},  # > balance
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["balance"]   == "100000000"
+    assert usdc["amount_in"] == "100000000"
+    assert "capped_from_balance" not in usdc
+
+
+def test_extract_aleph_min_amount_skips_below_threshold(monkeypatch):
+    """When balance is below the min_amounts floor, the token is skipped
+    with reason 'below_min_amount'. No quote, simulate, or execute is
+    invoked — the operator wants to wait until the balance accrues."""
+    from decimal import Decimal
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=50_000_000, decimals=6)  # 50 USDC
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    quote_calls = []
+    simulate_calls = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.quote_amount_out",
+        lambda *a, **kw: quote_calls.append(1) or 1,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: simulate_calls.append(1) or None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        min_amounts={"USDC": Decimal("100")},
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["skipped_reason"] == "below_min_amount"
+    assert usdc["min_amount_wei"] == "100000000"
+    assert quote_calls    == []
+    assert simulate_calls == []
+
+
+def test_extract_aleph_max_below_min_skips(monkeypatch):
+    """Cap-below-min path: balance=1000 USDC, cap=50 USDC, min=100 USDC.
+    Cap reduces to 50 USDC; that's below min; skipped. Catches the case
+    where the operator capped tightly but the floor still protects gas."""
+    from decimal import Decimal
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=1_000_000_000, decimals=6)  # 1000 USDC
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    simulate_calls = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: simulate_calls.append(1) or None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        max_amounts={"USDC": Decimal("50")},
+        min_amounts={"USDC": Decimal("100")},
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["skipped_reason"] == "below_min_amount"
+    # The cap brought us to 50 USDC before the floor check rejected it.
+    assert usdc["amount_in"] == "50000000"
+    assert simulate_calls == []
+
+
+def test_extract_aleph_stable_dev_pct_uses_capped_amount(monkeypatch):
+    """For stable tokens the contract trims dev_pct off the input BEFORE
+    swapping. With cap=500 USDC and dev_pct=5, the quote must run on
+    500 × 95/100 = 475 USDC — proving the cap propagates through the
+    stable adjustment, not just to simulate/execute."""
+    from decimal import Decimal
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=True, dev_pct=5)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=1_000_000_000, decimals=6)
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        max_amounts={"USDC": Decimal("500")},
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["amount_in"]      == "500000000"
+    # 500_000_000 × 95 / 100 = 475_000_000
+    assert usdc["swap_amount_in"] == "475000000"
+
+
+# ---------------------------------------------------------------------------
+# Auto-sizing: bisect_swap_amount_for_impact
+#
+# The pool depth model used by these tests is the constant-product
+# approximation `out(X) = X · POOL / (POOL + X)`. It has a closed-form
+# price impact: `impact_bps = X / (POOL + X) · 10_000`. That lets us
+# pick a POOL and assert convergence to a known threshold without
+# touching the real Uniswap math.
+# ---------------------------------------------------------------------------
+
+from aleph_nodestatus.payment_processor import bisect_swap_amount_for_impact
+
+
+def _mk_constant_product_v3_quoter(pool_depth_wei: int):
+    """V3 quoter mock whose `out(X) = X * POOL / (POOL + X)`. Same shape
+    a Uniswap V3 single-tick pool would produce. Lets bisection tests
+    assert convergence without touching real contracts.
+
+    Returns the quoters dict expected by bisect_swap_amount_for_impact.
+    """
+    v3 = MagicMock()
+
+    def quote_call(path, amount_in):
+        out = amount_in * pool_depth_wei // (pool_depth_wei + amount_in)
+        # Quoter V2 returns a 4-tuple; only the first slot is read by
+        # quote_amount_out.
+        return (out, [0], [0], 0)
+
+    # quoteExactInput(path, amount).call() → (out, ...)
+    # The mock dispatches via the positional args captured here.
+    def quoteExactInput(path, amount_in):
+        wrapper = MagicMock()
+        wrapper.call = lambda: quote_call(path, amount_in)
+        return wrapper
+
+    v3.functions.quoteExactInput = quoteExactInput
+    return {"v2": None, "v3": v3, "v4": None}
+
+
+def test_bisect_no_impact_when_below_threshold_keeps_upper():
+    """If the upper-bound amount is already within threshold, no halving
+    or bisection happens beyond the initial probe + upper check."""
+    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=10**18)  # huge pool
+    cfg = {"v": 3, "v3": b"\x01\x02"}
+    result = bisect_swap_amount_for_impact(
+        quoters, cfg,
+        token_in="0x" + "aa" * 20,
+        upper_amount_in=10**12,       # 1e12 vs 1e18 pool → impact ~1 bps
+        min_amount_in=10**9,
+        ref_amount_in=10**9,
+        threshold_bps=100,
+    )
+    assert result["settled_amount_in"] == 10**12
+    # 2 quoter calls: reference + upper-bound check; no halving.
+    assert len(result["iterations"]) == 1
+
+
+def test_bisect_converges_to_threshold_on_shallow_pool():
+    """With POOL = 100 USDC pool (1e8 wei) and threshold 100 bps:
+    impact_bps = (X - ref_swap) · 10_000 / (POOL + X), so the closed-form
+    max-fit is X* = (POOL · T + 10_000 · ref_swap) / (10_000 - T), with
+    T = threshold_bps. Bisection must land in [X* - delta, X*] where
+    delta = max(min_in, low_ok // 100)."""
+    pool = 100_000_000          # 100 USDC (6 dp)
+    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+    cfg = {"v": 3, "v3": b"\x01\x02"}
+    upper = 50_000_000          # 50 USDC — too big (impact ≈ 3333 bps)
+    min_in = 100_000            # 0.1 USDC floor (= ref_swap here)
+    threshold = 100
+    result = bisect_swap_amount_for_impact(
+        quoters, cfg,
+        token_in="0x" + "aa" * 20,
+        upper_amount_in=upper,
+        min_amount_in=min_in,
+        ref_amount_in=min_in,
+        threshold_bps=threshold,
+    )
+    settled = result["settled_amount_in"]
+    # ref_swap == min_in here (no dev_pct).
+    closed_form = (pool * threshold + 10_000 * min_in) // (10_000 - threshold)
+    # Convergence floor: max(min_in, low_ok//100). settled ≈ 1M
+    # → low_ok//100 ≈ 10k → delta == max(100k, 10k) == 100k.
+    assert settled <= closed_form, (settled, closed_form)
+    assert closed_form - settled <= 100_000, (settled, closed_form)
+    # Verify the chosen amount actually fits the threshold.
+    chosen = next(
+        it for it in reversed(result["iterations"])
+        if it["amount_in"] == settled
+    )
+    assert chosen["impact_bps"] <= threshold
+
+
+def test_bisect_returns_zero_when_min_exceeds_threshold():
+    """A pool too shallow even at min_amount → settled_amount_in == 0,
+    signalling the caller to skip the token."""
+    pool = 1_000_000             # 1 USDC pool — barely any liquidity
+    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+    cfg = {"v": 3, "v3": b"\x01\x02"}
+    result = bisect_swap_amount_for_impact(
+        quoters, cfg,
+        token_in="0x" + "aa" * 20,
+        upper_amount_in=100_000_000,    # 100 USDC
+        min_amount_in=10_000_000,       #  10 USDC floor — too big for this pool
+        ref_amount_in=10_000_000,
+        threshold_bps=100,
+    )
+    assert result["settled_amount_in"] == 0
+
+
+def test_bisect_applies_dev_pct_for_stable_tokens():
+    """For a stable token with dev_pct=5, the impact is measured on
+    the post-trim swap_amount, not on amount_in. With dev_pct, an
+    `amount_in` of 100M USDC quotes against a 95M USDC swap."""
+    pool = 10**18
+    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+    cfg = {"v": 3, "v3": b"\x01\x02"}
+    upper = 10**12
+    result = bisect_swap_amount_for_impact(
+        quoters, cfg,
+        token_in="0x" + "aa" * 20,
+        upper_amount_in=upper,
+        min_amount_in=10**6,
+        ref_amount_in=10**9,
+        threshold_bps=100,
+        dev_pct=5, is_stable=True,
+    )
+    # First "real" iteration measures the upper bound. swap_amount
+    # should be upper * 95 / 100, not upper.
+    first = result["iterations"][0]
+    assert first["amount_in"]   == upper
+    assert first["swap_amount"] == upper * 95 // 100
+
+
+# ---------------------------------------------------------------------------
+# Auto-sizing integration: extract_aleph end-to-end
+# ---------------------------------------------------------------------------
+
+def test_extract_aleph_threshold_zero_does_not_call_bisection(monkeypatch):
+    """Auto-sizing is opt-in: with max_price_impact_bps=0 the bisection
+    function must not be invoked, and amount_in stays at the full
+    (capped) balance — proves the new path doesn't regress the
+    existing flow when ops haven't enabled it."""
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+
+    erc20_mock = _mk_erc20_mock(balance=1_000_000)
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+
+    bisect_calls = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.bisect_swap_amount_for_impact",
+        lambda *a, **kw: bisect_calls.append(1) or {},
+    )
+
+    extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        max_price_impact_bps=0,
+    )
+    assert bisect_calls == []
+
+
+def test_extract_aleph_auto_sizing_shrinks_amount_in(monkeypatch):
+    """With a shallow pool and threshold=100bps, the auto-size search
+    must reduce effective_amount below balance and record the trace
+    on the entry."""
+    from aleph_nodestatus.payment_processor import _swap_config_to_dict
+
+    pool = 100_000_000          # 100 USDC pool
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+
+    erc20_mock = _mk_erc20_mock(balance=50_000_000, decimals=6)  # 50 USDC
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    simulate_kwargs = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: simulate_kwargs.append(kw) or None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        max_price_impact_bps=100,
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["auto_sized"] is True
+    assert int(usdc["amount_in"]) < 50_000_000
+    # simulate_process saw the auto-sized amount, not the full balance.
+    assert simulate_kwargs[0]["amount_in"] == int(usdc["amount_in"])
+    # Trace recorded on the entry for ops review.
+    assert usdc["price_impact_search"]["settled_amount_in"] == int(usdc["amount_in"])
+    assert len(usdc["price_impact_search"]["iterations"]) >= 2
+
+
+def test_extract_aleph_auto_sizing_skips_when_pool_too_shallow(monkeypatch):
+    """Pool too shallow even at min_amount → skipped_reason='price_impact_too_high'."""
+    from decimal import Decimal
+
+    pool = 1_000_000            # 1 USDC pool — tiny
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    processor = _mk_extract_processor(is_stable=False)
+    quoters   = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+
+    erc20_mock = _mk_erc20_mock(balance=500_000_000, decimals=6)
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    simulate_calls = []
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: simulate_calls.append(1) or None,
+    )
+
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        token_filter={"USDC"},
+        min_amounts={"USDC": Decimal("10")},  # 10 USDC floor
+        max_price_impact_bps=100,
+    )
+
+    usdc = result["tokens"][0]
+    assert usdc["skipped_reason"] == "price_impact_too_high"
+    assert simulate_calls == []
+
+
+# ---------------------------------------------------------------------------
 # Real-Contract regression tests for simulate_process
 #
 # The MagicMock-based tests above auto-vivify ANY attribute name on the

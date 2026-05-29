@@ -13,7 +13,8 @@ stdout / log aggregation.
 import asyncio
 import logging
 import random
-from typing import Optional
+from decimal import Decimal
+from typing import Mapping, Optional, Tuple
 
 import click
 
@@ -93,6 +94,10 @@ async def process_credit_extraction(
     *, act: bool, dry_run: bool, transfer: bool,
     immediate: bool = False,
     slippage_bps: Optional[int] = None,
+    tokens: Tuple[str, ...] = (),
+    max_amounts: Optional[Mapping[str, Decimal]] = None,
+    min_amounts: Optional[Mapping[str, Decimal]] = None,
+    max_price_impact_bps: int = 0,
     fork_rpc: Optional[str] = None,
     reconcile_bps: int = 200,
 ) -> int:
@@ -200,6 +205,10 @@ async def process_credit_extraction(
         ),
         audit_tx=bool(fork_rpc),
         reconcile_bps=reconcile_bps,
+        token_filter=set(tokens) if tokens else None,
+        max_amounts=max_amounts or {},
+        min_amounts=min_amounts or {},
+        max_price_impact_bps=max_price_impact_bps,
     )
     _print_summary(extract_block, audit=bool(fork_rpc))
 
@@ -217,13 +226,46 @@ async def process_credit_extraction(
 def _print_summary(extract_block: dict, *, audit: bool = False) -> None:
     click.echo("=== Extract summary ===")
     for entry in extract_block.get("tokens", []):
-        line = f"  {entry['symbol']:6} balance={entry['amount_in']}"
+        # `balance` is the on-chain balance; `amount_in` is what we
+        # actually passed to process() (capped by --max-amount). Render
+        # both only when they differ so the common path stays terse.
+        balance = entry.get("balance", entry["amount_in"])
+        if balance != entry["amount_in"]:
+            line = (f"  {entry['symbol']:6} balance={balance}"
+                    f" amount_in={entry['amount_in']} (capped)")
+        else:
+            line = f"  {entry['symbol']:6} balance={balance}"
+        if entry.get("auto_sized"):
+            # Pull the impact_bps from the settled iteration so the
+            # operator sees what the bisection landed on. Iterations
+            # are appended in order; the last one matching settled
+            # is the chosen amount.
+            search = entry.get("price_impact_search") or {}
+            settled = search.get("settled_amount_in")
+            chosen = next(
+                (it for it in reversed(search.get("iterations") or [])
+                 if it.get("amount_in") == settled),
+                None,
+            )
+            if chosen:
+                line += (f" auto_sized impact={chosen['impact_bps']}bps "
+                         f"iters={len(search.get('iterations') or [])}")
         if entry.get("skipped_reason"):
             line += f" skipped={entry['skipped_reason']}"
             if entry.get("skipped_reason") == "price_deviation":
                 o = entry.get("oracle") or {}
                 if o.get("deviation_bps") is not None:
                     line += f" Δ={o['deviation_bps']}bps"
+            elif entry.get("skipped_reason") == "below_min_amount":
+                if entry.get("min_amount_wei"):
+                    line += f" min={entry['min_amount_wei']}"
+            elif entry.get("skipped_reason") == "price_impact_too_high":
+                search = entry.get("price_impact_search") or {}
+                iters = search.get("iterations") or []
+                if iters:
+                    worst = min(iters, key=lambda i: i["impact_bps"])
+                    line += (f" best_impact={worst['impact_bps']}bps "
+                             f"iters={len(iters)}")
         elif entry.get("error"):
             line += f" ERROR={entry['error']}"
         elif entry.get("simulated_only"):
