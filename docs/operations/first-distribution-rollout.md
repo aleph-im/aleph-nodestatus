@@ -118,7 +118,7 @@ Other useful overrides:
 | `--anvil-block-number <N>` | Pin Anvil to a specific block (e.g. for reproducibility or to dodge archive-pruning). |
 | `--no-anvil` | Skip launching Anvil; expect it to already be running at `--rpc`. |
 | `--admin-grantor <addr>` | Override the address used to grant `ADMIN_ROLE`. The script auto-discovers via `owner()` then the configured admin; pass this if neither holds the role-admin. |
-| `--aleph-whale <addr>` | Address used as the source of ALEPH transfers (processor seeding in extract mode, signer top-up in distribute mode). Defaults to `distribution_recipient`; override if that source's transferable balance is too low. |
+| `--aleph-whale <addr>` | Override the ALEPH source for processor seeding / signer top-up. Default: walk a curated list of mainnet holders (and `distribution_recipient` as the final fallback), picking the first whose balance covers the requested amount. Use this flag to pin a single source. |
 | `--detach` | Bootstrap, then exit. Anvil stays alive in the background (PID printed); operator kills it manually. |
 | `--quiet-anvil` | Don't stream Anvil's log into the script's terminal. The log file is still written. |
 
