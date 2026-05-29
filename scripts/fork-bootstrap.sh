@@ -104,6 +104,15 @@ DIST_RECIPIENT="${DIST_RECIPIENT:-0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25}"
 # `find_role_grantor` below for the resolution chain.
 ADMIN_GRANTOR="${ADMIN_GRANTOR:-}"
 
+# Source address for ALEPH funding (used by extract to seed the
+# processor and by distribute to top up the signer). Defaults to
+# distribution_recipient, which on mainnet holds the operational
+# float. Override with --aleph-whale when that source's transferable
+# balance is too low — typically because (a) it has been partially
+# drained by an earlier bootstrap pass, or (b) some portion of its
+# balance is vesting / locked and not transferable in this block.
+ALEPH_WHALE="${ALEPH_WHALE:-}"
+
 # Anvil-launch defaults (overridable via CLI flags below).
 ETHEREUM_API_SERVER_CLI=""
 ENV_FILE_CLI=""
@@ -163,6 +172,7 @@ while [[ $# -gt 0 ]]; do
     --rpc)                   ANVIL_RPC="$2"; shift 2 ;;
     --admin)                 ADMIN="$2"; shift 2 ;;
     --admin-grantor)         ADMIN_GRANTOR="$2"; shift 2 ;;
+    --aleph-whale)           ALEPH_WHALE="$2"; shift 2 ;;
     --dist-recipient)        DIST_RECIPIENT="$2"; shift 2 ;;
     --ethereum-api-server)   ETHEREUM_API_SERVER_CLI="$2"; shift 2 ;;
     --env-file)              ENV_FILE_CLI="$2"; shift 2 ;;
@@ -417,6 +427,61 @@ EOF
   return 1
 }
 
+# Transfer up to `want_wei` ALEPH from a whale address to a recipient
+# on the fork. Probes the whale's current balance first, hard-fails
+# with a useful message if it's effectively empty, and clamps the
+# amount when the whale is short (rather than silently reverting on
+# eth_estimateGas). All arithmetic uses python3 because shell ints
+# overflow on anything past ~9 ALEPH wei.
+#
+# Usage:  fund_aleph <whale_addr> <recipient_addr> <want_wei> <label>
+fund_aleph() {
+  local whale="$1" recipient="$2" want="$3" label="$4"
+  local bal
+  bal=$(cast call "$ALEPH_TOKEN" "balanceOf(address)(uint256)" \
+    "$whale" --rpc-url "$ANVIL_RPC")
+  # cast emits a possible suffix like " [1.673e24]" — drop it.
+  bal="${bal%% *}"
+  if [[ -z "$bal" || "$bal" == "0" ]]; then
+    cat >&2 <<EOF
+ERROR: ALEPH whale $whale has 0 ALEPH on the fork.
+  This is the source the bootstrap was about to drain to seed $label
+  ($want wei). Pick a different source by passing:
+    --aleph-whale <addr>
+  Find a holder via Etherscan: open the ALEPH token at $ALEPH_TOKEN,
+  switch to the "Holders" tab, and grab any of the top addresses
+  (the contract treasuries you find there will all work the same
+  way as the default).
+EOF
+    return 1
+  fi
+  # min(want, bal - 1k wei reserve). The reserve is a hedge against
+  # the whale's own state changes between balance read and the
+  # transfer (impersonated txs are mined immediately, so it's
+  # belt-and-braces, but cheap).
+  local amount
+  amount=$(python3 -c "
+bal = int('$bal')
+want = int('$want')
+reserve = 1000
+avail = max(0, bal - reserve)
+print(min(want, avail))")
+  if [[ "$amount" == "0" ]]; then
+    echo "ERROR: $whale balance ($bal wei) is below the reserve floor." >&2
+    return 1
+  fi
+  if [[ "$amount" != "$want" ]]; then
+    local short
+    short=$(python3 -c "print(int('$want') - int('$amount'))")
+    echo "  warning: $whale only has $bal wei (≈ $(python3 -c \
+      "print(int('$bal') // 10**18)") ALEPH) — transferring $amount" \
+      "instead of $want (short by $short wei). Pass --aleph-whale" \
+      "to use a richer source if this is too low for the run." >&2
+  fi
+  send_as "$whale" "$ALEPH_TOKEN" \
+    "transfer(address,uint256)" "$recipient" "$amount"
+}
+
 # Generic helper: impersonate an address, ensure it has gas, run a
 # `cast send` from it. Stops impersonation at the end regardless of
 # success — leaves the fork in a clean state for the next caller.
@@ -467,11 +532,13 @@ bootstrap_extract() {
   cast rpc anvil_setBalance "$PROCESSOR" "$ETH_FUND_AMOUNT" \
     --rpc-url "$ANVIL_RPC" >/dev/null
 
-  # 4. Fund the processor with ALEPH (impersonate the distribution
-  #    recipient who already holds ALEPH on mainnet — cheapest source).
-  echo "  funding processor with ALEPH ($ALEPH_FUND_AMOUNT wei = 100,000 ALEPH)"
-  send_as "$DIST_RECIPIENT" "$ALEPH_TOKEN" \
-    "transfer(address,uint256)" "$PROCESSOR" "$ALEPH_FUND_AMOUNT"
+  # 4. Fund the processor with ALEPH (impersonate the configured
+  #    whale — distribution_recipient by default, overridable via
+  #    --aleph-whale for sources with bigger transferable balance).
+  local whale="${ALEPH_WHALE:-$DIST_RECIPIENT}"
+  echo "  funding processor with ALEPH from $whale" \
+       "(up to $ALEPH_FUND_AMOUNT wei = 100,000 ALEPH)"
+  fund_aleph "$whale" "$PROCESSOR" "$ALEPH_FUND_AMOUNT" "the processor" || exit 3
 
   # 5. Summary read-back
   local usdc eth aleph
@@ -495,12 +562,13 @@ bootstrap_distribute() {
     echo "  [skip] signer == distribution_recipient; mainnet ALEPH" \
          "balance is inherited by the fork. Nothing to fund."
   else
+    local whale="${ALEPH_WHALE:-$DIST_RECIPIENT}"
     local bal
     bal=$(cast call "$ALEPH_TOKEN" "balanceOf(address)(uint256)" "$SIGNER" --rpc-url "$ANVIL_RPC")
     echo "  signer current ALEPH balance: $bal"
-    echo "  topping up signer with ALEPH ($ALEPH_TO_SIGNER wei = 1,000,000 ALEPH)"
-    send_as "$DIST_RECIPIENT" "$ALEPH_TOKEN" \
-      "transfer(address,uint256)" "$SIGNER" "$ALEPH_TO_SIGNER"
+    echo "  topping up signer with ALEPH from $whale" \
+         "(up to $ALEPH_TO_SIGNER wei = 1,000,000 ALEPH)"
+    fund_aleph "$whale" "$SIGNER" "$ALEPH_TO_SIGNER" "the signer" || exit 3
     local after
     after=$(cast call "$ALEPH_TOKEN" "balanceOf(address)(uint256)" "$SIGNER" --rpc-url "$ANVIL_RPC")
     echo "  signer ALEPH balance now    : $after"
