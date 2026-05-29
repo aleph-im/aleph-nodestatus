@@ -924,6 +924,43 @@ def _detailed_to_plain(detailed):
     return {addr: dict(comps) for addr, comps in detailed.items()}
 
 
+_REVENUE_COMPONENTS = ("execution_ccn", "execution_crn", "execution_staker",
+                       "storage_ccn", "storage_staker")
+_WAGE_COMPONENTS = ("ccn", "crn", "staker")
+
+
+def build_total_summary(final_rewards, by_address_detailed):
+    """Aggregate the per-address, per-source, per-component breakdown into
+    network-wide totals matching aleph-api-credit's `total` schema.
+
+    Returns {"totals": {"aleph": <grand total>},
+             "bySource": {source: <sum>},
+             "full": {source: {component: <sum>}}}.
+
+    Sums only over the explicit component keys (never the per-stream
+    "total" key the caller injects into by_address_detailed), so the
+    invariant totals.aleph == sum(bySource) == sum(full components)
+    holds and stays consistent with the published `rewards` field.
+    """
+    components = {
+        "credit_revenue": _REVENUE_COMPONENTS,
+        "holder_tier":    _REVENUE_COMPONENTS,
+        "wage_subsidy":   _WAGE_COMPONENTS,
+    }
+    full = {src: {c: 0.0 for c in cs} for src, cs in components.items()}
+    for detail in by_address_detailed.values():
+        for src, cs in components.items():
+            block = detail.get(src, {})
+            for c in cs:
+                full[src][c] += block.get(c, 0.0)
+    by_source = {src: sum(vals.values()) for src, vals in full.items()}
+    return {
+        "totals":   {"aleph": sum(final_rewards.values())},
+        "bySource": by_source,
+        "full":     full,
+    }
+
+
 async def compute_rewards(
     start_time, end_time, full_resync=False,
     include_holder_tier=False, sender=None,

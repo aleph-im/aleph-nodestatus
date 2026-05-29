@@ -22,6 +22,7 @@ from .balances import do_reset_balances
 from . import credit_distribution
 from .credit_distribution import (
     CREDIT_DISTRIBUTION_POST_TYPE,
+    build_total_summary,
     compute_rewards,
     get_latest_successful_credit_distribution,
     should_skip_run,
@@ -693,6 +694,7 @@ async def process_credit_distribution(
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
         "wage_subsidy": wage_totals,
+        "total": build_total_summary(final_rewards, by_address_detailed),
         "feature_flags": flags,
         "tags": [status, "credits", settings.filter_tag],
         "sources": transfer_metadata["sources"],
