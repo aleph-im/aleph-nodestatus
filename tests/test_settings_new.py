@@ -77,19 +77,6 @@ def test_process_ttl_seconds_accepts_3600_exactly():
 def test_anti_mev_defaults():
     assert settings.extract_random_delay_max_seconds == 3540
     assert settings.extract_max_deviation_bps == 200
-    assert settings.chainlink_max_age_seconds == 3600
-    assert settings.uniswap_v3_factory_address.lower() == \
-        "0x1f98431c8ad98523631ae4a59f267346ea31f984"
-    assert settings.uniswap_v4_state_view_address.lower() == \
-        "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
-    # ETH sentinel and WETH both map to the ETH/USD feed.
-    eth_usd = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419".lower()
-    feeds = {k.lower(): v.lower() for k, v in
-             settings.chainlink_usd_feeds.items()}
-    assert feeds["0x0000000000000000000000000000000000000000"] == eth_usd
-    assert feeds["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"] == eth_usd
-    assert feeds["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] == \
-        "0x8fffffd4afb6115b954bd326cbe7b4ba576818f6".lower()
 
 
 def test_credit_api_price_guard_settings_defaults():

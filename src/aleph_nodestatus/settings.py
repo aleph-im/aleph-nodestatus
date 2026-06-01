@@ -201,7 +201,6 @@ class Settings(BaseSettings):
     # === Anti-MEV (Phase 1) ===
     extract_random_delay_max_seconds: int = 3540
     extract_max_deviation_bps: int        = 200
-    chainlink_max_age_seconds: int        = 3600
 
     # === Credit-API price guard ===
     # Output-deviation guard for the extract swap path. Compares the
@@ -261,19 +260,6 @@ class Settings(BaseSettings):
     # must match. Raise only if you knowingly accept rounding drift.
     distribute_fork_rpc: str                  = ""
     distribute_max_reconcile_delta_bps: int   = 0
-
-    uniswap_v3_factory_address: str       = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    uniswap_v4_state_view_address: str    = "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"
-
-    # Chainlink USD feed addresses keyed by lowercase token address.
-    # ETH sentinel (0x000…000) and WETH (0xC02a…6cc2) both map to the
-    # ETH/USD feed because process_tokens refers to ETH via the sentinel
-    # while the on-chain swap path encodes WETH.
-    chainlink_usd_feeds: Dict[str, str] = {
-        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6",
-        "0x0000000000000000000000000000000000000000": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
-        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
-    }
 
     model_config = SettingsConfigDict(env_file=".env")
 
