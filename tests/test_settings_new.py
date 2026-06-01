@@ -90,3 +90,13 @@ def test_anti_mev_defaults():
     assert feeds["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"] == eth_usd
     assert feeds["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] == \
         "0x8fffffd4afb6115b954bd326cbe7b4ba576818f6".lower()
+
+
+def test_credit_api_price_guard_settings_defaults():
+    from aleph_nodestatus.settings import settings
+    assert settings.extract_price_deviation_enabled is True
+    assert settings.credit_api_url == "https://credit.aleph.im/api"
+    assert settings.credit_api_blockchain == "ethereum"
+    assert settings.credit_api_timeout_seconds == 10
+    # threshold reused, unchanged
+    assert settings.extract_max_deviation_bps == 200

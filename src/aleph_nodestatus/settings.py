@@ -203,6 +203,17 @@ class Settings(BaseSettings):
     extract_max_deviation_bps: int        = 200
     chainlink_max_age_seconds: int        = 3600
 
+    # === Credit-API price guard ===
+    # Output-deviation guard for the extract swap path. Compares the
+    # quoter's expected_out against the Credit-API multi-source USD-implied
+    # output. When enabled and the API is unavailable, the token is skipped
+    # for that run (fail-closed). See
+    # docs/specs/2026-06-01-credit-api-price-guard-design.md.
+    extract_price_deviation_enabled: bool = True
+    credit_api_url: str                   = "https://credit.aleph.im/api"
+    credit_api_blockchain: str            = "ethereum"
+    credit_api_timeout_seconds: int       = 10
+
     # Auto-sizing of the swap input to stay under a self-impact ceiling.
     # When > 0 (in bps), the extractor probes the configured quoter at a
     # small-size "unit" amount and at the candidate swap amount, derives
