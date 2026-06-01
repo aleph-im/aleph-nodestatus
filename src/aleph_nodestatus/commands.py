@@ -305,14 +305,18 @@ async def process_credit_distribution(
     if require_witness is None:
         require_witness = settings.credit_dist_require_expense_witness
 
+    # Single RPC call: reused for both the default end_height and the safety
+    # cap so a load-balanced provider (e.g. Infura) can't return two different
+    # block numbers and produce end_height < start_height.
+    current_block = web3.eth.block_number
+
     if end_height in (None, -1):
-        end_height = web3.eth.block_number
+        end_height = current_block
 
     # Right-edge finality margin. See settings.credit_dist_safety_blocks for
     # rationale. If the caller passed an explicit end_height that's already
     # below current_block - safety, leave it alone — they know what they're
     # doing (replays, audits, etc.). Otherwise cap.
-    current_block = web3.eth.block_number
     max_allowed = current_block - safety_blocks
     if end_height > max_allowed:
         original = end_height
