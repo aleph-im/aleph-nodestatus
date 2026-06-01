@@ -91,6 +91,21 @@ def test_fail_closed_on_api_error(monkeypatch):
     assert result.reason == "credit_api_unavailable"
 
 
+def test_fail_closed_on_non_positive_price(monkeypatch):
+    """API returns a non-positive price -> ok=False, credit_api_unavailable."""
+    import aleph_nodestatus.price_oracle as po
+    monkeypatch.setattr(po, "requests",
+                        MagicMock(post=_mock_post({"USDC": 1.0, "ALEPH": 0.0})))
+    result = po.check_output_deviation(
+        token_in_symbol="USDC",
+        swap_amount_wei=1000 * 10**6,
+        token_in_decimals=6,
+        expected_out_wei=10000 * 10**18,
+    )
+    assert result.ok is False
+    assert result.reason == "credit_api_unavailable"
+
+
 def test_flag_off_short_circuits(monkeypatch):
     """Flag disabled -> ok=True and no HTTP call made."""
     import aleph_nodestatus.price_oracle as po
