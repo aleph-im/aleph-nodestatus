@@ -7,6 +7,22 @@ from aleph_nodestatus.payment_processor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_output_deviation_guard(monkeypatch):
+    """Neutralize the Credit-API output-deviation guard by default so the
+    extract_aleph swap-path tests don't make live HTTP calls. The guard's
+    own behavior is covered in tests/test_price_oracle.py. A test that wants
+    the guard to reject overrides this with its own
+    monkeypatch.setattr(pp, "check_output_deviation", ...), which shadows
+    this fixture's patch for that test."""
+    import aleph_nodestatus.payment_processor as pp
+    from aleph_nodestatus.price_oracle import OracleResult
+    monkeypatch.setattr(
+        pp, "check_output_deviation",
+        lambda **kw: OracleResult(ok=True, deviation_bps=0),
+    )
+
+
 def test_apply_slippage_bps_200():
     assert apply_slippage(1_000_000, 200) == 980_000
 
@@ -318,12 +334,13 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
 
 
 def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
-    """When pool_oracle.check_swap_price_deviation returns ok=False, the
-    token gets skipped_reason set and the swap is NOT attempted (no
-    quote_amount_out, no simulate_process)."""
+    """When price_oracle.check_output_deviation returns ok=False, the token
+    gets skipped_reason set and the swap is NOT executed. The guard runs
+    AFTER the quote now, so quote_amount_out IS called, but simulate_process
+    is NOT reached for the deviating tokens."""
     from aleph_nodestatus.payment_processor import extract_aleph
     import aleph_nodestatus.payment_processor as pp
-    from aleph_nodestatus.pool_oracle import OracleResult
+    from aleph_nodestatus.price_oracle import OracleResult
 
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
@@ -332,6 +349,7 @@ def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
 
     erc20_mock = MagicMock()
     erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    erc20_mock.functions.decimals.return_value.call.return_value = 6
     monkeypatch.setattr(pp, "_erc20_contract", lambda w3, addr: erc20_mock)
 
     quote_calls = []
@@ -342,10 +360,10 @@ def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
                         lambda *a, **kw: simulate_calls.append(1) or None)
 
     monkeypatch.setattr(
-        pp, "check_swap_price_deviation",
-        lambda w3, cfg, token_in: OracleResult(
+        pp, "check_output_deviation",
+        lambda **kw: OracleResult(
             ok=False, reason="price_deviation",
-            deviation_bps=350, spot_price=1.04, ref_price=1.00,
+            deviation_bps=350, expected_out=9650.0, implied_out=10000.0,
         ),
     )
 
@@ -356,15 +374,19 @@ def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
     )
 
     # ALEPH has no swap → still simulated. USDC and ETH have swaps → both
-    # should be flagged as price_deviation, no quote/simulate called.
+    # quoted, then flagged price_deviation before simulate.
     skipped = [e for e in result["tokens"]
                if e.get("skipped_reason") == "price_deviation"]
     assert len(skipped) == 2, [e for e in result["tokens"]]
     for e in skipped:
         assert e["oracle"]["deviation_bps"] == 350
-        assert e["oracle"]["spot_price"] == 1.04
-        assert e["oracle"]["ref_price"] == 1.00
-    assert quote_calls == []     # never quoted the deviating tokens
+        assert e["oracle"]["expected_out"] == 9650.0
+        assert e["oracle"]["implied_out"] == 10000.0
+    # Guard runs post-quote: the two swap tokens WERE quoted...
+    assert len(quote_calls) == 2
+    # ...but neither deviating token reached simulate_process.
+    # ALEPH (passthrough, no swap) still calls simulate once.
+    assert len(simulate_calls) == 1
 
 
 def test_extract_aleph_zero_balance_skipped(monkeypatch):
