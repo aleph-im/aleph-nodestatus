@@ -350,6 +350,18 @@ def test_balance_safety_aborts_when_short(monkeypatch):
         "aleph_nodestatus.commands.get_eth_account", lambda: fake_account,
     )
 
+    # Cadence guard reads the last published distribution from the Aleph API.
+    # Stub to "none yet" so the guard doesn't skip: otherwise a real published
+    # distribution makes the fake block_number=100 look older than the last
+    # distribution and the run exits 0 before the balance check. Keeps the
+    # test offline and deterministic.
+    async def fake_last_dist(*a, **kw):
+        return None, None
+    monkeypatch.setattr(
+        "aleph_nodestatus.commands.get_latest_successful_credit_distribution",
+        fake_last_dist,
+    )
+
     runner = CliRunner()
     result = runner.invoke(distribute_credits, [
         "--act", "--enable-holder-tier", "--no-wage",
@@ -428,6 +440,18 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     fake_account.address = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
     monkeypatch.setattr(
         "aleph_nodestatus.commands.get_eth_account", lambda: fake_account,
+    )
+
+    # Cadence guard reads the last published distribution from the Aleph API.
+    # Stub to "none yet" so the guard doesn't skip: otherwise a real published
+    # distribution makes the fake block_number=100 look older than the last
+    # distribution and the run exits 0 before the balance check. Keeps the
+    # test offline and deterministic.
+    async def fake_last_dist(*a, **kw):
+        return None, None
+    monkeypatch.setattr(
+        "aleph_nodestatus.commands.get_latest_successful_credit_distribution",
+        fake_last_dist,
     )
 
     runner = CliRunner()
