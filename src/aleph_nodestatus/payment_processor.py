@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Optional, Set
 
-from .pool_oracle import check_swap_price_deviation
+from .price_oracle import check_output_deviation
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -770,16 +770,6 @@ def extract_aleph(
                 out["errors"].append(entry)
                 continue
 
-            oracle = check_swap_price_deviation(w3, cfg, token_in=token)
-            if not oracle.ok:
-                entry["skipped_reason"] = oracle.reason
-                entry["oracle"] = {
-                    "deviation_bps": oracle.deviation_bps,
-                    "spot_price":    oracle.spot_price,
-                    "ref_price":     oracle.ref_price,
-                }
-                continue
-
             # Auto-sizing: shrink `effective_amount` until the implied
             # price impact fits under `max_price_impact_bps`. Skipped
             # for ALEPH (no swap) and when the threshold is 0 (opt-in).
@@ -860,6 +850,24 @@ def extract_aleph(
                 continue
             entry["expected_out"] = str(expected_out)
             entry["min_out"] = str(min_out)
+
+            # Output-deviation guard: compare the quoter's expected_out
+            # against the Credit-API USD-implied output. Fail-closed: a
+            # deviating or unavailable price skips the token this run.
+            oracle = check_output_deviation(
+                token_in_symbol=token_symbol,
+                swap_amount_wei=swap_amount,
+                token_in_decimals=_token_decimals(w3, token),
+                expected_out_wei=expected_out,
+            )
+            if not oracle.ok:
+                entry["skipped_reason"] = oracle.reason
+                entry["oracle"] = {
+                    "deviation_bps": oracle.deviation_bps,
+                    "expected_out":  oracle.expected_out,
+                    "implied_out":   oracle.implied_out,
+                }
+                continue
 
         err = simulate_process(
             w3, processor,
