@@ -13,14 +13,18 @@ services:
       - .env.extract
     volumes:
       - ../:/aleph-nodestatus
-      - ../logs:/logs
     # Maps `host.docker.internal` to the host's bridge gateway IP so
     # fork-mode dry-runs (`--fork-rpc=http://host.docker.internal:8545`
     # targeting a local Anvil) work on Linux hosts, not just Docker
     # Desktop. No-op for the cron path. Requires Docker ≥ 20.10.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: /bin/bash -c "service cron start && echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-extract-credits --act -v >> /logs/credits-extract.log\" | crontab - && /bin/sh"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-extract-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
 
   # Hourly calculation snapshots for the new credit-rewards flow.
   # ethereum_pkey here must be status_sender's.
@@ -37,12 +41,16 @@ services:
       - .env.calc
     volumes:
       - ../:/aleph-nodestatus
-      - ../logs:/logs
     # See note on nodestatus-extract — kept on all three services for
     # consistency so operators don't have to remember which one needs it.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: /bin/bash -c "service cron start && echo \"0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /logs/credits-calc.log\" | crontab - && /bin/sh"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
 
   # Distribution every 10 days. ethereum_pkey here must be
   # distribution_recipient's and the address must hold >= the expected
@@ -60,8 +68,12 @@ services:
       - .env.dist
     volumes:
       - ../:/aleph-nodestatus
-      - ../logs:/logs
     # See note on nodestatus-extract.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: /bin/bash -c "service cron start && (echo \"0 0 */10 * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /logs/credits-dist.log\") | crontab - && /bin/sh"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: /bin/bash -c "echo '0 0 */10 * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
