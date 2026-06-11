@@ -10,10 +10,15 @@ services:
     restart: always
     stdin_open: true
     tty: true
-    env_file:
-      - .env.extract
     volumes:
       - ../:/aleph-nodestatus
+      # The service config lives in a per-service env file mounted as the
+      # project-root `.env`, which pydantic-settings (env_file=".env") loads
+      # after the cron job `cd`s into /aleph-nodestatus. This avoids relying on
+      # Docker `env_file`, whose vars land in the OS environment that cron
+      # strips from job execution. Must exist on the host or Docker creates an
+      # empty directory here instead.
+      - ./.env.extract:/aleph-nodestatus/.env:ro
     # Maps `host.docker.internal` to the host's bridge gateway IP so
     # fork-mode dry-runs (`--fork-rpc=http://host.docker.internal:8545`
     # targeting a local Anvil) work on Linux hosts, not just Docker
@@ -39,10 +44,11 @@ services:
     restart: always
     stdin_open: true
     tty: true
-    env_file:
-      - .env.calc
     volumes:
       - ../:/aleph-nodestatus
+      # See note on nodestatus-extract: per-service config mounted as the
+      # project-root .env that pydantic loads.
+      - ./.env.calc:/aleph-nodestatus/.env:ro
     # See note on nodestatus-extract — kept on all three services for
     # consistency so operators don't have to remember which one needs it.
     extra_hosts:
@@ -67,10 +73,11 @@ services:
     restart: always
     stdin_open: true
     tty: true
-    env_file:
-      - .env.dist
     volumes:
       - ../:/aleph-nodestatus
+      # See note on nodestatus-extract: per-service config mounted as the
+      # project-root .env that pydantic loads.
+      - ./.env.dist:/aleph-nodestatus/.env:ro
     # See note on nodestatus-extract.
     extra_hosts:
       - "host.docker.internal:host-gateway"
