@@ -1,4 +1,9 @@
-"""Unit tests for price_oracle: Credit-API output-deviation guard."""
+"""Unit tests for price_oracle: Credit-API output-deviation guard.
+
+The guard derives a fair ALEPH output from a single cached bulk-prices
+fetch (GET /estimation/prices) and compares it (in wei) against the
+quoter's expected_out.
+"""
 
 import sys
 import types
@@ -16,19 +21,69 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_price_cache():
     import aleph_nodestatus.price_oracle as po
-    po._PRICE_CACHE.clear()
+    po._price_map.cache_clear()
     yield
-    po._PRICE_CACHE.clear()
+    po._price_map.cache_clear()
 
 
-def _mock_post(prices):
-    """Return a fake requests.post that maps token symbol -> {"price": ...}."""
-    def _post(url, json=None, timeout=None):
+def _item(symbol, token_amount, credit_amount, decimals, bonus=0):
+    # creditAmount INCLUDES the bonus; base = creditAmount - bonus.
+    return {
+        "tokenSymbol": symbol,
+        "tokenDecimals": decimals,
+        "tokenAmount": str(token_amount),
+        "creditAmount": credit_amount,
+        "creditBonusAmount": bonus,
+    }
+
+
+# Base (bonus-free) credits drive the rate:
+#   USDC:  1e6 wei  -> base 1e6   (rate 1.0/wei)
+#   ALEPH: 1e18 wei -> base 1e5   (creditAmount 1.2e5 incl. 2e4 bonus; rate 1e-13/wei)
+# => 1000 USDC (1e9 wei) fair output = 1e9 * 1.0 / 1e-13 = 1e22 wei = 10000 ALEPH.
+_DEFAULT_ITEMS = [
+    _item("USDC", 10**6, 10**6, 6),
+    _item("ETH", 10**18, 3000 * 10**6, 18),
+    _item("ALEPH", 10**18, 120000, 18, bonus=20000),
+]
+
+
+def _mock_get(items, capture=None):
+    """Fake requests.get returning a bulk-prices body. `capture` (a list)
+    records (url, params) of each call."""
+    def _get(url, params=None, timeout=None):
+        if capture is not None:
+            capture.append((url, params))
         resp = MagicMock()
         resp.raise_for_status.return_value = None
-        resp.json.return_value = {"price": prices[json["token"]]}
+        resp.json.return_value = {
+            "blockchain": (params or {}).get("blockchain"),
+            "timestamp": 0,
+            "prices": items,
+        }
         return resp
-    return _post
+    return _get
+
+
+def test_fetches_bulk_prices_endpoint_once(monkeypatch):
+    """Regression: the guard GETs /api/v0/estimation/prices with the
+    blockchain query param, and only once across multiple tokens (cached)."""
+    import aleph_nodestatus.price_oracle as po
+    from aleph_nodestatus.settings import settings
+
+    calls = []
+    monkeypatch.setattr(po, "requests", MagicMock(get=_mock_get(_DEFAULT_ITEMS, calls)))
+    po.check_output_deviation(
+        token_in_symbol="USDC", swap_amount_wei=1000 * 10**6,
+        expected_out_wei=10000 * 10**18)
+    po.check_output_deviation(
+        token_in_symbol="ETH", swap_amount_wei=1 * 10**18,
+        expected_out_wei=1 * 10**18)
+
+    assert len(calls) == 1, "price map must be fetched once per run (cached)"
+    url, params = calls[0]
+    assert url == "https://credit.aleph.im/api/v0/estimation/prices"
+    assert params == {"blockchain": settings.credit_api_blockchain}
 
 
 def test_oracle_result_fields():
@@ -42,64 +97,77 @@ def test_oracle_result_fields():
 
 
 def test_within_threshold_ok(monkeypatch):
-    """expected_out matches the implied output -> ok=True."""
+    """expected_out matches the fair output -> ok=True."""
     import aleph_nodestatus.price_oracle as po
-    # USDC=$1, ALEPH=$0.10 -> 1000 USDC implies 10000 ALEPH.
-    monkeypatch.setattr(po, "requests",
-                        MagicMock(post=_mock_post({"USDC": 1.0, "ALEPH": 0.10})))
+    monkeypatch.setattr(po, "requests", MagicMock(get=_mock_get(_DEFAULT_ITEMS)))
     result = po.check_output_deviation(
         token_in_symbol="USDC",
         swap_amount_wei=1000 * 10**6,         # 1000 USDC
-        token_in_decimals=6,
-        expected_out_wei=10000 * 10**18,      # 10000 ALEPH (exact)
+        expected_out_wei=10000 * 10**18,      # exactly the fair output
+    )
+    assert result.ok is True
+    assert result.deviation_bps == 0
+    assert result.expected_out == 10000.0
+    assert result.implied_out == 10000.0
+
+
+def test_exceeds_threshold_skips(monkeypatch):
+    """expected_out 3% below fair (>200 bps) -> ok=False, price_deviation."""
+    import aleph_nodestatus.price_oracle as po
+    monkeypatch.setattr(po, "requests", MagicMock(get=_mock_get(_DEFAULT_ITEMS)))
+    result = po.check_output_deviation(
+        token_in_symbol="USDC",
+        swap_amount_wei=1000 * 10**6,
+        expected_out_wei=9700 * 10**18,       # 3% short of 10000
+    )
+    assert result.ok is False
+    assert result.reason == "price_deviation"
+    assert result.deviation_bps == 300
+
+
+def test_excludes_holder_bonus(monkeypatch):
+    """The rate uses base credits (creditAmount - creditBonusAmount). With
+    ALEPH carrying a 20k bonus on a 120k creditAmount, base is 100k and the
+    fair output for 1000 USDC is 10000 ALEPH. If the bonus were NOT excluded
+    (rate from 120k), fair would be ~8333 ALEPH and 10000 would read as a
+    ~2000 bps deviation -> skip. ok=True proves the bonus is removed."""
+    import aleph_nodestatus.price_oracle as po
+    monkeypatch.setattr(po, "requests", MagicMock(get=_mock_get(_DEFAULT_ITEMS)))
+    result = po.check_output_deviation(
+        token_in_symbol="USDC",
+        swap_amount_wei=1000 * 10**6,
+        expected_out_wei=10000 * 10**18,
     )
     assert result.ok is True
     assert result.deviation_bps == 0
 
 
-def test_exceeds_threshold_skips(monkeypatch):
-    """expected_out 3% below implied (>200 bps) -> ok=False, price_deviation."""
-    import aleph_nodestatus.price_oracle as po
-    monkeypatch.setattr(po, "requests",
-                        MagicMock(post=_mock_post({"USDC": 1.0, "ALEPH": 0.10})))
-    result = po.check_output_deviation(
-        token_in_symbol="USDC",
-        swap_amount_wei=1000 * 10**6,
-        token_in_decimals=6,
-        expected_out_wei=9700 * 10**18,       # 3% short of 10000
-    )
-    assert result.ok is False
-    assert result.reason == "price_deviation"
-    assert result.deviation_bps > 200
-
-
 def test_fail_closed_on_api_error(monkeypatch):
-    """Any exception from requests.post -> ok=False, credit_api_unavailable."""
+    """Any exception from requests.get -> ok=False, credit_api_unavailable."""
     import aleph_nodestatus.price_oracle as po
 
     def _boom(*a, **kw):
         raise RuntimeError("connection refused")
 
-    monkeypatch.setattr(po, "requests", MagicMock(post=_boom))
+    monkeypatch.setattr(po, "requests", MagicMock(get=_boom))
     result = po.check_output_deviation(
         token_in_symbol="USDC",
         swap_amount_wei=1000 * 10**6,
-        token_in_decimals=6,
         expected_out_wei=10000 * 10**18,
     )
     assert result.ok is False
     assert result.reason == "credit_api_unavailable"
 
 
-def test_fail_closed_on_non_positive_price(monkeypatch):
-    """API returns a non-positive price -> ok=False, credit_api_unavailable."""
+def test_fail_closed_on_missing_symbol(monkeypatch):
+    """A token missing from the price map -> credit_api_unavailable
+    (no crash, fail-closed)."""
     import aleph_nodestatus.price_oracle as po
-    monkeypatch.setattr(po, "requests",
-                        MagicMock(post=_mock_post({"USDC": 1.0, "ALEPH": 0.0})))
+    items = [_item("USDC", 10**6, 10**6, 6)]  # no ALEPH
+    monkeypatch.setattr(po, "requests", MagicMock(get=_mock_get(items)))
     result = po.check_output_deviation(
         token_in_symbol="USDC",
         swap_amount_wei=1000 * 10**6,
-        token_in_decimals=6,
         expected_out_wei=10000 * 10**18,
     )
     assert result.ok is False
@@ -111,39 +179,12 @@ def test_flag_off_short_circuits(monkeypatch):
     import aleph_nodestatus.price_oracle as po
     from aleph_nodestatus.settings import settings
     monkeypatch.setattr(settings, "extract_price_deviation_enabled", False)
-    post_mock = MagicMock()
-    monkeypatch.setattr(po, "requests", MagicMock(post=post_mock))
+    get_mock = MagicMock()
+    monkeypatch.setattr(po, "requests", MagicMock(get=get_mock))
     result = po.check_output_deviation(
         token_in_symbol="USDC",
         swap_amount_wei=1000 * 10**6,
-        token_in_decimals=6,
         expected_out_wei=1,                   # wildly off, but guard is off
     )
     assert result.ok is True
-    post_mock.assert_not_called()
-
-
-def test_aleph_price_cached_once(monkeypatch):
-    """ALEPH price is fetched once and reused across tokens in a run."""
-    import aleph_nodestatus.price_oracle as po
-    calls = []
-
-    def _post(url, json=None, timeout=None):
-        calls.append(json["token"])
-        resp = MagicMock()
-        resp.raise_for_status.return_value = None
-        resp.json.return_value = {"price": {"USDC": 1.0, "ETH": 3000.0,
-                                            "ALEPH": 0.10}[json["token"]]}
-        return resp
-
-    monkeypatch.setattr(po, "requests", MagicMock(post=_post))
-    po.check_output_deviation(
-        token_in_symbol="USDC", swap_amount_wei=1000 * 10**6,
-        token_in_decimals=6, expected_out_wei=10000 * 10**18)
-    po.check_output_deviation(
-        token_in_symbol="ETH", swap_amount_wei=1 * 10**18,
-        token_in_decimals=18, expected_out_wei=30000 * 10**18)
-    # ALEPH requested only once across both calls; USDC and ETH once each.
-    assert calls.count("ALEPH") == 1
-    assert calls.count("USDC") == 1
-    assert calls.count("ETH") == 1
+    get_mock.assert_not_called()

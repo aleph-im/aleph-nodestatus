@@ -209,7 +209,7 @@ class Settings(BaseSettings):
     # for that run (fail-closed). See
     # docs/specs/2026-06-01-credit-api-price-guard-design.md.
     extract_price_deviation_enabled: bool = True
-    credit_api_url: str                   = "https://credit.aleph.im/api"
+    credit_api_url: str                   = "https://credit.aleph.im/api/v0"
     credit_api_blockchain: str            = "ethereum"
     credit_api_timeout_seconds: int       = 10
 

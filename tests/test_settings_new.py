@@ -82,7 +82,7 @@ def test_anti_mev_defaults():
 def test_credit_api_price_guard_settings_defaults():
     from aleph_nodestatus.settings import settings
     assert settings.extract_price_deviation_enabled is True
-    assert settings.credit_api_url == "https://credit.aleph.im/api"
+    assert settings.credit_api_url == "https://credit.aleph.im/api/v0"
     assert settings.credit_api_blockchain == "ethereum"
     assert settings.credit_api_timeout_seconds == 10
     # threshold reused, unchanged

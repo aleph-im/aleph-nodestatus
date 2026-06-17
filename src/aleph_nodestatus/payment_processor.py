@@ -852,15 +852,14 @@ def extract_aleph(
             entry["min_out"] = str(min_out)
 
             # Output-deviation guard: compare the quoter's expected_out
-            # against the Credit-API USD-implied output. Fail-closed: a
+            # against the Credit-API fair ALEPH output. Fail-closed: a
             # deviating or unavailable price skips the token this run. The
-            # whole call is wrapped so an RPC error from _token_decimals
-            # skips just this token rather than aborting the entire run.
+            # whole call is wrapped so an unexpected guard error skips just
+            # this token rather than aborting the entire run.
             try:
                 oracle = check_output_deviation(
                     token_in_symbol=token_symbol,
                     swap_amount_wei=swap_amount,
-                    token_in_decimals=_token_decimals(w3, token),
                     expected_out_wei=expected_out,
                 )
             except Exception as e:

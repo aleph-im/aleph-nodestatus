@@ -1,40 +1,45 @@
 """Credit-API output-deviation guard for the extract swap path.
 
 Compares the quoter's `expected_out` (version-aware v2/v3/v4, produced
-upstream by `quote_amount_out`) against the Credit-API multi-source
-USD-implied output for the same swap. The Credit API
-(`POST /estimation/token-to-credit`) returns a USD unit `price` for each
-of USDC, ETH, and ALEPH, averaged internally across DEX and CEX sources.
+upstream by `quote_amount_out`) against the Credit-API's independent,
+multi-source reference for the same swap.
 
-The guard runs only for non-ALEPH input tokens (ALEPH has no swap), both
-of which are directly priceable, so no per-hop logic or address map is
-needed - intermediate hops (e.g. WETH) are already baked into the
-quoter's `expected_out`.
+The reference comes from a single bulk-prices fetch, used exactly as the
+API serves it (amounts in the token's smallest unit, comparisons in wei):
 
-Failure is fail-closed: if the API is unavailable the caller skips the
-token for that run. Synchronous `requests` is correct here - the whole
-extract path runs inside `asyncio.to_thread`, matching the module's sync
-web3 calls.
+    GET /api/v0/estimation/prices?blockchain=<chain>
+      -> { "prices": [ { tokenSymbol, tokenAmount, creditAmount,
+                         creditBonusAmount, ... }, ... ] }
+
+Each item pairs `tokenAmount` (wei) with `creditAmount` (credits, which
+INCLUDE the holder bonus reported in `creditBonusAmount`). The guarded
+swap has no bonus and the bonus is not uniform across tokens, so the
+bonus is removed first: `base = creditAmount - creditBonusAmount`, and
+`rate = base / tokenAmount` is a per-wei rate. The fair ALEPH output is
+`swap_wei * rate[token_in] / rate["ALEPH"]`; the credit unit cancels in
+the ratio, so no constants or per-token decimals enter nodestatus. The
+result is in wei, directly comparable to the quoter's `expected_out_wei`.
+
+The map is cached for the process lifetime (one HTTP call per run; the
+extract job is a one-shot cron). The guard runs only for non-ALEPH input
+tokens (ALEPH has no swap).
+
+Failure is fail-closed: if the API is unavailable, or a required symbol
+is missing, the caller skips the token for that run. Synchronous
+`requests` is correct here - the whole extract path runs inside
+`asyncio.to_thread`, matching the module's sync web3 calls.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from functools import lru_cache
+from typing import Dict, Optional
 
 import requests
 
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
-
-# Per-process unit-price cache. The extract job is a one-shot cron run, so
-# caching for the lifetime of the process means one HTTP call per symbol
-# per run (ALEPH is the shared denominator across every token).
-_PRICE_CACHE = {}
-
-# Decimals for the priceable set. Only used to send a valid non-zero unit
-# `amount` so the API returns a `price`; exact value is not price-critical.
-_CREDIT_API_DECIMALS = {"USDC": 6, "ETH": 18, "ALEPH": 18}
 
 
 @dataclass
@@ -46,61 +51,73 @@ class OracleResult:
     implied_out: Optional[float] = None
 
 
-def _credit_api_price(symbol: str) -> float:
-    """USD unit price for `symbol` from the Credit API. Cached per process.
-    Raises on any HTTP/parse error (caller converts to fail-closed)."""
-    if symbol in _PRICE_CACHE:
-        return _PRICE_CACHE[symbol]
-    decimals = _CREDIT_API_DECIMALS.get(symbol, 18)
-    resp = requests.post(
-        f"{settings.credit_api_url}/estimation/token-to-credit",
-        json={
-            "blockchain": settings.credit_api_blockchain,
-            "token": symbol,
-            "amount": str(10 ** decimals),
-        },
+@lru_cache(maxsize=4)
+def _price_map(blockchain: str) -> Dict[str, dict]:
+    """Per-process cache of the Credit-API bulk price map, keyed by token
+    symbol. One GET per run (the extract job is a one-shot cron). Raises on
+    any HTTP/parse error (caller converts to fail-closed)."""
+    resp = requests.get(
+        f"{settings.credit_api_url}/estimation/prices",
+        params={"blockchain": blockchain},
         timeout=settings.credit_api_timeout_seconds,
     )
     resp.raise_for_status()
-    price = float(resp.json()["price"])
-    _PRICE_CACHE[symbol] = price
-    return price
+    body = resp.json()
+    return {item["tokenSymbol"]: item for item in body["prices"]}
+
+
+def _rate_credits_per_wei(prices: Dict[str, dict], symbol: str) -> float:
+    """Bonus-free credits per wei for `symbol`. `creditAmount` includes the
+    holder bonus (reported in `creditBonusAmount`); the guarded swap has no
+    bonus, and the bonus is not uniform across tokens, so it must be removed
+    before comparing. Raises KeyError if the symbol is absent
+    (caller -> fail-closed)."""
+    item = prices[symbol]
+    base_credits = float(item["creditAmount"]) - float(item.get("creditBonusAmount", 0))
+    return base_credits / float(int(item["tokenAmount"]))
+
+
+def _fair_aleph_out_wei(token_in_symbol: str, swap_amount_wei: int) -> int:
+    """Fair ALEPH output (wei) for swapping `swap_amount_wei` of
+    `token_in_symbol`, from the cached bulk price map. The credit unit
+    cancels in the ratio, so no constants/decimals are involved.
+    Raises on HTTP/parse/missing-symbol error (caller -> fail-closed)."""
+    prices = _price_map(settings.credit_api_blockchain)
+    rate_in = _rate_credits_per_wei(prices, token_in_symbol)
+    rate_aleph = _rate_credits_per_wei(prices, "ALEPH")
+    if rate_aleph <= 0:
+        return 0
+    return int(round(swap_amount_wei * rate_in / rate_aleph))
 
 
 def check_output_deviation(
-    *, token_in_symbol: str, swap_amount_wei: int, token_in_decimals: int,
+    *, token_in_symbol: str, swap_amount_wei: int,
     expected_out_wei: int, aleph_decimals: int = 18,
 ) -> OracleResult:
-    """Compare the quoter's `expected_out_wei` against the Credit-API
-    USD-implied ALEPH output for swapping `swap_amount_wei` of
-    `token_in_symbol`. Symmetric deviation; fail-closed on API error."""
+    """Compare the quoter's `expected_out_wei` against the Credit-API fair
+    ALEPH output for swapping `swap_amount_wei` of `token_in_symbol`.
+    Symmetric deviation; fail-closed on API error."""
     if not settings.extract_price_deviation_enabled:
         return OracleResult(ok=True)
 
     try:
-        price_in_usd = _credit_api_price(token_in_symbol)
-        price_aleph_usd = _credit_api_price("ALEPH")
+        fair_out_wei = _fair_aleph_out_wei(token_in_symbol, swap_amount_wei)
     except Exception as e:
         LOGGER.warning(
-            "Credit API price fetch failed for %s: %r", token_in_symbol, e,
+            "Credit API estimation failed for %s: %r", token_in_symbol, e,
         )
         return OracleResult(ok=False, reason="credit_api_unavailable")
 
-    if price_in_usd <= 0 or price_aleph_usd <= 0:
+    if fair_out_wei <= 0:
         LOGGER.warning(
-            "Credit API returned non-positive price (in=%s, aleph=%s)",
-            price_in_usd, price_aleph_usd,
+            "Credit API returned non-positive fair output for %s", token_in_symbol,
         )
         return OracleResult(ok=False, reason="credit_api_unavailable")
 
-    swap_amount_human = swap_amount_wei / 10 ** token_in_decimals
-    implied_out = (swap_amount_human * price_in_usd) / price_aleph_usd
     expected_out = expected_out_wei / 10 ** aleph_decimals
+    implied_out = fair_out_wei / 10 ** aleph_decimals
 
-    if implied_out <= 0:
-        return OracleResult(ok=False, reason="credit_api_unavailable")
-
-    deviation_bps = int(abs(expected_out - implied_out) / implied_out * 10_000)
+    deviation_bps = int(abs(expected_out_wei - fair_out_wei) / fair_out_wei * 10_000)
     if deviation_bps > settings.extract_max_deviation_bps:
         return OracleResult(
             ok=False, reason="price_deviation",
