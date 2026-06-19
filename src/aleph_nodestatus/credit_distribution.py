@@ -513,6 +513,8 @@ def _distribute_expense(
     staker_share: float,
     crn_share: float = 0.0,
     dev_share: float,
+    accumulator=None,
+    stream=None,
 ):
     """Distribute a single expense entry. Pure function: shares are explicit.
 
@@ -559,6 +561,7 @@ def _distribute_expense(
             rewards, detailed, unallocated, web3,
             ccn_share=ccn_share, staker_share=staker_share,
             crn_share=crn_share,
+            accumulator=accumulator, stream=stream,
         )
         return 0, total_aleph, dev_fund
 
@@ -573,6 +576,7 @@ def _distribute_execution_credits(
     expense, credit_price_aleph, nodes, resource_nodes,
     rewards, detailed, unallocated, web3,
     *, ccn_share, staker_share, crn_share,
+    accumulator=None, stream=None,
 ):
     """Per-credit execution attribution: CRN → linked CCN → linked-CCN
     stakers. Each missing link drops the relevant share to `unallocated`."""
@@ -595,6 +599,13 @@ def _distribute_execution_credits(
             crn_addr = get_reward_address(rnode, web3)
             rewards[crn_addr] = rewards.get(crn_addr, 0) + crn_amount
             detailed[crn_addr]["execution_crn"] += crn_amount
+            if accumulator is not None and stream is not None:
+                inactive_since = rnode.get("inactive_since")
+                accumulator.add(
+                    stream, node_id, crn_addr, crn_amount,
+                    inactive_at_expense=inactive_since is not None,
+                    inactive_since=inactive_since,
+                )
         else:
             LOGGER.warning(
                 f"CRN {id_key} not resolved or not linked, "
@@ -876,11 +887,13 @@ def _validate_hold_aggregates(expense):
 
 
 def _apply_expense_to(rewards, totals, detailed, unallocated, exp_type, expense,
-                      nodes, resource_nodes, web3):
+                      nodes, resource_nodes, web3,
+                      accumulator=None, stream=None):
     s, e, d = _distribute_expense(
         exp_type, expense, nodes, resource_nodes, rewards,
         detailed=detailed, unallocated=unallocated,
         web3=web3, **_shares_for(exp_type),
+        accumulator=accumulator, stream=stream,
     )
     totals["storage_total_aleph"]   += s
     totals["execution_total_aleph"] += e
@@ -967,6 +980,7 @@ async def compute_rewards(
     dbs=None, end_height=None, web3=None,
     snapshots=None, last_end_height=None,
     out_expense_hashes=None,
+    slash_accumulator=None,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -1022,12 +1036,14 @@ async def compute_rewards(
             dbs, end_height, msgs, include_holder_tier, web3,
             out_expense_hashes=out_expense_hashes,
             start_time=start_time, end_time=end_time,
+            slash_accumulator=slash_accumulator,
         )
     else:
         result = await _compute_rewards_snapshots(
             api_server, start_time, end_time, msgs, include_holder_tier, web3,
             snapshots=snapshots,
             out_expense_hashes=out_expense_hashes,
+            slash_accumulator=slash_accumulator,
         )
 
     credit_totals = result["credit_revenue"][1]
@@ -1083,6 +1099,7 @@ def _parse_expenses(msgs, out_hashes=None, window_start=None, window_end=None):
 
 def _apply_expenses_to_snapshots(
     parsed, snapshots, include_holder_tier, web3,
+    accumulator=None,
 ):
     """Apply a sorted list of (ts_s, exp_type, expense) to snapshots.
 
@@ -1126,6 +1143,7 @@ def _apply_expenses_to_snapshots(
             exp_type,
             _project_expense(expense, "credits"),
             nodes, resource_nodes, web3,
+            accumulator=accumulator, stream="credit_revenue",
         )
 
         if include_holder_tier and expense.get("hold"):
@@ -1135,6 +1153,7 @@ def _apply_expenses_to_snapshots(
                 holder_unallocated, exp_type,
                 _project_expense(expense, "hold"),
                 nodes, resource_nodes, web3,
+                accumulator=accumulator, stream="holder_tier",
             )
 
     _fold_unallocated(credit_totals, credit_unallocated)
@@ -1153,6 +1172,7 @@ def _apply_expenses_to_snapshots(
 async def _compute_rewards_snapshots(
     api_server, start_time, end_time, msgs, include_holder_tier, web3,
     snapshots=None, out_expense_hashes=None,
+    slash_accumulator=None,
 ):
     if snapshots is None:
         snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
@@ -1169,12 +1189,14 @@ async def _compute_rewards_snapshots(
     )
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
+        accumulator=slash_accumulator,
     )
 
 
 async def _compute_rewards_full_resync(
     dbs, end_height, msgs, include_holder_tier, web3,
     out_expense_hashes=None, start_time=None, end_time=None,
+    slash_accumulator=None,
 ):
     """Same math as snapshot mode, but snapshots are reconstructed from
     base-data replay (ERC20, staking, balances, scores) instead of read
@@ -1243,6 +1265,7 @@ async def _compute_rewards_full_resync(
     )
     return _apply_expenses_to_snapshots(
         parsed, snapshots, include_holder_tier, web3,
+        accumulator=slash_accumulator,
     )
 
 

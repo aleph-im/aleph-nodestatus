@@ -57,6 +57,7 @@ def split_subsidy(
     nodes: dict,
     resource_nodes: dict,
     web3=None,
+    accumulator=None,
 ) -> Tuple[Dict[str, float], float, Dict[str, Dict[str, float]]]:
     """Split a period's wage subsidy across CCN / CRN / staker pools.
 
@@ -95,18 +96,25 @@ def split_subsidy(
         unallocated += ccn_pool
 
     crn_weights = []
-    for rnode in resource_nodes.values():
+    for rnode_hash, rnode in resource_nodes.items():
         if rnode["status"] != "linked":
             continue
         score = compute_score_multiplier(rnode["score"])
         if score > 0:
-            crn_weights.append((get_reward_address(rnode, web3), score))
-    total_crn = sum(s for _, s in crn_weights)
+            inactive_since = rnode.get("inactive_since")
+            crn_weights.append((rnode_hash, get_reward_address(rnode, web3), score, inactive_since))
+    total_crn = sum(s for _, _, s, _ in crn_weights)
     if total_crn > 0:
-        for addr, s in crn_weights:
+        for rnode_hash, addr, s, inactive_since in crn_weights:
             share = crn_pool * s / total_crn
             rewards[addr] = rewards.get(addr, 0.0) + share
             detailed[addr]["crn"] += share
+            if accumulator is not None:
+                accumulator.add(
+                    "wage_subsidy", rnode_hash, addr, share,
+                    inactive_at_expense=inactive_since is not None,
+                    inactive_since=inactive_since,
+                )
     else:
         unallocated += crn_pool
 
@@ -169,6 +177,7 @@ def compute_subsidy_daily(
     end_time: float,
     snapshots: List[Tuple[float, dict, dict]],
     web3=None,
+    accumulator=None,
 ) -> Tuple[Dict[str, float], dict, Dict[str, Dict[str, float]]]:
     """Per-UTC-day variant of `compute_subsidy` mirroring aleph-api-credit.
 
@@ -242,6 +251,7 @@ def compute_subsidy_daily(
         day_total = compute_period_subsidy(win_start, win_end)
         day_rewards, day_unalloc, day_detailed = split_subsidy(
             day_total, nodes, resource_nodes, web3,
+            accumulator=accumulator,
         )
 
         total_period += day_total

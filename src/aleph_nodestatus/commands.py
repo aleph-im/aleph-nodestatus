@@ -281,6 +281,21 @@ def distribute(verbose, act=False, testnet=False, start_height=-1, end_height=-1
     )
 
 
+def _payout_after_slash(final_rewards, slashed):
+    """Per-address payout = full reward minus its withheld slash, floored at 0.
+
+    Zero-value entries are dropped so the on-chain transfer never targets a
+    recipient owed nothing. When `slashed` is empty this returns `final_rewards`
+    unchanged (modulo zero filtering), keeping the slash-disabled path identical.
+    """
+    payout = {}
+    for addr, amount in final_rewards.items():
+        net = max(0.0, amount - slashed.get(addr, 0.0))
+        if net > 0:
+            payout[addr] = net
+    return payout
+
+
 async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
@@ -289,6 +304,11 @@ async def process_credit_distribution(
     fork_rpc=None, reconcile_bps=0,
 ):
     flags = flags or {}
+    from .slashing import (
+        SlashAccumulator, compute_slashing, enabled_slash_streams,
+    )
+    slash_on = settings.credit_dist_slash_enabled
+    slash_accumulator = SlashAccumulator() if slash_on else None
     dbs = get_dbs()
     if fork_rpc:
         # Fork mode: stand up a Web3 pointed at the local fork, leaving
@@ -445,6 +465,7 @@ async def process_credit_distribution(
             snapshots=snapshots,
             last_end_height=last_end,
             out_expense_hashes=expense_hashes,
+            slash_accumulator=slash_accumulator,
         )
 
     credit_rewards, credit_totals = streams["credit_revenue"]
@@ -475,6 +496,7 @@ async def process_credit_distribution(
             # collapsing them onto the final snapshot.
             wage_rewards, wage_totals, wage_detailed = compute_subsidy_daily(
                 start_time, end_time, snapshots, web3=web3,
+                accumulator=slash_accumulator,
             )
         else:
             period_total = compute_period_subsidy(start_time, end_time)
@@ -533,6 +555,24 @@ async def process_credit_distribution(
             if amount:
                 detail.setdefault(stream, {})["total"] = amount
 
+    # === Step 4b: slashing pass ===
+    # `rewards`/`final_rewards` stay intact (full calculation, published as-is).
+    # `slashed` is withheld from the on-chain payout below.
+    slashed, slashed_meta_nodes = {}, []
+    if slash_on:
+        close_resource_nodes = snapshots[-1][2] if snapshots else {}
+        slashed, slashed_meta_nodes = compute_slashing(
+            slash_accumulator, close_resource_nodes, end_height,
+            enabled_streams=enabled_slash_streams(),
+            retroactive=settings.credit_dist_slash_retroactive,
+            threshold_days=settings.credit_dist_slash_threshold_days,
+            blocks_per_day=settings.ethereum_blocks_per_day,
+        )
+
+    # Payout view: full rewards minus the withheld slash per address, floored
+    # at 0. Used for the balance check and the actual transfer only.
+    payout_rewards = _payout_after_slash(final_rewards, slashed)
+
     # === Global cap (before balance check) ===
     # Aborts when upstream math produces inflated rewards, regardless of
     # whether the sender happens to be flush. Independent of --force
@@ -554,7 +594,7 @@ async def process_credit_distribution(
     # from ethereum_pkey), not settings.distribution_recipient. In the intended
     # deployment they are the same address — but they are independently
     # configurable settings, and transfer_tokens uses the pkey-derived account.
-    if act and flags.get("transfer") and final_rewards:
+    if act and flags.get("transfer") and payout_rewards:
         sender = get_eth_account().address
         if sender.lower() != settings.distribution_recipient.lower():
             click.echo(
@@ -573,7 +613,7 @@ async def process_credit_distribution(
         ).call()
         bal  = Decimal(bal_wei) / Decimal(10 ** settings.ethereum_decimals)
         owed = sum(
-            (Decimal(str(v)) for v in final_rewards.values()),
+            (Decimal(str(v)) for v in payout_rewards.values()),
             Decimal("0"),
         )
         if owed > bal:
@@ -615,7 +655,7 @@ async def process_credit_distribution(
             f"Executing batchTransfer on fork (signer={signer.address}) …"
         )
         max_items = settings.ethereum_batch_size
-        items = list(final_rewards.items())
+        items = [(a, v) for a, v in payout_rewards.items() if v > 0]
         nonce = web3.eth.get_transaction_count(signer.address)
         for i in range(math.ceil(len(items) / max_items)):
             step = dict(items[max_items*i:max_items*(i+1)])
@@ -664,14 +704,15 @@ async def process_credit_distribution(
     elif flags.get("transfer") and act and not is_testnet:
         click.echo("Executing batchTransfer …")
         max_items = settings.ethereum_batch_size
-        items = list(final_rewards.items())
+        items = [(a, v) for a, v in payout_rewards.items() if v > 0]
         for i in range(math.ceil(len(items) / max_items)):
             step = items[max_items*i:max_items*(i+1)]
             click.echo(f"Batch {i+1}: transferring to {len(step)} recipients")
             await transfer_tokens(dict(step), metadata=transfer_metadata)
     elif not flags.get("transfer"):
         click.echo("--no-transfer / dry-run: skipping batchTransfer")
-        n = len(final_rewards)
+        items = [(a, v) for a, v in payout_rewards.items() if v > 0]
+        n = len(items)
         batch_size = settings.ethereum_batch_size
         for i in range(math.ceil(n / batch_size)):
             count = min(batch_size, n - i * batch_size)
@@ -694,6 +735,14 @@ async def process_credit_distribution(
         "start_height": start_height, "end_height": end_height,
         "start_time": start_time, "end_time": end_time,
         "rewards": final_rewards,
+        "slashed": slashed,
+        "slashed_meta": {
+            "enabled": slash_on,
+            "threshold_days": settings.credit_dist_slash_threshold_days,
+            "retroactive": settings.credit_dist_slash_retroactive,
+            "streams": list(enabled_slash_streams()) if slash_on else [],
+            "nodes": slashed_meta_nodes,
+        },
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},

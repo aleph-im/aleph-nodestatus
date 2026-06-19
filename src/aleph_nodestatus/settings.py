@@ -198,6 +198,14 @@ class Settings(BaseSettings):
     credit_dist_transfer_enabled: bool       = True
     credit_dist_publish_enabled: bool        = True
 
+    # === Slashing feature flags (CRN inactivity penalty) ===
+    credit_dist_slash_enabled: bool        = True   # master kill switch
+    credit_dist_slash_credit_revenue: bool = False
+    credit_dist_slash_holder_tier: bool    = False
+    credit_dist_slash_wage_subsidy: bool   = True
+    credit_dist_slash_threshold_days: int  = 3
+    credit_dist_slash_retroactive: bool    = True   # default: retroactive (whole period since last distribution)
+
     # === Anti-MEV (Phase 1) ===
     extract_random_delay_max_seconds: int = 3540
     extract_max_deviation_bps: int        = 200
