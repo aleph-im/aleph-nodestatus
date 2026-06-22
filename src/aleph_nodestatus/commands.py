@@ -296,9 +296,75 @@ def _payout_after_slash(final_rewards, slashed):
     return payout
 
 
+def max_successful_nonce(distribution_content, get_tx_nonce=None):
+    """Highest ETH nonce among the SUCCESSFUL transfer batches of a published
+    distribution post.
+
+    Uses the per-batch `nonce` when the post recorded it. Older posts (published
+    before nonce tracking) carry the batch `tx` hash but no nonce; when a
+    `get_tx_nonce(tx_hash) -> int | None` resolver is given, the nonce is
+    recovered on-chain from that hash. Returns None when no nonce can be
+    determined (no content, or no recorded nonce and no resolvable tx hash).
+    """
+    if not distribution_content:
+        return None
+    nonces = []
+    for t in distribution_content.get("targets", []):
+        if not t.get("success"):
+            continue
+        n = t.get("nonce")
+        if isinstance(n, int) and not isinstance(n, bool):
+            nonces.append(n)
+            continue
+        tx = t.get("tx")
+        if tx and get_tx_nonce is not None:
+            resolved = get_tx_nonce(tx)
+            if isinstance(resolved, int) and not isinstance(resolved, bool):
+                nonces.append(resolved)
+    return max(nonces) if nonces else None
+
+
+def nonce_gap_reason(current_nonce, last_content, get_tx_nonce=None):
+    """Return a human-readable reason string if the signer's current on-chain
+    nonce does NOT cleanly continue from the last distribution's transfers
+    (i.e. transactions happened from that account since), else None.
+
+    After a distribution whose highest successful tx used nonce N, the account's
+    transaction count (next nonce) is N+1. If the current count exceeds N+1,
+    extra transactions were sent in between — a prior batchTransfer that was
+    never published, or a manual operator tx — and re-running this distribution
+    would double-pay. Cases:
+
+      - No prior distribution at all -> None (first run, no baseline).
+      - Prior distribution whose nonce can't be determined (no recorded nonce
+        AND no resolvable tx hash) -> reason (cannot verify; review manually).
+      - current_nonce > last_max + 1 -> reason (gap: intermediate transactions).
+
+    `get_tx_nonce` resolves a batch tx hash to its on-chain nonce, used to back
+    older posts that recorded only the tx hash.
+    """
+    if last_content is None:
+        return None
+    last_max = max_successful_nonce(last_content, get_tx_nonce)
+    if last_max is None:
+        return (
+            "cannot verify nonce continuity: the last distribution post records "
+            "no transfer nonce and no resolvable transaction hash"
+        )
+    if current_nonce > last_max + 1:
+        gap = current_nonce - (last_max + 1)
+        return (
+            f"signer nonce {current_nonce} is beyond the last distribution's "
+            f"max nonce {last_max} + 1: {gap} intermediate transaction(s) since "
+            f"the last distribution"
+        )
+    return None
+
+
 async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
+    force_nonce_gap=False,
     flags=None, reward_sender=None, full_resync=False,
     safety_blocks=None, require_witness=None,
     fork_rpc=None, reconcile_bps=0,
@@ -355,8 +421,9 @@ async def process_credit_distribution(
     # Fetch the last distribution once and reuse for both the cadence guard
     # and the cursor derivation below (one posts-API round-trip per run).
     last_end = None
+    last_content = None
     if act:
-        last_end, _ = await get_latest_successful_credit_distribution(
+        last_end, last_content = await get_latest_successful_credit_distribution(
             reward_sender
         )
         if last_end and should_skip_run(
@@ -371,8 +438,8 @@ async def process_credit_distribution(
 
     if start_height in (None, -1):
         if last_end is None:
-            last_end, _ = await get_latest_successful_credit_distribution(
-                reward_sender
+            last_end, last_content = (
+                await get_latest_successful_credit_distribution(reward_sender)
             )
         if last_end:
             start_height = last_end + 1
@@ -622,6 +689,41 @@ async def process_credit_distribution(
             )
             sys.exit(1)
 
+        # Pre-flight nonce-continuity guard (B1 double-pay protection). If the
+        # signer has sent transactions since the last distribution — a prior
+        # batchTransfer that crashed before publishing, or a manual operator tx
+        # — re-running would re-broadcast the same payouts. Block here; the
+        # operator reconciles manually and reruns with --force-nonce-gap.
+        # Skipped in fork mode (the fork account nonce isn't the prod cursor).
+        if not fork_rpc:
+            current_nonce = web3.eth.get_transaction_count(
+                web3.to_checksum_address(sender)
+            )
+
+            # Older distribution posts recorded only the batch tx hash, not the
+            # nonce. Recover the nonce on-chain from that hash so the guard works
+            # for the next run after this distribution too.
+            def _tx_nonce(tx_hash):
+                h = tx_hash if tx_hash.startswith("0x") else "0x" + tx_hash
+                try:
+                    return web3.eth.get_transaction(h)["nonce"]
+                except Exception:
+                    return None
+
+            reason = nonce_gap_reason(current_nonce, last_content, _tx_nonce)
+            if reason and not force_nonce_gap:
+                click.echo(
+                    f"ABORT: {reason}. Review the account's transactions since "
+                    f"the last distribution and rerun with --force-nonce-gap "
+                    f"to override."
+                )
+                sys.exit(1)
+            if reason:
+                click.echo(
+                    f"WARNING: nonce-continuity guard overridden "
+                    f"(--force-nonce-gap): {reason}"
+                )
+
     # === Step 5: transfer (or simulate) ===
     is_testnet = PublishMode.is_testnet()
     transfer_metadata = {"sources": list(by_source.keys()), "targets": []}
@@ -850,6 +952,10 @@ async def process_credit_distribution(
 @click.option("--force", help="Bypass the cadence guard", is_flag=True)
 @click.option("--force-cap", "force_cap", is_flag=True,
               help="Bypass the global per-run distribution cap")
+@click.option("--force-nonce-gap", "force_nonce_gap", is_flag=True,
+              help="Bypass the pre-flight nonce-continuity guard (only after "
+                   "manually reconciling transactions sent since the last "
+                   "distribution)")
 @click.option("-s", "--start-height", "start_height", default=-1, type=int,
               help="Starting block height, default: resume from last distribution")
 @click.option("-e", "--end-height", "end_height", default=-1, type=int,
@@ -890,6 +996,7 @@ async def process_credit_distribution(
                    "(exact wei match). Override "
                    "settings.distribute_max_reconcile_delta_bps.")
 def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
+                       force_nonce_gap,
                        start_height, end_height, full_resync,
                        no_credit_revenue, no_wage,
                        enable_holder_tier, no_holder_tier,
@@ -982,6 +1089,7 @@ def distribute_credits(verbose, act, testnet, dry_run, force, force_cap,
     exit_code = asyncio.run(process_credit_distribution(
         start_height=start_height, end_height=end_height,
         act=act, dry_run=dry_run, force=force, force_cap=force_cap,
+        force_nonce_gap=force_nonce_gap,
         flags=flags, reward_sender=reward_sender,
         full_resync=full_resync,
         safety_blocks=safety_blocks,

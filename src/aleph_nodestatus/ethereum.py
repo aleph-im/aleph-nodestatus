@@ -127,6 +127,10 @@ async def transfer_tokens(targets, metadata=None):
     if NONCE is None:
         NONCE = w3.eth.get_transaction_count(account.address)
     tx_hash = None
+    # Capture the nonce this batch is signed with so the published distribution
+    # records it; the next run's pre-flight guard reads it back to detect any
+    # transactions sent from this account since the last distribution.
+    tx_nonce = NONCE
 
     success = False
 
@@ -170,6 +174,7 @@ async def transfer_tokens(targets, metadata=None):
             "success": success,
             "status": success and "pending" or "failed",
             "tx": tx_hash,
+            "nonce": tx_nonce,
             "chain": "ETH",
             "sender": account.address,
             "targets": targets,
