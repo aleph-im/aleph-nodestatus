@@ -188,3 +188,24 @@ def test_flag_off_short_circuits(monkeypatch):
     )
     assert result.ok is True
     get_mock.assert_not_called()
+
+
+def test_fair_aleph_rate_ratio(monkeypatch):
+    import aleph_nodestatus.price_oracle as po
+    fake = {
+        "USDC":  {"tokenSymbol": "USDC",  "tokenAmount": "1000000",
+                  "creditAmount": "1000000", "creditBonusAmount": "0"},
+        "ALEPH": {"tokenSymbol": "ALEPH", "tokenAmount": "1000000000000000000",
+                  "creditAmount": "14732", "creditBonusAmount": "2455"},
+    }
+    monkeypatch.setattr(po, "_price_map", lambda chain: fake)
+    rate = po.fair_aleph_rate("USDC")
+    # rate_usdc = 1.0 credits/wei; rate_aleph = 12277/1e18; ratio:
+    assert abs(rate - (1.0 / (12277 / 1e18))) / rate < 1e-9
+
+
+def test_fair_aleph_rate_missing_symbol_raises(monkeypatch):
+    import aleph_nodestatus.price_oracle as po
+    monkeypatch.setattr(po, "_price_map", lambda chain: {})
+    with pytest.raises(Exception):
+        po.fair_aleph_rate("USDC")

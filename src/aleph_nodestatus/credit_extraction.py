@@ -30,6 +30,7 @@ from .payment_processor import (
     get_v2_router_contract,
     get_v4_quoter_contract,
 )
+from .price_oracle import CreditApiUnavailable
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -192,24 +193,28 @@ async def process_credit_extraction(
     # so flip it off here regardless of the user-facing `--dry-run`.
     internal_dry_run = (dry_run or not transfer) and not fork_rpc
 
-    extract_block = await asyncio.to_thread(
-        extract_aleph,
-        web3, processor, quoters,
-        account=admin_account,
-        from_address=admin_address,
-        dry_run=internal_dry_run,
-        transfer_enabled=transfer,
-        slippage_bps=(
-            slippage_bps if slippage_bps is not None
-            else settings.process_slippage_bps
-        ),
-        audit_tx=bool(fork_rpc),
-        reconcile_bps=reconcile_bps,
-        token_filter=set(tokens) if tokens else None,
-        max_amounts=max_amounts or {},
-        min_amounts=min_amounts or {},
-        max_price_impact_bps=max_price_impact_bps,
-    )
+    try:
+        extract_block = await asyncio.to_thread(
+            extract_aleph,
+            web3, processor, quoters,
+            account=admin_account,
+            from_address=admin_address,
+            dry_run=internal_dry_run,
+            transfer_enabled=transfer,
+            slippage_bps=(
+                slippage_bps if slippage_bps is not None
+                else settings.process_slippage_bps
+            ),
+            audit_tx=bool(fork_rpc),
+            reconcile_bps=reconcile_bps,
+            token_filter=set(tokens) if tokens else None,
+            max_amounts=max_amounts or {},
+            min_amounts=min_amounts or {},
+            max_price_impact_bps=max_price_impact_bps,
+        )
+    except CreditApiUnavailable as e:
+        click.echo(f"ERROR: Credit-API unavailable, aborting run: {e}")
+        return 2
     _print_summary(extract_block, audit=bool(fork_rpc))
 
     # Exit code: 2 if any reconciliation failed (fork mode), else 0.
@@ -236,11 +241,7 @@ def _print_summary(extract_block: dict, *, audit: bool = False) -> None:
         else:
             line = f"  {entry['symbol']:6} balance={balance}"
         if entry.get("auto_sized"):
-            # Pull the impact_bps from the settled iteration so the
-            # operator sees what the bisection landed on. Iterations
-            # are appended in order; the last one matching settled
-            # is the chosen amount.
-            search = entry.get("price_impact_search") or {}
+            search = entry.get("price_size_search") or {}
             settled = search.get("settled_amount_in")
             chosen = next(
                 (it for it in reversed(search.get("iterations") or [])
@@ -248,24 +249,22 @@ def _print_summary(extract_block: dict, *, audit: bool = False) -> None:
                 None,
             )
             if chosen:
-                line += (f" auto_sized impact={chosen['impact_bps']}bps "
-                         f"iters={len(search.get('iterations') or [])}")
+                line += (f" auto_sized dev={chosen['dev_api_bps']}bps"
+                         f" impact={chosen['impact_bps']}bps"
+                         f" iters={len(search.get('iterations') or [])}")
         if entry.get("skipped_reason"):
             line += f" skipped={entry['skipped_reason']}"
-            if entry.get("skipped_reason") == "price_deviation":
-                o = entry.get("oracle") or {}
-                if o.get("deviation_bps") is not None:
-                    line += f" Δ={o['deviation_bps']}bps"
+            search = entry.get("price_size_search") or {}
+            iters = search.get("iterations") or []
+            if iters and entry["skipped_reason"] in (
+                "price_deviation", "price_impact_too_high",
+            ):
+                floor = min(iters, key=lambda it: it["amount_in"])
+                line += (f" dev={floor['dev_api_bps']}bps"
+                         f" impact={floor['impact_bps']}bps")
             elif entry.get("skipped_reason") == "below_min_amount":
                 if entry.get("min_amount_wei"):
                     line += f" min={entry['min_amount_wei']}"
-            elif entry.get("skipped_reason") == "price_impact_too_high":
-                search = entry.get("price_impact_search") or {}
-                iters = search.get("iterations") or []
-                if iters:
-                    worst = min(iters, key=lambda i: i["impact_bps"])
-                    line += (f" best_impact={worst['impact_bps']}bps "
-                             f"iters={len(iters)}")
         elif entry.get("error"):
             line += f" ERROR={entry['error']}"
         elif entry.get("simulated_only"):

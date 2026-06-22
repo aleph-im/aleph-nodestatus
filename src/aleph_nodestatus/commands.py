@@ -1331,14 +1331,17 @@ def _parse_amount_kv(values, *, flag_name: str, configured_symbols: set):
                    "--max-amount: cap first, then min-skip.")
 @click.option("--max-price-impact-bps", "max_price_impact_bps", default=None,
               type=int,
-              help="Enable auto-sizing: bisect the swap amount until the "
-                   "implied price impact (vs a small-size reference quote) "
-                   "fits under this threshold, in bps. 100 = 1 percent. "
-                   "Overrides settings.extract_max_price_impact_bps. "
-                   "0 disables the search and uses the full (or capped) "
-                   "balance. Leftover stays in the contract for next "
-                   "cron cycle — the pool gets time to rebalance via "
-                   "arbitrage between swaps.")
+              help="Price-impact ceiling for the swap sizing loop, in bps "
+                   "(100 = 1%). The extractor bisects the swap amount until "
+                   "both the on-chain price impact (quoter output vs the "
+                   "pool's on-chain spot price) and the Credit-API deviation "
+                   "stay within their ceilings; leftover stays in the contract "
+                   "for the next cron cycle so the pool can rebalance via "
+                   "arbitrage between swaps. Overrides "
+                   "settings.extract_max_price_impact_bps (default 200). "
+                   "Sizing always runs for swap tokens; to disable only the "
+                   "Credit-API deviation half, set "
+                   "extract_price_deviation_enabled=False.")
 @click.option("--fork-rpc", "fork_rpc", default=None,
               help="URL of a local mainnet fork (e.g. http://localhost:8545 "
                    "for `anvil --fork-url …`). Requires --dry-run; refused "

@@ -358,8 +358,8 @@ async def test_random_delay_skipped_when_max_is_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stdout_summary_renders_price_deviation(monkeypatch, capsys):
-    """A token with skipped_reason='price_deviation' shows the deviation
-    bps and the spot/ref prices in the summary line."""
+    """A token with skipped_reason='price_deviation' shows dev/impact bps
+    from the smallest-amount iteration of price_size_search."""
     import aleph_nodestatus.credit_extraction as ce
 
     fake_web3 = MagicMock()
@@ -377,8 +377,9 @@ async def test_stdout_summary_renders_price_deviation(monkeypatch, capsys):
              "swap_amount_in": None, "min_out": None, "expected_out": None,
              "tx_hash": None, "simulated_only": False,
              "skipped_reason": "price_deviation", "error": None,
-             "oracle": {"deviation_bps": 350, "spot_price": 1.04,
-                        "ref_price": 1.00}},
+             "price_size_search": {"settled_amount_in": 0, "binding": "price_deviation",
+                 "iterations": [{"amount_in": 1000, "dev_api_bps": 350,
+                                 "impact_bps": 12, "fail": "price_deviation"}]}},
         ],
         "errors": [],
     })
@@ -389,7 +390,7 @@ async def test_stdout_summary_renders_price_deviation(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "USDC" in out and "price_deviation" in out
-    assert "350" in out  # deviation bps shown
+    assert "350" in out  # dev_api_bps shown
 
 
 # ---------------------------------------------------------------------------

@@ -221,6 +221,10 @@ class Settings(BaseSettings):
     credit_api_blockchain: str            = "ethereum"
     credit_api_timeout_seconds: int       = 10
 
+    # Uniswap v4 StateView (mainnet) — read pool spot price (sqrtPriceX96)
+    # for the on-chain price-impact check in the extract sizing loop.
+    extract_v4_stateview_address: str     = "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
+
     # Auto-sizing of the swap input to stay under a self-impact ceiling.
     # When > 0 (in bps), the extractor probes the configured quoter at a
     # small-size "unit" amount and at the candidate swap amount, derives
@@ -232,7 +236,7 @@ class Settings(BaseSettings):
     # 100 = 1% impact ceiling, sized to absorb USDC/ETH pool depth on
     # the configured Uniswap paths. CLI flag `--max-price-impact-bps`
     # overrides for one-off ops runs.
-    extract_max_price_impact_bps: int     = 100
+    extract_max_price_impact_bps: int     = 200
 
     # Per-token floor on the swap amount (human units, decimals-aware).
     # If the extractable amount drops below this for a given token, the

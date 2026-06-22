@@ -7,7 +7,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Optional, Set
 
-from .price_oracle import check_output_deviation
+from eth_abi import encode as abi_encode
+from eth_utils import keccak
+from web3 import Web3
+
+from .price_oracle import CreditApiUnavailable, fair_aleph_rate
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -54,152 +58,132 @@ def quote_amount_out(quoters: dict, swap_config: dict, amount_in: int,
     raise ValueError(f"Unknown swap version: {v}")
 
 
-def bisect_swap_amount_for_impact(
-    quoters: dict, swap_config: dict, *,
+def pool_fee_bps(swap_config: dict) -> int:
+    """Total swap fee across all hops of the configured path, in bps.
+
+    Uniswap fees are expressed in hundredths of a bip (1e-6), so
+    `fee_bps = fee_raw / 100` (10000 -> 100 bps, 3000 -> 30 bps). This
+    fee is fixed by the configured pool and is budgeted out of the
+    deviation/impact checks rather than counted against them.
+    """
+    v = swap_config.get("v")
+    if v == 4:
+        return sum(int(hop[1]) for hop in swap_config["v4"]) // 100
+    if v == 3:
+        path = swap_config["v3"]
+        # encoded as token(20) [fee(3) token(20)]... ; fees at 20, 43, ...
+        total = 0
+        i = 20
+        while i + 3 <= len(path):
+            total += int.from_bytes(path[i:i + 3], "big")
+            i += 23
+        return total // 100
+    if v == 2:
+        hops = max(len(swap_config["v2"]) - 1, 1)
+        return 30 * hops  # v2 is a flat 0.30% per hop
+    raise ValueError(f"unknown swap version: {v}")
+
+
+def bisect_swap_amount(
+    quoters, swap_config, *,
     token_in: str,
     upper_amount_in: int,
     min_amount_in: int,
-    ref_amount_in: int,
-    threshold_bps: int,
+    fair_rate,
+    spot_rate: float,
+    pool_fee_bps: int,
+    max_deviation_bps: int,
+    max_impact_bps: int,
     dev_pct: int = 0,
     is_stable: bool = False,
     max_iters: int = 30,
 ) -> dict:
-    """Find the largest `amount_in` in `[min_amount_in, upper_amount_in]`
-    whose realized price impact stays within `threshold_bps`.
+    """Largest `amount_in` in `[min, upper]` that passes both fee-free
+    checks at the real swap amount:
 
-    All amounts are in *input* wei (before the contract's stable
-    `dev_pct` trim). Internally, every quote is taken on
-    `swap_amount = amount_in × (100 - dev_pct) / 100` when stable,
-    matching what hits the on-chain pool.
+      out_adj = quoter_out / (1 - pool_fee)          # fee removed once
+      dev_api = |out_adj - fair| / fair  <= max_deviation_bps   (vs Credit-API)
+      impact  = (spot - out_adj) / spot  <= max_impact_bps      (vs pool spot)
 
-    Method (two phases):
-
-      1. **Halving**: starting from `upper_amount_in`, divide by 2 until
-         either the impact falls under the threshold (→ `low_ok`) or
-         the candidate drops below `min_amount_in` (→ nothing fits).
-
-      2. **Bisection**: refine between `(high_bad, low_ok)` until the
-         interval is below `delta = max(min_amount_in, low_ok // 100)`
-         — i.e. precision of ~1% of the current best fit, but never
-         finer than the operator's floor.
-
-    Capped at `max_iters` quoter calls to keep latency bounded; the
-    `delta` heuristic typically converges in 10-15 iterations.
-
-    Returns a trace dict:
-
-      ``{
-        "settled_amount_in":      int,   # 0 if even min didn't fit
-        "iterations":             list,  # each: amount_in, swap_amount,
-                                         #       quote_out, expected_no_impact,
-                                         #       impact_bps
-        "unit_price_quote_out":   int,
-        "unit_price_swap_amount": int,
-      }``
-
-    The trace is intentionally rich — operators reviewing
-    `extract-credits.log` need to see why the script chose half (or
-    a tenth) of the available balance.
+    `fair_rate`/`spot_rate` are ALEPH-wei per input-wei. `fair_rate=None`
+    disables the deviation check (operator opt-out). Returns settled amount
+    (0 if none fit), a rich iteration trace, and the binding skip reason.
     """
     def _swap_amount_of(amount_in: int) -> int:
         if is_stable and dev_pct > 0:
             return amount_in * (100 - dev_pct) // 100
         return amount_in
 
-    ref_swap = _swap_amount_of(ref_amount_in)
-    if ref_swap <= 0:
-        # `ref_amount_in` was so small the dev_pct trim floored to 0,
-        # which means we can't take a reference quote at all. Fall back
-        # to "no search" so the caller proceeds with the unconstrained
-        # amount — the on-chain slippage guard (`process_slippage_bps`)
-        # is still the safety net.
-        return {
-            "settled_amount_in": upper_amount_in,
-            "iterations": [],
-            "unit_price_quote_out": 0,
-            "unit_price_swap_amount": 0,
-            "note": "degenerate_ref_amount",
-        }
-
-    ref_out = quote_amount_out(
-        quoters, swap_config, ref_swap, token_in=token_in,
-    )
     iters: list = []
+    fee_den = 10_000 - pool_fee_bps
 
-    def _measure(amount_in: int) -> int:
+    def _measure(amount_in: int):
         swap = _swap_amount_of(amount_in)
-        actual = quote_amount_out(
-            quoters, swap_config, swap, token_in=token_in,
-        )
-        # Linear extrapolation of the reference quote. A "no impact"
-        # swap of size `swap` would return `swap × (ref_out / ref_swap)`;
-        # the gap to the realized `actual` is the price impact.
-        expected = swap * ref_out // ref_swap
+        out = quote_amount_out(quoters, swap_config, swap, token_in=token_in)
+        out_adj = out * 10_000 // fee_den if fee_den > 0 else out
+        spot = int(swap * spot_rate)
         impact_bps = (
-            (expected - actual) * 10_000 // expected
-            if expected > 0 else 0
+            max((spot - out_adj) * 10_000 // spot, 0) if spot > 0 else 10 ** 9
         )
-        iters.append({
-            "amount_in":          amount_in,
-            "swap_amount":        swap,
-            "quote_out":          actual,
-            "expected_no_impact": expected,
-            "impact_bps":         impact_bps,
-        })
-        return impact_bps
-
-    # Phase 1: test the upper bound. If it already fits, we're done.
-    if _measure(upper_amount_in) <= threshold_bps:
-        return {
-            "settled_amount_in":      upper_amount_in,
-            "iterations":             iters,
-            "unit_price_quote_out":   ref_out,
-            "unit_price_swap_amount": ref_swap,
+        if fair_rate is None:
+            fair = 0
+            dev_api_bps = 0
+        else:
+            fair = int(swap * fair_rate)
+            dev_api_bps = (
+                abs(out_adj - fair) * 10_000 // fair if fair > 0 else 10 ** 9
+            )
+        if impact_bps > max_impact_bps:
+            fail = "price_impact_too_high"
+        elif dev_api_bps > max_deviation_bps:
+            fail = "price_deviation"
+        else:
+            fail = None
+        rec = {
+            "amount_in": amount_in, "swap_amount": swap,
+            "out": out, "out_adj": out_adj, "fair": fair, "spot": spot,
+            "dev_api_bps": dev_api_bps, "impact_bps": impact_bps, "fail": fail,
         }
+        iters.append(rec)
+        return fail
 
-    # Phase 1b: halving down to find the first amount under threshold.
+    def _result(settled, binding):
+        return {"settled_amount_in": settled,
+                "iterations": iters, "binding": binding}
+
+    # Phase 1: does the full (capped) amount already pass?
+    if _measure(upper_amount_in) is None:
+        return _result(upper_amount_in, None)
+
+    # Phase 1b: halve down to the first amount that passes.
     high_bad = upper_amount_in
     low_ok = 0
     candidate = upper_amount_in // 2
+    last_fail = iters[-1]["fail"]
     while candidate >= min_amount_in and len(iters) < max_iters:
-        if _measure(candidate) <= threshold_bps:
+        fail = _measure(candidate)
+        if fail is None:
             low_ok = candidate
             break
+        last_fail = fail
         high_bad = candidate
         candidate //= 2
 
     if low_ok == 0:
-        # Even the min-floor (or the smallest halving step above it)
-        # exceeded the threshold. Caller turns this into a skip with
-        # `skipped_reason="price_impact_too_high"` so the next cron
-        # cycle gets a fresh shot once the pool has rebalanced.
-        return {
-            "settled_amount_in":      0,
-            "iterations":             iters,
-            "unit_price_quote_out":   ref_out,
-            "unit_price_swap_amount": ref_swap,
-        }
+        return _result(0, last_fail or "price_impact_too_high")
 
-    # Phase 2: bisect (low_ok, high_bad) for the largest amount that fits.
-    # `delta` ties precision to the operator's floor — once the interval
-    # is below that, more iterations can't improve the decision.
+    # Phase 2: bisect (low_ok, high_bad) for the largest passing amount.
     delta = max(min_amount_in, low_ok // 100)
     while high_bad - low_ok > delta and len(iters) < max_iters:
         mid = (low_ok + high_bad) // 2
         if mid < min_amount_in:
             break
-        if _measure(mid) <= threshold_bps:
+        if _measure(mid) is None:
             low_ok = mid
         else:
             high_bad = mid
 
-    return {
-        "settled_amount_in":      low_ok,
-        "iterations":             iters,
-        "unit_price_quote_out":   ref_out,
-        "unit_price_swap_amount": ref_swap,
-    }
+    return _result(low_ok, None)
 
 
 @lru_cache(maxsize=None)
@@ -770,51 +754,54 @@ def extract_aleph(
                 out["errors"].append(entry)
                 continue
 
-            # Auto-sizing: shrink `effective_amount` until the implied
-            # price impact fits under `max_price_impact_bps`. Skipped
-            # for ALEPH (no swap) and when the threshold is 0 (opt-in).
-            if max_price_impact_bps > 0:
-                # Reference amount for the "unit price" probe: the
-                # operator's --min-amount floor when set, otherwise 1
-                # token unit. 1 wei would round to 0 in the quoter for
-                # tight-decimal tokens, so we use a realistic floor.
-                if token_symbol in min_amounts:
-                    min_in_wei = _human_to_wei(
-                        w3, token, min_amounts[token_symbol],
-                    )
-                else:
-                    min_in_wei = 1
-                if token_symbol in min_amounts:
-                    ref_in_wei = min_in_wei
-                else:
-                    ref_in_wei = 10 ** _token_decimals(w3, token)
+            fee_bps = pool_fee_bps(cfg)
+            try:
+                spot_rate = pool_spot_rate(w3, cfg, token)
+            except Exception as e:
+                LOGGER.warning(
+                    "Spot read failed for %s; skipping token: %r",
+                    token_symbol, e,
+                )
+                entry["skipped_reason"] = "spot_read_failed"
+                continue
+
+            if settings.extract_price_deviation_enabled:
                 try:
-                    search = bisect_swap_amount_for_impact(
-                        quoters, cfg,
-                        token_in=token,
-                        upper_amount_in=effective_amount,
-                        min_amount_in=min_in_wei,
-                        ref_amount_in=ref_in_wei,
-                        threshold_bps=max_price_impact_bps,
-                        dev_pct=dev_pct,
-                        is_stable=is_stable,
-                    )
+                    fair_rate = fair_aleph_rate(token_symbol)
+                except CreditApiUnavailable:
+                    raise
                 except Exception as e:
-                    LOGGER.exception(
-                        "Price-impact search failed for token %s: %r",
-                        token_symbol, e,
+                    raise CreditApiUnavailable(
+                        f"Credit-API fair rate failed for {token_symbol}: {e!r}"
                     )
-                    entry["error"] = f"price_impact_search_failed: {e!r}"
-                    out["errors"].append(entry)
-                    continue
-                entry["price_impact_search"] = search
-                if search["settled_amount_in"] == 0:
-                    entry["skipped_reason"] = "price_impact_too_high"
-                    continue
-                if search["settled_amount_in"] < effective_amount:
-                    effective_amount = search["settled_amount_in"]
-                    entry["amount_in"] = str(effective_amount)
-                    entry["auto_sized"] = True
+            else:
+                fair_rate = None
+
+            if token_symbol in min_amounts:
+                size_min_wei = _human_to_wei(w3, token, min_amounts[token_symbol])
+            else:
+                size_min_wei = 1
+            search = bisect_swap_amount(
+                quoters, cfg,
+                token_in=token,
+                upper_amount_in=effective_amount,
+                min_amount_in=size_min_wei,
+                fair_rate=fair_rate,
+                spot_rate=spot_rate,
+                pool_fee_bps=fee_bps,
+                max_deviation_bps=settings.extract_max_deviation_bps,
+                max_impact_bps=max_price_impact_bps or settings.extract_max_price_impact_bps,
+                dev_pct=dev_pct,
+                is_stable=is_stable,
+            )
+            entry["price_size_search"] = search
+            if search["settled_amount_in"] == 0:
+                entry["skipped_reason"] = search["binding"] or "price_impact_too_high"
+                continue
+            if search["settled_amount_in"] < effective_amount:
+                effective_amount = search["settled_amount_in"]
+                entry["amount_in"] = str(effective_amount)
+                entry["auto_sized"] = True
 
             # Quote against the amount the contract will *actually* swap.
             # For stables that's `effective_amount × (100 - dev_pct) / 100`
@@ -850,33 +837,6 @@ def extract_aleph(
                 continue
             entry["expected_out"] = str(expected_out)
             entry["min_out"] = str(min_out)
-
-            # Output-deviation guard: compare the quoter's expected_out
-            # against the Credit-API fair ALEPH output. Fail-closed: a
-            # deviating or unavailable price skips the token this run. The
-            # whole call is wrapped so an unexpected guard error skips just
-            # this token rather than aborting the entire run.
-            try:
-                oracle = check_output_deviation(
-                    token_in_symbol=token_symbol,
-                    swap_amount_wei=swap_amount,
-                    expected_out_wei=expected_out,
-                )
-            except Exception as e:
-                LOGGER.warning(
-                    "Output-deviation guard errored for %s; skipping token: %r",
-                    token_symbol, e,
-                )
-                entry["skipped_reason"] = "credit_api_unavailable"
-                continue
-            if not oracle.ok:
-                entry["skipped_reason"] = oracle.reason
-                entry["oracle"] = {
-                    "deviation_bps": oracle.deviation_bps,
-                    "expected_out":  oracle.expected_out,
-                    "implied_out":   oracle.implied_out,
-                }
-                continue
 
         err = simulate_process(
             w3, processor,
@@ -925,3 +885,47 @@ def extract_aleph(
             out["errors"].append(entry)
 
     return out
+
+
+def _v4_pool_id(currency0: str, currency1: str, fee: int,
+                tick_spacing: int, hooks: str) -> bytes:
+    """Uniswap v4 PoolId = keccak(abi.encode(PoolKey)). Currencies must be
+    pre-sorted ascending; native ETH is the zero address and sorts first."""
+    return keccak(abi_encode(
+        ["address", "address", "uint24", "int24", "address"],
+        [Web3.to_checksum_address(currency0),
+         Web3.to_checksum_address(currency1),
+         int(fee), int(tick_spacing),
+         Web3.to_checksum_address(hooks)],
+    ))
+
+
+def pool_spot_rate(w3, swap_config: dict, token_in: str) -> float:
+    """ALEPH-wei per input-wei from the pool's on-chain spot price.
+
+    v4 single-hop only: build the PoolKey from (token_in, PathKey), read
+    sqrtPriceX96 via the StateView, and convert to a wei-per-wei rate. The
+    `raw = (sqrtP/2**96)**2` value is currency1-wei per currency0-wei; we
+    orient it so the result is output(ALEPH)-wei per input(token_in)-wei.
+    No decimals factor — both sides of the later checks are in wei.
+    """
+    v = swap_config.get("v")
+    if v != 4 or len(swap_config["v4"]) != 1:
+        raise NotImplementedError(
+            "pool_spot_rate supports only v4 single-hop pools")
+    intermediate, fee, tick_spacing, hooks, _hook_data = swap_config["v4"][0]
+    in_addr = ETH_SENTINEL if token_in.lower() == ETH_SENTINEL.lower() else token_in
+    pair = sorted([in_addr.lower(), intermediate.lower()])
+    currency0, currency1 = pair[0], pair[1]
+    pool_id = _v4_pool_id(currency0, currency1, fee, tick_spacing, hooks)
+    sv = w3.eth.contract(
+        address=w3.to_checksum_address(settings.extract_v4_stateview_address),
+        abi=_load_abi("IUniswapV4StateView"),
+    )
+    sqrt_price_x96 = sv.functions.getSlot0(pool_id).call()[0]
+    raw = (sqrt_price_x96 / 2 ** 96) ** 2  # currency1-wei per currency0-wei
+    if in_addr.lower() == currency0:
+        # ALEPH is currency1: ALEPH-wei per input-wei = raw
+        return raw
+    # ALEPH is currency0: ALEPH-wei per input-wei = 1/raw
+    return 1.0 / raw

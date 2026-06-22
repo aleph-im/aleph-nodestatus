@@ -256,6 +256,21 @@ def test_cli_no_sizing_flags_uses_setting_defaults(monkeypatch):
     assert captured["min_amounts"] == expected_min
 
 
+def test_summary_shows_dev_and_impact(capsys):
+    from aleph_nodestatus.credit_extraction import _print_summary
+    block = {"tokens": [{
+        "symbol": "USDC", "balance": "500000000", "amount_in": "45000000",
+        "auto_sized": True, "skipped_reason": None,
+        "simulated_only": True, "min_out": "44000000", "error": None,
+        "price_size_search": {"settled_amount_in": 45000000, "binding": None,
+            "iterations": [{"amount_in": 45000000, "dev_api_bps": 191,
+                            "impact_bps": 190, "fail": None}]},
+    }]}
+    _print_summary(block)
+    out = capsys.readouterr().out
+    assert "auto_sized" in out and "dev=191bps" in out and "impact=190bps" in out
+
+
 def test_cli_default_min_amounts_filtered_to_configured_tokens(monkeypatch):
     """A stale entry in extract_default_min_amounts (for a token no
     longer in process_tokens) is silently dropped — the CLI must not

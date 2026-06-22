@@ -8,18 +8,24 @@ from aleph_nodestatus.payment_processor import (
 
 
 @pytest.fixture(autouse=True)
-def _stub_output_deviation_guard(monkeypatch):
-    """Neutralize the Credit-API output-deviation guard by default so the
-    extract_aleph swap-path tests don't make live HTTP calls. The guard's
-    own behavior is covered in tests/test_price_oracle.py. A test that wants
-    the guard to reject overrides this with its own
-    monkeypatch.setattr(pp, "check_output_deviation", ...), which shadows
-    this fixture's patch for that test."""
+def _stub_sizing_pass(monkeypatch):
+    """Neutralize the unified sizing loop by default so the extract_aleph
+    swap-path tests don't make live HTTP calls or require V4 pool state.
+
+    Stubs pool_spot_rate, fair_aleph_rate, and bisect_swap_amount so the
+    swap path always proceeds with the full effective_amount (no resize,
+    no skip). A test that wants the loop to reject overrides individual
+    stubs, which shadow this fixture's patches for that test."""
     import aleph_nodestatus.payment_processor as pp
-    from aleph_nodestatus.price_oracle import OracleResult
+    monkeypatch.setattr(pp, "pool_spot_rate", lambda *a, **k: 80.0)
+    monkeypatch.setattr(pp, "fair_aleph_rate", lambda *a, **k: 80.0)
     monkeypatch.setattr(
-        pp, "check_output_deviation",
-        lambda **kw: OracleResult(ok=True, deviation_bps=0),
+        pp, "bisect_swap_amount",
+        lambda *a, **k: {
+            "settled_amount_in": k["upper_amount_in"],
+            "iterations": [],
+            "binding": None,
+        },
     )
 
 
@@ -188,6 +194,7 @@ def test_extract_aleph_dry_run_does_not_broadcast(monkeypatch):
                                            # `token_lc == aleph_address.lower()`
                                            # comparison resolves correctly
                                            # under the mocked w3.
+    w3.eth.get_balance.return_value = 1_000_000  # ETH balance as int
     processor = _mk_extract_processor(is_stable=False)
     quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
 
@@ -259,6 +266,7 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
     amount rather than the full balance."""
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000  # ETH balance as int
     processor = _mk_extract_processor(is_stable=True, dev_pct=5)
     quoters   = _mk_quoters_v3(call_return_value=(10_000_000, [0], [0], 0))
     erc20_mock = MagicMock()
@@ -301,6 +309,7 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     (not duplicates across both early and final append sites)."""
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000  # ETH balance as int
     processor = _mk_extract_processor(is_stable=False)
     quoters = _mk_quoters_v3(
         call_side_effect=RuntimeError("quoter unavailable"),
@@ -333,14 +342,11 @@ def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     assert len(result["errors"]) == len(failing)
 
 
-def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
-    """When price_oracle.check_output_deviation returns ok=False, the token
-    gets skipped_reason set and the swap is NOT executed. The guard runs
-    AFTER the quote now, so quote_amount_out IS called, but simulate_process
-    is NOT reached for the deviating tokens."""
+def test_extract_aleph_skips_token_when_bisect_returns_price_deviation(monkeypatch):
+    """When bisect_swap_amount returns settled=0 with binding='price_deviation',
+    the token gets skipped_reason set and simulate_process is NOT reached."""
     from aleph_nodestatus.payment_processor import extract_aleph
     import aleph_nodestatus.payment_processor as pp
-    from aleph_nodestatus.price_oracle import OracleResult
 
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
@@ -352,19 +358,17 @@ def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
     erc20_mock.functions.decimals.return_value.call.return_value = 6
     monkeypatch.setattr(pp, "_erc20_contract", lambda w3, addr: erc20_mock)
 
-    quote_calls = []
     simulate_calls = []
-    monkeypatch.setattr(pp, "quote_amount_out",
-                        lambda *a, **kw: quote_calls.append(1) or 10_000)
     monkeypatch.setattr(pp, "simulate_process",
                         lambda *a, **kw: simulate_calls.append(1) or None)
 
     monkeypatch.setattr(
-        pp, "check_output_deviation",
-        lambda **kw: OracleResult(
-            ok=False, reason="price_deviation",
-            deviation_bps=350, expected_out=9650.0, implied_out=10000.0,
-        ),
+        pp, "bisect_swap_amount",
+        lambda *a, **k: {
+            "settled_amount_in": 0,
+            "iterations": [{"amount_in": k["upper_amount_in"], "fail": "price_deviation"}],
+            "binding": "price_deviation",
+        },
     )
 
     result = extract_aleph(
@@ -373,18 +377,11 @@ def test_extract_aleph_skips_token_when_oracle_says_not_ok(monkeypatch):
         dry_run=True,
     )
 
-    # ALEPH has no swap → still simulated. USDC and ETH have swaps → both
-    # quoted, then flagged price_deviation before simulate.
+    # USDC and ETH swap tokens should be skipped with price_deviation.
     skipped = [e for e in result["tokens"]
                if e.get("skipped_reason") == "price_deviation"]
     assert len(skipped) == 2, [e for e in result["tokens"]]
-    for e in skipped:
-        assert e["oracle"]["deviation_bps"] == 350
-        assert e["oracle"]["expected_out"] == 9650.0
-        assert e["oracle"]["implied_out"] == 10000.0
-    # Guard runs post-quote: the two swap tokens WERE quoted...
-    assert len(quote_calls) == 2
-    # ...but neither deviating token reached simulate_process.
+    # Neither deviating token reached simulate_process.
     # ALEPH (passthrough, no swap) still calls simulate once.
     assert len(simulate_calls) == 1
 
@@ -651,149 +648,19 @@ def test_extract_aleph_stable_dev_pct_uses_capped_amount(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Auto-sizing: bisect_swap_amount_for_impact
-#
-# The pool depth model used by these tests is the constant-product
-# approximation `out(X) = X · POOL / (POOL + X)`. It has a closed-form
-# price impact: `impact_bps = X / (POOL + X) · 10_000`. That lets us
-# pick a POOL and assert convergence to a known threshold without
-# touching the real Uniswap math.
-# ---------------------------------------------------------------------------
-
-from aleph_nodestatus.payment_processor import bisect_swap_amount_for_impact
-
-
-def _mk_constant_product_v3_quoter(pool_depth_wei: int):
-    """V3 quoter mock whose `out(X) = X * POOL / (POOL + X)`. Same shape
-    a Uniswap V3 single-tick pool would produce. Lets bisection tests
-    assert convergence without touching real contracts.
-
-    Returns the quoters dict expected by bisect_swap_amount_for_impact.
-    """
-    v3 = MagicMock()
-
-    def quote_call(path, amount_in):
-        out = amount_in * pool_depth_wei // (pool_depth_wei + amount_in)
-        # Quoter V2 returns a 4-tuple; only the first slot is read by
-        # quote_amount_out.
-        return (out, [0], [0], 0)
-
-    # quoteExactInput(path, amount).call() → (out, ...)
-    # The mock dispatches via the positional args captured here.
-    def quoteExactInput(path, amount_in):
-        wrapper = MagicMock()
-        wrapper.call = lambda: quote_call(path, amount_in)
-        return wrapper
-
-    v3.functions.quoteExactInput = quoteExactInput
-    return {"v2": None, "v3": v3, "v4": None}
-
-
-def test_bisect_no_impact_when_below_threshold_keeps_upper():
-    """If the upper-bound amount is already within threshold, no halving
-    or bisection happens beyond the initial probe + upper check."""
-    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=10**18)  # huge pool
-    cfg = {"v": 3, "v3": b"\x01\x02"}
-    result = bisect_swap_amount_for_impact(
-        quoters, cfg,
-        token_in="0x" + "aa" * 20,
-        upper_amount_in=10**12,       # 1e12 vs 1e18 pool → impact ~1 bps
-        min_amount_in=10**9,
-        ref_amount_in=10**9,
-        threshold_bps=100,
-    )
-    assert result["settled_amount_in"] == 10**12
-    # 2 quoter calls: reference + upper-bound check; no halving.
-    assert len(result["iterations"]) == 1
-
-
-def test_bisect_converges_to_threshold_on_shallow_pool():
-    """With POOL = 100 USDC pool (1e8 wei) and threshold 100 bps:
-    impact_bps = (X - ref_swap) · 10_000 / (POOL + X), so the closed-form
-    max-fit is X* = (POOL · T + 10_000 · ref_swap) / (10_000 - T), with
-    T = threshold_bps. Bisection must land in [X* - delta, X*] where
-    delta = max(min_in, low_ok // 100)."""
-    pool = 100_000_000          # 100 USDC (6 dp)
-    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
-    cfg = {"v": 3, "v3": b"\x01\x02"}
-    upper = 50_000_000          # 50 USDC — too big (impact ≈ 3333 bps)
-    min_in = 100_000            # 0.1 USDC floor (= ref_swap here)
-    threshold = 100
-    result = bisect_swap_amount_for_impact(
-        quoters, cfg,
-        token_in="0x" + "aa" * 20,
-        upper_amount_in=upper,
-        min_amount_in=min_in,
-        ref_amount_in=min_in,
-        threshold_bps=threshold,
-    )
-    settled = result["settled_amount_in"]
-    # ref_swap == min_in here (no dev_pct).
-    closed_form = (pool * threshold + 10_000 * min_in) // (10_000 - threshold)
-    # Convergence floor: max(min_in, low_ok//100). settled ≈ 1M
-    # → low_ok//100 ≈ 10k → delta == max(100k, 10k) == 100k.
-    assert settled <= closed_form, (settled, closed_form)
-    assert closed_form - settled <= 100_000, (settled, closed_form)
-    # Verify the chosen amount actually fits the threshold.
-    chosen = next(
-        it for it in reversed(result["iterations"])
-        if it["amount_in"] == settled
-    )
-    assert chosen["impact_bps"] <= threshold
-
-
-def test_bisect_returns_zero_when_min_exceeds_threshold():
-    """A pool too shallow even at min_amount → settled_amount_in == 0,
-    signalling the caller to skip the token."""
-    pool = 1_000_000             # 1 USDC pool — barely any liquidity
-    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
-    cfg = {"v": 3, "v3": b"\x01\x02"}
-    result = bisect_swap_amount_for_impact(
-        quoters, cfg,
-        token_in="0x" + "aa" * 20,
-        upper_amount_in=100_000_000,    # 100 USDC
-        min_amount_in=10_000_000,       #  10 USDC floor — too big for this pool
-        ref_amount_in=10_000_000,
-        threshold_bps=100,
-    )
-    assert result["settled_amount_in"] == 0
-
-
-def test_bisect_applies_dev_pct_for_stable_tokens():
-    """For a stable token with dev_pct=5, the impact is measured on
-    the post-trim swap_amount, not on amount_in. With dev_pct, an
-    `amount_in` of 100M USDC quotes against a 95M USDC swap."""
-    pool = 10**18
-    quoters = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
-    cfg = {"v": 3, "v3": b"\x01\x02"}
-    upper = 10**12
-    result = bisect_swap_amount_for_impact(
-        quoters, cfg,
-        token_in="0x" + "aa" * 20,
-        upper_amount_in=upper,
-        min_amount_in=10**6,
-        ref_amount_in=10**9,
-        threshold_bps=100,
-        dev_pct=5, is_stable=True,
-    )
-    # First "real" iteration measures the upper bound. swap_amount
-    # should be upper * 95 / 100, not upper.
-    first = result["iterations"][0]
-    assert first["amount_in"]   == upper
-    assert first["swap_amount"] == upper * 95 // 100
-
-
-# ---------------------------------------------------------------------------
 # Auto-sizing integration: extract_aleph end-to-end
 # ---------------------------------------------------------------------------
 
-def test_extract_aleph_threshold_zero_does_not_call_bisection(monkeypatch):
-    """Auto-sizing is opt-in: with max_price_impact_bps=0 the bisection
-    function must not be invoked, and amount_in stays at the full
-    (capped) balance — proves the new path doesn't regress the
-    existing flow when ops haven't enabled it."""
+def test_extract_aleph_sizing_loop_always_runs_for_swap_tokens(monkeypatch):
+    """The unified sizing loop runs for every non-ALEPH token regardless of
+    max_price_impact_bps. The sizing loop (bisect_swap_amount) always runs for
+    swap tokens; the pass-through stub (from _stub_sizing_pass) leaves
+    amount_in unchanged."""
+    import aleph_nodestatus.payment_processor as pp
+
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000  # ETH balance as int
     processor = _mk_extract_processor(is_stable=False)
     quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
 
@@ -807,32 +674,41 @@ def test_extract_aleph_threshold_zero_does_not_call_bisection(monkeypatch):
         lambda *a, **kw: None,
     )
 
-    bisect_calls = []
-    monkeypatch.setattr(
-        "aleph_nodestatus.payment_processor.bisect_swap_amount_for_impact",
-        lambda *a, **kw: bisect_calls.append(1) or {},
-    )
+    bisect_new_calls = []
+    orig_stub = pp.bisect_swap_amount  # the _stub_sizing_pass lambda
 
-    extract_aleph(
+    def counting_bisect(*a, **k):
+        bisect_new_calls.append(1)
+        return orig_stub(*a, **k)
+
+    monkeypatch.setattr(pp, "bisect_swap_amount", counting_bisect)
+
+    result = extract_aleph(
         w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
         max_price_impact_bps=0,
     )
-    assert bisect_calls == []
+    # bisect_swap_amount is called for every non-ALEPH token (USDC + ETH = 2)
+    assert len(bisect_new_calls) == 2
+    # bisect_swap_amount_for_impact is NOT in the call path at all
+    assert not hasattr(pp, "_bisect_for_impact_called"), "old path must not run"
+    # amounts stayed at balance (stub returns upper_amount_in unchanged)
+    for entry in result["tokens"]:
+        if entry["symbol"] != "ALEPH":
+            assert entry.get("auto_sized") is None
 
 
 def test_extract_aleph_auto_sizing_shrinks_amount_in(monkeypatch):
-    """With a shallow pool and threshold=100bps, the auto-size search
-    must reduce effective_amount below balance and record the trace
-    on the entry."""
-    from aleph_nodestatus.payment_processor import _swap_config_to_dict
+    """With bisect_swap_amount returning a reduced settled amount, amount_in
+    is shrunk and auto_sized is set, and the trace is stored in price_size_search."""
+    import aleph_nodestatus.payment_processor as pp
+    from decimal import Decimal
 
-    pool = 100_000_000          # 100 USDC pool
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
     processor = _mk_extract_processor(is_stable=False)
-    quoters   = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
 
     erc20_mock = _mk_erc20_mock(balance=50_000_000, decimals=6)  # 50 USDC
     monkeypatch.setattr(
@@ -845,33 +721,45 @@ def test_extract_aleph_auto_sizing_shrinks_amount_in(monkeypatch):
         lambda *a, **kw: simulate_kwargs.append(kw) or None,
     )
 
+    # Stub bisect_swap_amount to return a reduced settled amount
+    reduced = 10_000_000  # 10 USDC
+    monkeypatch.setattr(
+        pp, "bisect_swap_amount",
+        lambda *a, **k: {
+            "settled_amount_in": reduced,
+            "iterations": [{"amount_in": k["upper_amount_in"], "fail": "price_impact_too_high"},
+                           {"amount_in": reduced, "fail": None}],
+            "binding": None,
+        },
+    )
+
     result = extract_aleph(
         w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
         token_filter={"USDC"},
-        max_price_impact_bps=100,
     )
 
     usdc = result["tokens"][0]
     assert usdc["auto_sized"] is True
-    assert int(usdc["amount_in"]) < 50_000_000
+    assert int(usdc["amount_in"]) == reduced
     # simulate_process saw the auto-sized amount, not the full balance.
-    assert simulate_kwargs[0]["amount_in"] == int(usdc["amount_in"])
-    # Trace recorded on the entry for ops review.
-    assert usdc["price_impact_search"]["settled_amount_in"] == int(usdc["amount_in"])
-    assert len(usdc["price_impact_search"]["iterations"]) >= 2
+    assert simulate_kwargs[0]["amount_in"] == reduced
+    # Trace recorded on the entry under the new key.
+    assert usdc["price_size_search"]["settled_amount_in"] == reduced
+    assert len(usdc["price_size_search"]["iterations"]) == 2
 
 
 def test_extract_aleph_auto_sizing_skips_when_pool_too_shallow(monkeypatch):
-    """Pool too shallow even at min_amount → skipped_reason='price_impact_too_high'."""
+    """bisect_swap_amount returning settled=0 with binding='price_impact_too_high'
+    causes the token to be skipped with that reason."""
     from decimal import Decimal
+    import aleph_nodestatus.payment_processor as pp
 
-    pool = 1_000_000            # 1 USDC pool — tiny
     w3 = MagicMock()
     w3.to_checksum_address = lambda x: x
     processor = _mk_extract_processor(is_stable=False)
-    quoters   = _mk_constant_product_v3_quoter(pool_depth_wei=pool)
+    quoters   = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
 
     erc20_mock = _mk_erc20_mock(balance=500_000_000, decimals=6)
     monkeypatch.setattr(
@@ -884,13 +772,21 @@ def test_extract_aleph_auto_sizing_skips_when_pool_too_shallow(monkeypatch):
         lambda *a, **kw: simulate_calls.append(1) or None,
     )
 
+    monkeypatch.setattr(
+        pp, "bisect_swap_amount",
+        lambda *a, **k: {
+            "settled_amount_in": 0,
+            "iterations": [{"amount_in": k["upper_amount_in"], "fail": "price_impact_too_high"}],
+            "binding": "price_impact_too_high",
+        },
+    )
+
     result = extract_aleph(
         w3, processor, quoters, account=None,
         from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
         dry_run=True,
         token_filter={"USDC"},
         min_amounts={"USDC": Decimal("10")},  # 10 USDC floor
-        max_price_impact_bps=100,
     )
 
     usdc = result["tokens"][0]
@@ -1255,3 +1151,159 @@ def test_audit_process_tx_aleph_passthrough_matches(capsys):
     assert entry["audit"]["delta_expected_bps"] == 0
     # min_out was 0 → delta_min_bps is 0 by convention (we don't divide).
     assert entry["audit"]["delta_min_bps"] == 0
+
+
+from aleph_nodestatus.payment_processor import pool_fee_bps
+
+
+def test_pool_fee_bps_v4_single_hop():
+    cfg = {"v": 4, "t": "0xUSDC",
+           "v4": [["0xALEPH", 10000, 200, "0x0", b""]], "v3": b"", "v2": []}
+    assert pool_fee_bps(cfg) == 100
+
+
+def test_pool_fee_bps_v2_flat_30_per_hop():
+    cfg = {"v": 2, "t": "0xA", "v2": ["0xA", "0xB"], "v3": b"", "v4": []}
+    assert pool_fee_bps(cfg) == 30  # one hop
+
+
+def test_pool_fee_bps_v3_decodes_and_sums():
+    # path: token(20) + fee(3, 3000) + token(20) + fee(3, 500) + token(20)
+    path = (b"\x11" * 20 + (3000).to_bytes(3, "big")
+            + b"\x22" * 20 + (500).to_bytes(3, "big") + b"\x33" * 20)
+    cfg = {"v": 3, "t": "0xA", "v3": path, "v2": [], "v4": []}
+    assert pool_fee_bps(cfg) == 35  # 30 + 5
+
+
+from aleph_nodestatus.payment_processor import pool_spot_rate, _v4_pool_id
+
+
+def test_v4_pool_id_matches_known_fixture():
+    # USDC/ALEPH 1% pool at block 25372912
+    usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    aleph = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
+    c0, c1 = sorted([usdc.lower(), aleph.lower()])
+    pid = _v4_pool_id(c0, c1, 10000, 200,
+                      "0x0000000000000000000000000000000000000000")
+    assert pid.hex() == (
+        "8ee28047ee72104999ce30d35f92e1757a7a94a5ac2bc200f4c2da1eabfe6429"
+    )
+
+
+def test_pool_spot_rate_usdc_in_aleph_out(monkeypatch):
+    import aleph_nodestatus.payment_processor as pp
+    usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    aleph = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
+    cfg = {"v": 4, "t": usdc,
+           "v4": [[aleph, 10000, 200,
+                   "0x0000000000000000000000000000000000000000", b""]]}
+    sqrtp = 8801253120988487230264  # slot0[0] at block 25372912
+    sv = MagicMock()
+    sv.functions.getSlot0.return_value.call.return_value = [sqrtp, 0, 0, 10000]
+    w3 = MagicMock()
+    w3.to_checksum_address.side_effect = lambda a: a
+    w3.eth.contract.return_value = sv
+    rate = pool_spot_rate(w3, cfg, usdc)
+    # currency0=ALEPH, currency1=USDC; raw = USDC_wei/ALEPH_wei;
+    # USDC->ALEPH wants ALEPH_wei/USDC_wei = 1/raw ~ 8.1e13
+    raw = (sqrtp / 2 ** 96) ** 2
+    assert abs(rate - (1.0 / raw)) / rate < 1e-9
+
+
+import aleph_nodestatus.payment_processor as pp
+from aleph_nodestatus.payment_processor import bisect_swap_amount
+
+
+def _make_quoters_linear(monkeypatch, *, mid_rate, impact_per_wei):
+    """Patch quote_amount_out so out = swap*mid_rate*(1 - impact_per_wei*swap),
+    i.e. impact grows with size. Fee is applied separately by the loop."""
+    def fake(quoters, swap_config, amount_in, token_in=None):
+        eff = mid_rate * (1 - impact_per_wei * amount_in)
+        return int(amount_in * eff)
+    monkeypatch.setattr(pp, "quote_amount_out", fake)
+
+
+def test_bisect_shrinks_until_both_checks_pass(monkeypatch):
+    # mid_rate 80 ALEPH/USDC-unit; fair slightly above mid (favorable source
+    # gap absent); fee 100 bps; impact grows ~ with size.
+    _make_quoters_linear(monkeypatch, mid_rate=80.0, impact_per_wei=1e-8)
+    res = bisect_swap_amount(
+        {}, {"v": 4, "t": "0xUSDC", "v4": [["0xALEPH", 10000, 200, "0x0", b""]]},
+        token_in="0xUSDC",
+        upper_amount_in=100_000_000,
+        min_amount_in=1_000_000,
+        fair_rate=80.0,            # ALEPH-wei per input-wei (mid)
+        spot_rate=80.0,
+        pool_fee_bps=100,
+        max_deviation_bps=200,
+        max_impact_bps=200,
+    )
+    assert 0 < res["settled_amount_in"] <= 100_000_000
+    chosen = next(
+        it for it in res["iterations"]
+        if it["amount_in"] == res["settled_amount_in"]
+    )
+    assert chosen["fail"] is None
+    assert chosen["impact_bps"] <= 200 and chosen["dev_api_bps"] <= 200
+
+
+def test_bisect_skips_when_min_fails(monkeypatch):
+    # Even the smallest amount has huge impact -> nothing fits.
+    _make_quoters_linear(monkeypatch, mid_rate=80.0, impact_per_wei=1e-6)
+    res = bisect_swap_amount(
+        {}, {"v": 4, "t": "0xUSDC", "v4": [["0xALEPH", 10000, 200, "0x0", b""]]},
+        token_in="0xUSDC",
+        upper_amount_in=100_000_000,
+        min_amount_in=1_000_000,
+        fair_rate=80.0, spot_rate=80.0, pool_fee_bps=100,
+        max_deviation_bps=200, max_impact_bps=200,
+    )
+    assert res["settled_amount_in"] == 0
+    assert res["binding"] == "price_impact_too_high"
+
+
+def test_bisect_binding_price_deviation(monkeypatch):
+    # Pool depth is fine (spot==out_adj so impact~0) but fair is far above
+    # out_adj -> dev_api binds.
+    _make_quoters_linear(monkeypatch, mid_rate=80.0, impact_per_wei=0.0)
+    res = bisect_swap_amount(
+        {}, {"v": 4, "t": "0xUSDC", "v4": [["0xALEPH", 10000, 200, "0x0", b""]]},
+        token_in="0xUSDC",
+        upper_amount_in=100_000_000, min_amount_in=1_000_000,
+        fair_rate=120.0,           # fair >> out_adj -> big deviation
+        spot_rate=80.0 / (1 - 0.01),  # spot == out_adj -> impact 0
+        pool_fee_bps=100,
+        max_deviation_bps=200, max_impact_bps=200,
+    )
+    assert res["settled_amount_in"] == 0
+    assert res["binding"] == "price_deviation"
+
+
+def test_extract_aleph_aborts_when_credit_api_down(monkeypatch):
+    import aleph_nodestatus.payment_processor as pp
+    from aleph_nodestatus.price_oracle import CreditApiUnavailable
+
+    w3 = MagicMock(); w3.to_checksum_address.side_effect = lambda a: a
+    processor = MagicMock()
+    processor.functions.developersPercentage.return_value.call.return_value = 5
+    processor.functions.isStableToken.return_value.call.return_value = True
+    processor.functions.getSwapConfig.return_value.call.return_value = (
+        4, "0xUSDC", [], b"", [["0xALEPH", 10000, 200,
+                                "0x0000000000000000000000000000000000000000", b""]])
+
+    monkeypatch.setattr(pp, "_balance_of", lambda *a, **k: 500_000_000)
+    monkeypatch.setattr(pp, "_human_to_wei", lambda w3, t, h: int(h) * 10 ** 6)
+    monkeypatch.setattr(pp, "_token_decimals", lambda w3, t: 6)
+    monkeypatch.setattr(pp, "pool_spot_rate", lambda *a, **k: 80.0)
+
+    def boom(symbol):
+        raise CreditApiUnavailable("down")
+    monkeypatch.setattr(pp, "fair_aleph_rate", boom)
+
+    from aleph_nodestatus.settings import settings as s
+    monkeypatch.setattr(s, "process_tokens", [("USDC", "0xUSDC")])
+
+    with pytest.raises(CreditApiUnavailable):
+        pp.extract_aleph(w3, processor, {}, account=MagicMock(),
+                         from_address="0xADMIN", dry_run=True,
+                         transfer_enabled=False)

@@ -42,6 +42,11 @@ from .settings import settings
 LOGGER = logging.getLogger(__name__)
 
 
+class CreditApiUnavailable(RuntimeError):
+    """Raised when the Credit-API fair price cannot be obtained and the
+    extract run must abort (the price is essential to sizing)."""
+
+
 @dataclass
 class OracleResult:
     ok: bool
@@ -77,17 +82,26 @@ def _rate_credits_per_wei(prices: Dict[str, dict], symbol: str) -> float:
     return base_credits / float(int(item["tokenAmount"]))
 
 
+def fair_aleph_rate(token_in_symbol: str) -> float:
+    """ALEPH-wei per input-wei (bonus-free) from the cached bulk price map.
+
+    The credit unit cancels in the ratio, so no constants/decimals enter.
+    Raises on HTTP/parse/missing-symbol; caller converts to an abort.
+    """
+    prices = _price_map(settings.credit_api_blockchain)
+    rate_in = _rate_credits_per_wei(prices, token_in_symbol)
+    rate_aleph = _rate_credits_per_wei(prices, "ALEPH")
+    if rate_aleph <= 0:
+        raise ValueError("Credit-API returned non-positive ALEPH rate")
+    return rate_in / rate_aleph
+
+
 def _fair_aleph_out_wei(token_in_symbol: str, swap_amount_wei: int) -> int:
     """Fair ALEPH output (wei) for swapping `swap_amount_wei` of
     `token_in_symbol`, from the cached bulk price map. The credit unit
     cancels in the ratio, so no constants/decimals are involved.
     Raises on HTTP/parse/missing-symbol error (caller -> fail-closed)."""
-    prices = _price_map(settings.credit_api_blockchain)
-    rate_in = _rate_credits_per_wei(prices, token_in_symbol)
-    rate_aleph = _rate_credits_per_wei(prices, "ALEPH")
-    if rate_aleph <= 0:
-        return 0
-    return int(round(swap_amount_wei * rate_in / rate_aleph))
+    return int(round(swap_amount_wei * fair_aleph_rate(token_in_symbol)))
 
 
 def check_output_deviation(

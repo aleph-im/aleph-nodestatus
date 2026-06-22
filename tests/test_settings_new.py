@@ -87,3 +87,15 @@ def test_credit_api_price_guard_settings_defaults():
     assert settings.credit_api_timeout_seconds == 10
     # threshold reused, unchanged
     assert settings.extract_max_deviation_bps == 200
+
+
+def test_extract_v4_stateview_address_default():
+    from aleph_nodestatus.settings import settings
+    assert settings.extract_v4_stateview_address == (
+        "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
+    )
+
+
+def test_extract_max_price_impact_default_is_200():
+    from aleph_nodestatus.settings import settings
+    assert settings.extract_max_price_impact_bps == 200
