@@ -859,6 +859,22 @@ def zero_totals():
             "unallocated_staker_by_id":     {}}
 
 
+def _expense_version(expense):
+    """Best-effort numeric `expense.version`; defaults to 1 (v1).
+
+    v2 producers emit `version: 2` as a JSON number (the TS emitter
+    even gates on `typeof version === "number"`). A numeric string is
+    coerced — matching how the JS `>=` in the TS port would compare it
+    at runtime — and anything non-numeric falls back to v1: this feeds
+    an observability-only check, which must never abort a distribution
+    run over a malformed envelope field.
+    """
+    try:
+        return float(expense.get("version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _validate_hold_aggregates(expense):
     """Cross-check the declared hold aggregates against `expense.hold[]`.
 
@@ -866,16 +882,31 @@ def _validate_hold_aggregates(expense):
     2026-05 by aleph-api-credit) when present, otherwise falls back to
     the legacy top-level `hold_count` / `hold_amount` keys still
     present on pre-migration messages.
+
+    v2 storage expenses (`expense.version >= 2`) aggregate `hold[]` per
+    ADDRESS while `stats.hold.count` keeps per-FILE semantics, so the
+    comparable actual is the sum of the per-entry `count` fields rather
+    than the number of entries (mirrors computeRewards.ts in
+    aleph-api-credit). A v2 entry with a missing or non-numeric `count`
+    contributes 0 and the resulting under-count keeps the warning —
+    observability only.
     """
     stats_hold = (expense.get("stats") or {}).get("hold") or {}
     declared_count = stats_hold.get("count", expense.get("hold_count"))
     declared_amount = stats_hold.get("amount", expense.get("hold_amount"))
 
     hold = expense.get("hold", [])
-    if declared_count is not None and declared_count != len(hold):
+    if _expense_version(expense) >= 2:
+        actual_count = sum(
+            h["count"] if isinstance(h.get("count"), (int, float)) else 0
+            for h in hold
+        )
+    else:
+        actual_count = len(hold)
+    if declared_count is not None and declared_count != actual_count:
         LOGGER.warning(
             f"hold count mismatch: declared={declared_count}, "
-            f"actual={len(hold)}"
+            f"actual={actual_count}"
         )
     if declared_amount is not None:
         actual = sum(h.get("amount", 0) for h in hold)

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -7,6 +8,7 @@ from aleph_nodestatus.credit_distribution import (
     UNALLOCATED_NO_ACTIVE_CCNS,
     _distribute_expense,
     _empty_unallocated,
+    _validate_hold_aggregates,
     compute_rewards,
 )
 
@@ -689,3 +691,227 @@ def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
     ))
     assert result["holder_tier"][0] == {}
     assert result["holder_tier"][1]["execution_total_aleph"] == 0
+
+
+# ---------------------------------------------------------------------
+# _validate_hold_aggregates — v1 (per-FILE hold lines) vs v2 storage
+# expenses (per-ADDRESS aggregated hold entries carrying `count`).
+# ---------------------------------------------------------------------
+
+_CD_LOGGER = "aleph_nodestatus.credit_distribution"
+
+
+def _hold_count_warnings(caplog):
+    return [r.message for r in caplog.records
+            if "hold count mismatch" in r.message]
+
+
+def _hold_amount_warnings(caplog):
+    return [r.message for r in caplog.records
+            if "hold amount mismatch" in r.message]
+
+
+def _v2_storage_expense(**overrides):
+    """v2 aggregated storage expense: 3 files spread over 2 addresses.
+
+    `stats.hold` keeps per-FILE semantics (count = number of FILES),
+    while `hold[]` has one entry per ADDRESS with a `count` field.
+    """
+    expense = {
+        "version": 2,
+        "start_date": 1.0,
+        "end_date": 1.5,
+        "credit_price_aleph": 0.001,
+        "credits": [
+            {"amount": 1000, "count": 2, "size": 200.0, "time": 7200,
+             "address": "0xU1", "ref": "storage"},
+        ],
+        "hold": [
+            {"amount": 300, "count": 2, "size": 100.0, "time": 3600,
+             "address": "0xH1", "ref": "storage"},
+            {"amount": 200, "count": 1, "size": 50.0, "time": 1800,
+             "address": "0xH2", "ref": "storage"},
+        ],
+        "stats": {
+            "hold": {"count": 3, "amount": 500},
+        },
+        "credit_price_usdc": 0.01,
+    }
+    expense.update(overrides)
+    return expense
+
+
+def test_validate_hold_v1_matching_count_no_warning(caplog):
+    """v1: declared count is compared against len(hold) — unchanged."""
+    expense = {
+        "hold": [
+            {"amount": 300, "node_id": "r1", "address": "0xH1"},
+            {"amount": 200, "node_id": "r1", "address": "0xH2"},
+        ],
+        "stats": {"hold": {"count": 2, "amount": 500}},
+    }
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == []
+    assert _hold_amount_warnings(caplog) == []
+
+
+def test_validate_hold_v1_count_mismatch_warns(caplog):
+    expense = {
+        "hold": [{"amount": 500, "node_id": "r1", "address": "0xH1"}],
+        "stats": {"hold": {"count": 3, "amount": 500}},
+    }
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == [
+        "hold count mismatch: declared=3, actual=1"
+    ]
+
+
+def test_validate_hold_v2_aggregated_counts_no_warning(caplog):
+    """v2: stats.hold.count (per-FILE) must be checked against
+    sum(hold[].count), not len(hold) — 3 files over 2 addresses."""
+    expense = _v2_storage_expense()
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == []
+    assert _hold_amount_warnings(caplog) == []
+
+
+def test_validate_hold_v2_tampered_declared_count_warns(caplog):
+    expense = _v2_storage_expense(
+        stats={"hold": {"count": 7, "amount": 500}},
+    )
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == [
+        "hold count mismatch: declared=7, actual=3"
+    ]
+
+
+def test_validate_hold_v2_entry_missing_count_warns(caplog):
+    """A v2 entry without `count` contributes 0 to the actual sum, so
+    the check under-counts and keeps warning (observability only —
+    documented behavior, mirrors the aleph-api-credit TS port)."""
+    expense = _v2_storage_expense(
+        hold=[
+            {"amount": 300, "count": 2, "size": 100.0, "time": 3600,
+             "address": "0xH1", "ref": "storage"},
+            {"amount": 200, "size": 50.0, "time": 1800,
+             "address": "0xH2", "ref": "storage"},
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == [
+        "hold count mismatch: declared=3, actual=2"
+    ]
+
+
+@pytest.mark.parametrize("version", [2, 2.0, 3, "2"])
+def test_validate_hold_v2_version_variants_use_count_sum(version, caplog):
+    """Numeric versions >= 2 — including a numeric string, which the JS
+    `>=` in the TS port would coerce at runtime — select the v2
+    count-sum semantics instead of crashing on a str/int comparison."""
+    expense = _v2_storage_expense(version=version)
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == []
+
+
+@pytest.mark.parametrize("version", ["beta", {}, [], ""])
+def test_validate_hold_junk_version_falls_back_to_v1(version, caplog):
+    """A non-numeric version must not abort the run (observability-only
+    check); it falls back to v1 len() semantics. Discriminator: 2
+    entries with count=5 each and declared=2 — v1 (len=2) is silent,
+    v2 (sum=10) would warn."""
+    expense = {
+        "version": version,
+        "hold": [
+            {"amount": 300, "count": 5, "address": "0xH1"},
+            {"amount": 200, "count": 5, "address": "0xH2"},
+        ],
+        "stats": {"hold": {"count": 2, "amount": 500}},
+    }
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == []
+
+
+def test_validate_hold_v2_non_numeric_count_no_crash(caplog):
+    """A v2 entry whose count is a string contributes 0 (same as a
+    missing count) instead of raising TypeError inside sum()."""
+    expense = _v2_storage_expense(
+        hold=[
+            {"amount": 300, "count": "2", "size": 100.0, "time": 3600,
+             "address": "0xH1", "ref": "storage"},
+            {"amount": 200, "count": 1, "size": 50.0, "time": 1800,
+             "address": "0xH2", "ref": "storage"},
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == [
+        "hold count mismatch: declared=3, actual=1"
+    ]
+
+
+def test_validate_hold_v2_amount_check_unchanged(caplog):
+    """v2 per-address amounts sum to the same declared total, so the
+    amount check needs no version awareness — and still fires when the
+    declared total is off by more than 1."""
+    expense = _v2_storage_expense(
+        stats={"hold": {"count": 3, "amount": 999}},
+    )
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        _validate_hold_aggregates(expense)
+    assert _hold_count_warnings(caplog) == []
+    assert _hold_amount_warnings(caplog) == [
+        "hold amount mismatch: declared=999, actual=500"
+    ]
+
+
+def test_compute_rewards_v2_storage_hold_no_spurious_warning(
+    monkeypatch, caplog,
+):
+    """End-to-end: a v2 aggregated storage expense flows through
+    compute_rewards with holder tier on — hold amounts distribute and
+    the validator raises no count warning."""
+    msg = {
+        "item_hash": "h-v2",
+        "time": 1.6,
+        "confirmations": [{"chain": "ETH", "height": 100}],
+        "content": {
+            "tags": ["credit_expense", "type_storage"],
+            "expense": _v2_storage_expense(),
+        },
+    }
+
+    async def fake_fetch_msgs(*a, **kw):
+        return [msg]
+
+    async def fake_fetch_snaps(*a, **kw):
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100})}, {})]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_CD_LOGGER):
+        result = asyncio.run(compute_rewards(
+            start_time=1.0, end_time=2.0,
+            include_holder_tier=True,
+        ))
+
+    assert _hold_count_warnings(caplog) == []
+    assert _hold_amount_warnings(caplog) == []
+    _, credit_totals = result["credit_revenue"]
+    _, holder_totals = result["holder_tier"]
+    # credits: 1000 * 0.001; hold: (300 + 200) * 0.001
+    assert credit_totals["storage_total_aleph"] == pytest.approx(1.0)
+    assert holder_totals["storage_total_aleph"] == pytest.approx(0.5)
