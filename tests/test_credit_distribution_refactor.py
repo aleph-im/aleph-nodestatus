@@ -11,6 +11,17 @@ from aleph_nodestatus.credit_distribution import (
 )
 
 
+class _Web3Stub:
+    """Identity checksum so tests can use symbolic addresses ("0xCRN1")
+    without get_reward_address dropping them as invalid."""
+    @staticmethod
+    def to_checksum_address(a):
+        return a
+
+
+_W3 = _Web3Stub()
+
+
 def _node(hash, score, stakers, resource_nodes=None, status="active"):
     return {
         "hash": hash, "status": status, "score": score,
@@ -36,7 +47,7 @@ def test_distribute_expense_execution_split():
     }
     rewards = {}
     storage, execution, dev = _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
     total_aleph = 1000 * 0.001
@@ -61,7 +72,7 @@ def test_distribute_expense_populates_detailed_per_component():
     rewards = {}
     detailed = defaultdict(lambda: defaultdict(float))
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards, detailed=detailed,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3, detailed=detailed,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
     total_aleph = 1000 * 0.001
@@ -86,7 +97,7 @@ def test_distribute_expense_unallocated_tracks_orphan_crn():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
@@ -112,7 +123,7 @@ def test_distribute_expense_unallocated_buckets_missing_node_id():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
@@ -141,7 +152,7 @@ def test_distribute_expense_unallocated_empty_when_all_match():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
@@ -171,7 +182,7 @@ def test_distribute_expense_execution_linked_ccn_attribution():
     }
     rewards = {}
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
     # CRN — per-credit to its host.
@@ -209,7 +220,7 @@ def test_distribute_expense_execution_inactive_linked_ccn_drops_shares():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
@@ -235,7 +246,7 @@ def test_distribute_expense_execution_linked_ccn_no_stakers_drops_staker_share()
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "execution", expense, nodes, rnodes, rewards,
+        "execution", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.15, staker_share=0.20, crn_share=0.60, dev_share=0.05,
     )
@@ -262,7 +273,7 @@ def test_distribute_expense_storage_per_ccn_staker_pool():
     }
     rewards = {}
     _distribute_expense(
-        "storage", expense, nodes, rnodes, rewards,
+        "storage", expense, nodes, rnodes, rewards, web3=_W3,
         ccn_share=0.75, staker_share=0.20, crn_share=0.0, dev_share=0.05,
     )
     total       = 1.0
@@ -298,7 +309,7 @@ def test_distribute_expense_storage_ccn_with_no_stakers_drops_staker_pool():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "storage", expense, nodes, rnodes, rewards,
+        "storage", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.75, staker_share=0.20, crn_share=0.0, dev_share=0.05,
     )
@@ -327,7 +338,7 @@ def test_distribute_expense_storage_no_active_ccns_drops_everything():
     rewards = {}
     unallocated = _empty_unallocated()
     _distribute_expense(
-        "storage", expense, nodes, rnodes, rewards,
+        "storage", expense, nodes, rnodes, rewards, web3=_W3,
         unallocated=unallocated,
         ccn_share=0.75, staker_share=0.20, crn_share=0.0, dev_share=0.05,
     )
@@ -379,7 +390,7 @@ def test_compute_rewards_surfaces_unallocated_in_totals(monkeypatch):
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=1.0, end_time=2.0, web3=_W3,
         include_holder_tier=False,
     ))
 
@@ -417,7 +428,7 @@ def test_distribute_expense_storage_uses_storage_component_keys():
     rewards = {}
     detailed = defaultdict(lambda: defaultdict(float))
     _distribute_expense(
-        "storage", expense, nodes, rnodes, rewards, detailed=detailed,
+        "storage", expense, nodes, rnodes, rewards, web3=_W3, detailed=detailed,
         ccn_share=0.75, staker_share=0.20, crn_share=0.0, dev_share=0.05,
     )
     total = 1000 * 0.001
@@ -447,7 +458,7 @@ def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=1.0, end_time=2.0, web3=_W3,
         full_resync=False, include_holder_tier=False,
     ))
     assert "credit_revenue" in result
@@ -493,7 +504,7 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=1.0, end_time=2.0, web3=_W3,
         include_holder_tier=True,
     ))
 
@@ -560,6 +571,8 @@ def test_full_resync_applies_expenses_past_last_state_machine_yield(monkeypatch)
 
     class _FakeWeb3:
         def __init__(self): self.eth = _FakeEth()
+        @staticmethod
+        def to_checksum_address(a): return a
 
     def _msg(item_hash, ts, amount):
         return {
@@ -637,7 +650,7 @@ def test_compute_rewards_exposes_detailed_per_source(monkeypatch):
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=1.0, end_time=2.0, web3=_W3,
         include_holder_tier=True,
     ))
 
@@ -684,7 +697,7 @@ def test_compute_rewards_holder_tier_off_ignores_hold_field(monkeypatch):
         fake_fetch_snaps,
     )
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=1.0, end_time=2.0, web3=_W3,
         include_holder_tier=False,
     ))
     assert result["holder_tier"][0] == {}

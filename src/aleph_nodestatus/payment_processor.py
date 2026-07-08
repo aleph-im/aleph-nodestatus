@@ -3,6 +3,7 @@
 import json
 import logging
 from decimal import Decimal
+from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Optional, Set
@@ -90,7 +91,7 @@ def bisect_swap_amount(
     upper_amount_in: int,
     min_amount_in: int,
     fair_rate,
-    spot_rate: float,
+    spot_rate: Fraction,
     pool_fee_bps: int,
     max_deviation_bps: int,
     max_impact_bps: int,
@@ -757,6 +758,19 @@ def extract_aleph(
             fee_bps = pool_fee_bps(cfg)
             try:
                 spot_rate = pool_spot_rate(w3, cfg, token)
+            except NotImplementedError as e:
+                # Config/code mismatch, not a transient read failure:
+                # extraction for this token stays disabled until
+                # pool_spot_rate supports its pool version, so shout.
+                LOGGER.error(
+                    "Swap config for %s uses an unsupported pool version "
+                    "(v=%s); skipping extraction for this token until "
+                    "pool_spot_rate supports it: %s",
+                    token_symbol, cfg.get("v"), e,
+                )
+                entry["skipped_reason"] = "unsupported_swap_config"
+                entry["swap_config_version"] = cfg.get("v")
+                continue
             except Exception as e:
                 LOGGER.warning(
                     "Spot read failed for %s; skipping token: %r",
@@ -900,14 +914,18 @@ def _v4_pool_id(currency0: str, currency1: str, fee: int,
     ))
 
 
-def pool_spot_rate(w3, swap_config: dict, token_in: str) -> float:
+def pool_spot_rate(w3, swap_config: dict, token_in: str) -> Fraction:
     """ALEPH-wei per input-wei from the pool's on-chain spot price.
 
     v4 single-hop only: build the PoolKey from (token_in, PathKey), read
     sqrtPriceX96 via the StateView, and convert to a wei-per-wei rate. The
-    `raw = (sqrtP/2**96)**2` value is currency1-wei per currency0-wei; we
+    `raw = sqrtP**2 / 2**192` value is currency1-wei per currency0-wei; we
     orient it so the result is output(ALEPH)-wei per input(token_in)-wei.
     No decimals factor — both sides of the later checks are in wei.
+
+    Returned as a Fraction: sqrtPriceX96 is up to 160 bits, beyond a float's
+    53-bit mantissa, and the rate feeds integer comparisons in the impact
+    check — exact rational arithmetic avoids any precision cliff.
     """
     v = swap_config.get("v")
     if v != 4 or len(swap_config["v4"]) != 1:
@@ -923,9 +941,10 @@ def pool_spot_rate(w3, swap_config: dict, token_in: str) -> float:
         abi=_load_abi("IUniswapV4StateView"),
     )
     sqrt_price_x96 = sv.functions.getSlot0(pool_id).call()[0]
-    raw = (sqrt_price_x96 / 2 ** 96) ** 2  # currency1-wei per currency0-wei
+    # currency1-wei per currency0-wei
+    raw = Fraction(sqrt_price_x96, 2 ** 96) ** 2
     if in_addr.lower() == currency0:
         # ALEPH is currency1: ALEPH-wei per input-wei = raw
         return raw
     # ALEPH is currency0: ALEPH-wei per input-wei = 1/raw
-    return 1.0 / raw
+    return 1 / raw

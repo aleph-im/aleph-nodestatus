@@ -136,7 +136,7 @@ async def transfer_tokens(targets, metadata=None):
 
     try:
         balance = contract.functions.balanceOf(account.address).call() / DECIMALS
-        if total >= balance:
+        if total > balance:
             raise ValueError(f"Balance not enough ({total}/{balance})")
 
         tx = contract.functions.batchTransfer(

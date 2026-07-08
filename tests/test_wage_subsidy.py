@@ -70,6 +70,17 @@ def test_period_subsidy_rejects_inverted_range():
 from aleph_nodestatus.wage_subsidy import split_subsidy
 
 
+class _Web3Stub:
+    """Identity checksum so tests can use symbolic addresses ("0xCCN1")
+    without get_reward_address dropping them as invalid."""
+    @staticmethod
+    def to_checksum_address(a):
+        return a
+
+
+_W3 = _Web3Stub()
+
+
 def _node(hash, status, score, owner, stakers=None, reward=None,
           resource_nodes=None):
     return {
@@ -96,7 +107,7 @@ def test_split_subsidy_three_equal_pools():
                     resource_nodes=["r1"]),
     }
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
-    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes)
+    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes, _W3)
     assert rewards["0xCCN1"] == pytest.approx(300.0)
     assert rewards["0xCRN1"] == pytest.approx(300.0)
     assert rewards["0xS1"]   == pytest.approx(150.0)
@@ -122,7 +133,7 @@ def test_split_subsidy_no_linked_crn_only_crn_pool_unallocated():
                     stakers={"0xS1": 100}),
     }
     rnodes = {}
-    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes)
+    rewards, unallocated, _ = split_subsidy(900.0, nodes, rnodes, _W3)
     assert rewards["0xCCN1"] == pytest.approx(300.0)
     assert rewards["0xS1"]   == pytest.approx(300.0)
     assert "0xCRN1" not in rewards
@@ -135,7 +146,7 @@ def test_split_subsidy_score_weighted_ccn():
         "n2": _node("n2", "active", 0.5, "0xCCN2", stakers={"0xS2": 1}),
     }
     rnodes = {}
-    rewards, _, _ = split_subsidy(600.0, nodes, rnodes)
+    rewards, _, _ = split_subsidy(600.0, nodes, rnodes, _W3)
     assert rewards["0xCCN1"] == pytest.approx(200 * 1.0 / 1.5)
     assert rewards["0xCCN2"] == pytest.approx(200 * 0.5 / 1.5)
 
@@ -151,7 +162,7 @@ def test_split_subsidy_detailed_attributes_each_role():
                     stakers={"0xS1": 100}, resource_nodes=["r1"]),
     }
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
-    _, _, detailed = split_subsidy(900.0, nodes, rnodes)
+    _, _, detailed = split_subsidy(900.0, nodes, rnodes, _W3)
     assert detailed["0xCCN1"] == {"ccn": pytest.approx(300.0)}
     assert detailed["0xCRN1"] == {"crn": pytest.approx(300.0)}
     assert detailed["0xS1"]   == {"staker": pytest.approx(300.0)}
@@ -166,7 +177,7 @@ def test_split_subsidy_detailed_sums_to_per_address_total():
     }
     # 0xA is both a CCN reward address and a staker — same address, two roles.
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
-    rewards, _, detailed = split_subsidy(900.0, nodes, rnodes)
+    rewards, _, detailed = split_subsidy(900.0, nodes, rnodes, _W3)
     assert sum(detailed["0xA"].values()) == pytest.approx(rewards["0xA"])
     assert set(detailed["0xA"].keys()) == {"ccn", "staker"}
 
@@ -179,7 +190,7 @@ def test_compute_subsidy_returns_rewards_totals_unallocated():
                           stakers={"0xS1": 1}, resource_nodes=["r1"])}
     rnodes = {"r1": _rnode("r1", "linked", 0.9, "0xCRN1")}
 
-    rewards, totals, _ = compute_subsidy(start, end, nodes, rnodes)
+    rewards, totals, _ = compute_subsidy(start, end, nodes, rnodes, _W3)
 
     period_total = 825_000
     assert totals["period_total_aleph"] == pytest.approx(period_total)
@@ -208,10 +219,10 @@ def test_compute_subsidy_daily_matches_single_when_one_snapshot():
     snapshots = [(start - 3600, nodes, rnodes)]
 
     expected_rewards, expected_totals, _ = compute_subsidy(
-        start, end, nodes, rnodes,
+        start, end, nodes, rnodes, _W3,
     )
     actual_rewards, actual_totals, _ = compute_subsidy_daily(
-        start, end, snapshots,
+        start, end, snapshots, _W3,
     )
 
     for addr, amt in expected_rewards.items():
@@ -242,7 +253,7 @@ def test_compute_subsidy_daily_sum_equals_single_window_total():
         (parse_wage_start() + 3 * 86400, nodes_b, rnodes_b),
     ]
 
-    _, totals, _ = compute_subsidy_daily(start, end, snapshots)
+    _, totals, _ = compute_subsidy_daily(start, end, snapshots, _W3)
 
     expected_period = compute_period_subsidy(start, end)
     assert totals["period_total_aleph"] == pytest.approx(expected_period)
@@ -276,7 +287,7 @@ def test_compute_subsidy_daily_snapshot_rotation_changes_attribution():
         (start + 2 * 86400 + 1,   nodes, rnodes_unlinked),
     ]
 
-    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots)
+    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots, _W3)
 
     # Curve decays, so days 0-1 weigh more than days 2-3. Compute the
     # exact per-day integrals; can't assume "half the period = half the
@@ -323,7 +334,7 @@ def test_compute_subsidy_daily_period_before_any_snapshot_falls_back_to_last():
     # at-or-before lookup must fall back to snapshots[-1] (this one).
     snapshots = [(end + 86400, nodes, rnodes)]
 
-    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots)
+    rewards, totals, _ = compute_subsidy_daily(start, end, snapshots, _W3)
 
     expected_period = compute_period_subsidy(start, end)
     assert totals["period_total_aleph"] == pytest.approx(expected_period)

@@ -595,8 +595,11 @@ def _distribute_execution_credits(
         #    resource_nodes loses its share to unallocated, mirroring the
         #    wage_subsidy / storage-pool eligibility rules.
         rnode = resource_nodes.get(node_id) if node_id else None
-        if rnode and rnode.get("status") == "linked":
-            crn_addr = get_reward_address(rnode, web3)
+        crn_addr = (
+            get_reward_address(rnode, web3)
+            if rnode and rnode.get("status") == "linked" else None
+        )
+        if crn_addr is not None:
             rewards[crn_addr] = rewards.get(crn_addr, 0) + crn_amount
             detailed[crn_addr]["execution_crn"] += crn_amount
             if accumulator is not None and stream is not None:
@@ -608,8 +611,9 @@ def _distribute_execution_credits(
                 )
         else:
             LOGGER.warning(
-                f"CRN {id_key} not resolved or not linked, "
-                f"dropping {crn_amount:.6f} ALEPH CRN share"
+                f"CRN {id_key} not resolved, not linked, or without a "
+                f"valid reward address, dropping {crn_amount:.6f} ALEPH "
+                f"CRN share"
             )
             if crn_amount > 0:
                 unallocated["crn"][id_key] += crn_amount
@@ -621,10 +625,20 @@ def _distribute_execution_credits(
         linked_ccn_hash = crn_to_ccn.get(node_id) if node_id else None
         linked_ccn = nodes.get(linked_ccn_hash) if linked_ccn_hash else None
         if linked_ccn and linked_ccn.get("status") == "active":
-            # CCN share
+            # CCN share — dropped to unallocated if the CCN has no valid
+            # reward address; the stakers' share below is unaffected since
+            # stakers are paid at their own addresses.
             ccn_addr = get_reward_address(linked_ccn, web3)
-            rewards[ccn_addr] = rewards.get(ccn_addr, 0) + ccn_amount
-            detailed[ccn_addr]["execution_ccn"] += ccn_amount
+            if ccn_addr is not None:
+                rewards[ccn_addr] = rewards.get(ccn_addr, 0) + ccn_amount
+                detailed[ccn_addr]["execution_ccn"] += ccn_amount
+            else:
+                LOGGER.warning(
+                    f"Linked CCN {linked_ccn_hash} has no valid reward "
+                    f"address, dropping {ccn_amount:.6f} ALEPH CCN share"
+                )
+                if ccn_amount > 0:
+                    unallocated["ccn"][id_key] += ccn_amount
 
             # Staker share — only stakers OF THIS CCN, weighted by their
             # stake on this CCN. Stake amounts on other CCNs are ignored.
@@ -668,9 +682,16 @@ def _distribute_storage_pools(
             continue
         score = compute_score_multiplier(node["score"])
         if score > 0:
+            reward_address = get_reward_address(node, web3)
+            if reward_address is None:
+                LOGGER.warning(
+                    f"CCN {ccn_hash} has no valid reward address, "
+                    f"excluding it from the storage pools"
+                )
+                continue
             ccn_weights[ccn_hash] = {
                 "score":          score,
-                "reward_address": get_reward_address(node, web3),
+                "reward_address": reward_address,
                 "stakers":        node.get("stakers", {}),
             }
 

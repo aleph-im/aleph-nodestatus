@@ -49,8 +49,12 @@ MANIFEST
 # Per-project virtualenvs
 .venv*/
 
+# Env files hold private keys (ethereum_pkey, payment_processor_admin_pkey);
+# only the *.example templates may be committed.
 .env
-.env.test
+.env.*
+!.env.example
+!.env.*.example
 device.key
 
 database/*

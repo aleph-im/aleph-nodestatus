@@ -65,7 +65,8 @@ def _wage_snaps():
 def _run_wage(retroactive, close_height):
     snaps = _wage_snaps()
     acc = SlashAccumulator()
-    compute_subsidy_daily(_T0, _T0 + 5 * DAY, snaps, web3=None, accumulator=acc)
+    compute_subsidy_daily(_T0, _T0 + 5 * DAY, snaps, web3=_Web3Stub(),
+                          accumulator=acc)
     slashed, _meta = compute_slashing(
         acc, snaps[-1][2], close_height,
         enabled_streams=("wage_subsidy",), retroactive=retroactive,

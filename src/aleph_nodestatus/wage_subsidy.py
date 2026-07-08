@@ -5,6 +5,7 @@ settings.wage_start_date and T = settings.wage_duration_months.
 """
 
 import bisect
+import logging
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -12,6 +13,8 @@ from typing import Dict, List, Tuple
 from .distribution import compute_score_multiplier
 from .settings import settings
 from .utils import get_reward_address
+
+LOGGER = logging.getLogger(__name__)
 
 MONTH_SECONDS = 30 * 86400
 DAY_SECONDS   = 86400
@@ -85,7 +88,14 @@ def split_subsidy(
             continue
         score = compute_score_multiplier(node["score"])
         if score > 0:
-            ccn_weights.append((get_reward_address(node, web3), score))
+            addr = get_reward_address(node, web3)
+            if addr is None:
+                LOGGER.warning(
+                    "CCN %s has no valid reward address, excluding it "
+                    "from the wage subsidy", node.get("hash"),
+                )
+                continue
+            ccn_weights.append((addr, score))
     total_ccn = sum(s for _, s in ccn_weights)
     if total_ccn > 0:
         for addr, s in ccn_weights:
@@ -101,8 +111,15 @@ def split_subsidy(
             continue
         score = compute_score_multiplier(rnode["score"])
         if score > 0:
+            addr = get_reward_address(rnode, web3)
+            if addr is None:
+                LOGGER.warning(
+                    "CRN %s has no valid reward address, excluding it "
+                    "from the wage subsidy", rnode_hash,
+                )
+                continue
             inactive_since = rnode.get("inactive_since")
-            crn_weights.append((rnode_hash, get_reward_address(rnode, web3), score, inactive_since))
+            crn_weights.append((rnode_hash, addr, score, inactive_since))
     total_crn = sum(s for _, _, s, _ in crn_weights)
     if total_crn > 0:
         for rnode_hash, addr, s, inactive_since in crn_weights:

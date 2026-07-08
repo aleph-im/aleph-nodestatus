@@ -304,6 +304,47 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
     assert int(usdc_entry["min_out"]) == 9_500_000
 
 
+def test_extract_aleph_unsupported_swap_config_is_explicit(monkeypatch, caplog):
+    """A v2/v3 swap config makes pool_spot_rate raise NotImplementedError.
+    That is a config/code mismatch, not a transient read failure: it must
+    surface as an explicit ERROR with its own skipped_reason, not hide
+    behind the generic spot_read_failed warning."""
+    import logging
+
+    import aleph_nodestatus.payment_processor as pp_mod
+
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000
+    processor = _mk_extract_processor(is_stable=False, swap_config_version=3)
+    quoters = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+    # Shadow the autouse stub with the REAL pool_spot_rate so the v3
+    # config actually raises NotImplementedError.
+    monkeypatch.setattr(pp_mod, "pool_spot_rate", pool_spot_rate)
+
+    with caplog.at_level(logging.ERROR):
+        result = extract_aleph(
+            w3, processor, quoters, account=None,
+            from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+            dry_run=True,
+        )
+
+    usdc = next(e for e in result["tokens"] if e["symbol"] == "USDC")
+    assert usdc["skipped_reason"] == "unsupported_swap_config"
+    assert usdc["swap_config_version"] == 3
+    assert "unsupported" in caplog.text.lower()
+
+
 def test_extract_aleph_quote_failure_appends_once(monkeypatch):
     """A quote failure produces exactly one entry in tokens and one in errors
     (not duplicates across both early and final append sites)."""
@@ -1208,6 +1249,45 @@ def test_pool_spot_rate_usdc_in_aleph_out(monkeypatch):
     # USDC->ALEPH wants ALEPH_wei/USDC_wei = 1/raw ~ 8.1e13
     raw = (sqrtp / 2 ** 96) ** 2
     assert abs(rate - (1.0 / raw)) / rate < 1e-9
+
+
+def _spot_rate_with_slot0(sqrtp, cfg, token_in):
+    sv = MagicMock()
+    sv.functions.getSlot0.return_value.call.return_value = [sqrtp, 0, 0, 10000]
+    w3 = MagicMock()
+    w3.to_checksum_address.side_effect = lambda a: a
+    w3.eth.contract.return_value = sv
+    return pool_spot_rate(w3, cfg, token_in)
+
+
+def test_pool_spot_rate_is_exact_for_extreme_prices():
+    # sqrtPriceX96 with more significant bits than a float mantissa (53)
+    # can hold: a float-based rate would mis-size the integer spot that
+    # the fee-free impact check compares against.
+    token_in = "0x1111111111111111111111111111111111111111"
+    aleph = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
+    cfg = {"v": 4, "t": token_in,
+           "v4": [[aleph, 10000, 200,
+                   "0x0000000000000000000000000000000000000000", b""]]}
+    sqrtp = (10 ** 7 << 96) + 12345678901234567
+    # token_in sorts below ALEPH -> currency0=token_in -> rate = raw
+    rate = _spot_rate_with_slot0(sqrtp, cfg, token_in)
+    swap = 10 ** 18
+    assert int(swap * rate) == swap * sqrtp ** 2 // 2 ** 192
+
+
+def test_pool_spot_rate_inverted_orientation_is_exact():
+    # Same requirement for the 1/raw orientation (ALEPH is currency0),
+    # using the real USDC/ALEPH slot0 fixture from block 25372912.
+    usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    aleph = "0x27702a26126e0B3702af63Ee09aC4d1A084EF628"
+    cfg = {"v": 4, "t": usdc,
+           "v4": [[aleph, 10000, 200,
+                   "0x0000000000000000000000000000000000000000", b""]]}
+    sqrtp = 8801253120988487230264
+    rate = _spot_rate_with_slot0(sqrtp, cfg, usdc)
+    swap = 10 ** 18
+    assert int(swap * rate) == swap * 2 ** 192 // sqrtp ** 2
 
 
 import aleph_nodestatus.payment_processor as pp
