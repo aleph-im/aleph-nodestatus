@@ -1,0 +1,58 @@
+{
+  "height": 23800000,
+  "nodes": [
+    {
+      "hash": "test-ccn-1",
+      "status": "active",
+      "score": 0.85,
+      "owner": "0x1111111111111111111111111111111111111111",
+      "reward": null,
+      "stakers": {
+        "0x6666666666666666666666666666666666666666": 100000,
+        "0x7777777777777777777777777777777777777777": 50000
+      },
+      "resource_nodes": ["test-crn-1", "test-crn-2"],
+      "has_bonus": false,
+      "decentralization": 0.6
+    },
+    {
+      "hash": "test-ccn-2",
+      "status": "active",
+      "score": 0.7,
+      "owner": "0x2222222222222222222222222222222222222222",
+      "reward": null,
+      "stakers": {
+        "0x8888888888888888888888888888888888888888": 80000
+      },
+      "resource_nodes": ["test-crn-3"],
+      "has_bonus": false,
+      "decentralization": 0.5
+    }
+  ],
+  "resource_nodes": [
+    {
+      "hash": "58824ca94b6cbe4e9563eef08c1a64836ce92b383596c7deb2a319d33da44c6b",
+      "status": "linked",
+      "score": 0.9,
+      "owner": "0x3333333333333333333333333333333333333333",
+      "reward": null,
+      "decentralization": 0.5
+    },
+    {
+      "hash": "test-crn-2",
+      "status": "linked",
+      "score": 0.8,
+      "owner": "0x4444444444444444444444444444444444444444",
+      "reward": null,
+      "decentralization": 0.5
+    },
+    {
+      "hash": "test-crn-3",
+      "status": "linked",
+      "score": 0.85,
+      "owner": "0x5555555555555555555555555555555555555555",
+      "reward": null,
+      "decentralization": 0.5
+    }
+  ]
+}

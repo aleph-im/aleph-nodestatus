@@ -1,6 +1,7 @@
 from typing import Dict, List
 
-from pydantic import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -77,7 +78,7 @@ class Settings(BaseSettings):
         "FnmK2mvskaMzzHWUMEiAm6r1WGsW34xFphf5Xv9J115B",
     ]
 
-    platform_indexer_endpoint = "https://test-avax-base.api.aleph.cloud/"
+    platform_indexer_endpoint: str = "https://test-avax-base.api.aleph.cloud/"
     # dict: solana = SOL, base = BASE, avalanche = AVAX
     platform_indexer_chains: Dict[str, str] = {
         # "solana": "SOL",
@@ -87,9 +88,13 @@ class Settings(BaseSettings):
     platform_indexer_ignored_addresses: List[str] = [
     ]
 
-    voucher_indexer_endpoint = "https://vouchers.api.2n6.io"
+    voucher_indexer_endpoint: str = "https://vouchers.api.2n6.io"
 
-    credit_expense_sender: str = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
+    # Owner of the `aleph_credit_expense` posts as seen by `/posts.json`.
+    # The delegated signer (0x6aeaEE...) used to publish on behalf of this
+    # account is accepted by `/messages.json` filters but not by `/posts.json`,
+    # which only indexes the materialized post's owner.
+    credit_expense_sender: str = "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC"
     status_sender: str = "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"
 
     # Credit distribution shares (storage, 95% total)
@@ -109,8 +114,166 @@ class Settings(BaseSettings):
 
     db_path: str = "./database"
 
-    class Config:
-        env_file = ".env"
+    # === AlephPaymentProcessor ===
+    payment_processor_address: str = "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
+    payment_processor_admin_pkey: str = ""
+    payment_processor_admin_address: str = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
+    distribution_recipient: str = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
+
+    # Tokens to process, in order. address(0) for ETH.
+    process_tokens: List[tuple] = [
+        ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        ("ETH",  "0x0000000000000000000000000000000000000000"),
+        ("ALEPH","0x27702a26126e0B3702af63Ee09aC4d1A084EF628"),
+    ]
+
+    # Slippage / quoter
+    uniswap_v3_quoter_address: str = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+    uniswap_v4_quoter_address: str = "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203"
+    uniswap_v2_router_address: str = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+    process_slippage_bps: int = 100          # 1%; see docs/operations/slippage.md
+    process_ttl_seconds: int = 1800
+    process_gas_ceiling: int = 1_500_000
+
+    @field_validator("process_ttl_seconds")
+    @classmethod
+    def _ttl_within_contract_bound(cls, v):
+        # AlephPaymentProcessor's process() enforces ttl <= 3600 on-chain.
+        if v > 3600:
+            raise ValueError(
+                f"process_ttl_seconds must be <= 3600 (contract bound), got {v}"
+            )
+        if v <= 0:
+            raise ValueError(f"process_ttl_seconds must be positive, got {v}")
+        return v
+
+    # === Wage subsidy ===
+    wage_start_date: str = "2026-05-01T00:00:00+00:00"
+    wage_duration_months: int = 6
+    wage_initial_monthly_aleph: int = 900_000
+    wage_ccn_share: float = 1/3
+    wage_crn_share: float = 1/3
+    wage_staker_share: float = 1/3
+
+    # === Cadence & filtering ===
+    credit_dist_min_interval_blocks: int = 10 * 7130
+    credit_dist_dust_threshold_aleph: float = 0.01
+
+    # Right-edge finality margin: cap `end_height` at `current_block - N` so
+    # that by the time we compute, expenses whose end_date ∈ [start_time, end_time]
+    # have already been published. Default sized for mainnet ETH (~12s/block):
+    # 500 blocks ≈ 100 min, comfortably above the measured p99 execution
+    # publish_lag of ~22 min plus one full cadence cycle (~60 min).
+    credit_dist_safety_blocks: int = 500
+
+    # Require at least one confirmed `aleph_credit_expense` post whose
+    # `expense.end_date > end_time` as evidence that the publisher has
+    # progressed past the period. Default: abort the run if absent (the
+    # operator can downgrade to a warning via the CLI flag).
+    credit_dist_require_expense_witness: bool = True
+
+    # Per-request total timeout for the Aleph HTTP API. The default aiohttp
+    # 5-minute cap is too tight: AGGREGATE+date-filtered first-page queries
+    # over a multi-week window have been observed to take longer than that
+    # before returning. Raising to 10 minutes gives the API room without
+    # leaving a stuck run waiting forever.
+    aleph_http_timeout_seconds: int = 600
+
+    # Page size for Aleph API message/post iterators. The SDK default (200)
+    # produces multi-MB responses for the corechannel `status_sender`
+    # aggregates that this distributor scans — large enough that a single
+    # page can exceed the request timeout. A smaller value trades extra
+    # round-trips for a much higher chance the API can answer in time.
+    aleph_http_page_size: int = 20
+
+    # Cap on total ALEPH a single --act run can distribute. Aborts before
+    # any balance check or transfer if an upstream bug produces inflated
+    # rewards. Default sized at 2x the maximum monthly wage subsidy.
+    credit_dist_max_total_aleph: float = 2 * 900_000  # 1.8M
+
+    # === Feature flags ===
+    credit_dist_credit_revenue_enabled: bool = True
+    credit_dist_wage_subsidy_enabled: bool   = True
+    credit_dist_holder_tier_enabled: bool    = True
+    credit_dist_transfer_enabled: bool       = True
+    credit_dist_publish_enabled: bool        = True
+
+    # === Slashing feature flags (CRN inactivity penalty) ===
+    credit_dist_slash_enabled: bool        = True   # master kill switch
+    credit_dist_slash_credit_revenue: bool = False
+    credit_dist_slash_holder_tier: bool    = False
+    credit_dist_slash_wage_subsidy: bool   = True
+    credit_dist_slash_threshold_days: int  = 3
+    credit_dist_slash_retroactive: bool    = True   # default: retroactive (whole period since last distribution)
+
+    # === Anti-MEV (Phase 1) ===
+    extract_random_delay_max_seconds: int = 3540
+    extract_max_deviation_bps: int        = 200
+
+    # === Credit-API price guard ===
+    # Output-deviation guard for the extract swap path. Compares the
+    # quoter's expected_out against the Credit-API multi-source USD-implied
+    # output. When enabled and the API is unavailable, the token is skipped
+    # for that run (fail-closed). See
+    # docs/specs/2026-06-01-credit-api-price-guard-design.md.
+    extract_price_deviation_enabled: bool = True
+    credit_api_url: str                   = "https://credit.aleph.im/api/v0"
+    credit_api_blockchain: str            = "ethereum"
+    credit_api_timeout_seconds: int       = 10
+
+    # Uniswap v4 StateView (mainnet) — read pool spot price (sqrtPriceX96)
+    # for the on-chain price-impact check in the extract sizing loop.
+    extract_v4_stateview_address: str     = "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
+
+    # Auto-sizing of the swap input to stay under a self-impact ceiling.
+    # When > 0 (in bps), the extractor probes the configured quoter at a
+    # small-size "unit" amount and at the candidate swap amount, derives
+    # the implied price impact, and bisects downward until the impact
+    # fits within the threshold (or no amount above the per-token
+    # `--min-amount` floor fits, in which case the token is skipped).
+    # The leftover stays in the contract for the next cron cycle, giving
+    # arbitrage bots time to rebalance the pool. 0 disables the search;
+    # 100 = 1% impact ceiling, sized to absorb USDC/ETH pool depth on
+    # the configured Uniswap paths. CLI flag `--max-price-impact-bps`
+    # overrides for one-off ops runs.
+    extract_max_price_impact_bps: int     = 200
+
+    # Per-token floor on the swap amount (human units, decimals-aware).
+    # If the extractable amount drops below this for a given token, the
+    # cron skips it that cycle so the gas cost doesn't dominate the
+    # value moved. Floor reasoning: at typical mainnet gas a process()
+    # call costs ~$3-10, so a ~$100-value floor caps gas overhead at
+    # ~10%. CLI `--min-amount SYMBOL=N` overrides per token (per-run,
+    # not persistent). Override the whole map in .env if you change the
+    # token list.
+    extract_default_min_amounts: Dict[str, str] = {
+        "USDC":  "100",
+        "ETH":   "0.025",
+        "ALEPH": "500",
+    }
+
+    # === Fork-verified dry-run ===
+    # Optional URL of a local mainnet fork (typically `anvil --fork-url …`).
+    # When set, `extract-credits --dry-run` upgrades to full sign+broadcast
+    # against the fork, audits each receipt against the on-chain
+    # `TokenPaymentsProcessed` event, and hard-asserts that the realized
+    # ALEPH output is within `extract_max_reconcile_delta_bps` of the
+    # quoter's `expected_out`. CLI flag `--fork-rpc` overrides this value.
+    # MUST be a loopback/host.docker.internal URL — the CLI refuses other
+    # hosts to prevent accidentally signing mainnet broadcasts.
+    extract_fork_rpc: str                  = ""
+    extract_max_reconcile_delta_bps: int   = 200
+
+    # Same fork mode for `distribute-credits --dry-run`. Reconciliation
+    # for distribute is per-recipient: each ERC20 Transfer event from the
+    # batchTransfer receipt is matched against the calculated reward
+    # amount for that recipient. There's no Uniswap involved in
+    # distribute, so the natural default tolerance is 0 bps — every wei
+    # must match. Raise only if you knowingly accept rounding drift.
+    distribute_fork_rpc: str                  = ""
+    distribute_max_reconcile_delta_bps: int   = 0
+
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()
