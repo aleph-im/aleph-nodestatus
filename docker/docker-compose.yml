@@ -19,6 +19,9 @@ services:
       # strips from job execution. Must exist on the host or Docker creates an
       # empty directory here instead.
       - ./.env.extract:/aleph-nodestatus/.env:ro
+      # Shared lock dir so flock is visible across all three containers
+      # (each container's /tmp is private; a named volume is not).
+      - ns-locks:/locks
     # Maps `host.docker.internal` to the host's bridge gateway IP so
     # fork-mode dry-runs (`--fork-rpc=http://host.docker.internal:8545`
     # targeting a local Anvil) work on Linux hosts, not just Docker
@@ -30,7 +33,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-extract-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
+    # `flock -n` guards against overlapping runs: if a previous extract is
+    # still broadcasting when the next hour fires, cron would otherwise start
+    # a second concurrent process (double extraction + doubled memory). -n
+    # makes the new run exit immediately instead of stacking.
+    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/bin/flock -n /locks/ns-extract.lock /usr/local/bin/nodestatus-extract-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
 
   # Hourly calculation snapshots for the new credit-rewards flow.
   # ethereum_pkey here must be status_sender's.
@@ -49,6 +56,8 @@ services:
       # See note on nodestatus-extract: per-service config mounted as the
       # project-root .env that pydantic loads.
       - ./.env.calc:/aleph-nodestatus/.env:ro
+      # Shared with nodestatus-dist so their flock lock is mutually visible.
+      - ns-locks:/locks
     # See note on nodestatus-extract — kept on all three services for
     # consistency so operators don't have to remember which one needs it.
     extra_hosts:
@@ -58,7 +67,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
+    # Hourly calc recomputes the whole [last_distribution .. now] window,
+    # which grows for up to 10 days; the aggregate/expense API queries are
+    # slow, so a single run's wall-time can exceed one hour as the window
+    # fills. Without a guard, cron then starts a second (and third) full-
+    # window run on top of the first — the memory blow-up. `flock -n` on a
+    # lock SHARED with nodestatus-dist (via the ns-locks volume) means: skip
+    # this calc if any distribute run (calc or the real --act dist) is already
+    # in flight, so two heavy computations never coexist.
+    command: /bin/bash -c "echo '0 * * * * cd /aleph-nodestatus && /usr/bin/flock -n /locks/ns-distribute.lock /usr/local/bin/nodestatus-distribute-credits -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
 
   # Distribution every 10 days. ethereum_pkey here must be
   # distribution_recipient's and the address must hold >= the expected
@@ -78,6 +95,8 @@ services:
       # See note on nodestatus-extract: per-service config mounted as the
       # project-root .env that pydantic loads.
       - ./.env.dist:/aleph-nodestatus/.env:ro
+      # Shared with nodestatus-calc so their flock lock is mutually visible.
+      - ns-locks:/locks
     # See note on nodestatus-extract.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -86,4 +105,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    command: /bin/bash -c "echo '0 0 */10 * * cd /aleph-nodestatus && /usr/local/bin/nodestatus-distribute-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
+    # Shares /locks/ns-distribute.lock with nodestatus-calc (via the ns-locks
+    # named volume), but takes the lock in BLOCKING mode (no -n): the real
+    # distribution must never be skipped, so if an hourly calc happens to be
+    # running when the 10-day tick fires, dist waits for it to release the
+    # lock and then runs. Its own cadence guard (credit_dist_min_interval_blocks)
+    # still protects against mis-fires.
+    command: /bin/bash -c "echo '0 0 */10 * * cd /aleph-nodestatus && /usr/bin/flock /locks/ns-distribute.lock /usr/local/bin/nodestatus-distribute-credits --act -v >> /proc/1/fd/1 2>&1' | crontab - && service cron start && /bin/sh"
+
+# Small named volume holding only flock lockfiles. Shared across the three
+# services so a run in one container is visible to the guards in the others
+# (each container's /tmp is private, which is why a shared volume is needed).
+volumes:
+  ns-locks:
