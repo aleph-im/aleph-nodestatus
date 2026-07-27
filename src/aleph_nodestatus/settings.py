@@ -225,15 +225,16 @@ class Settings(BaseSettings):
     # for the on-chain price-impact check in the extract sizing loop.
     extract_v4_stateview_address: str     = "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
 
-    # Auto-sizing of the swap input to stay under a self-impact ceiling.
-    # When > 0 (in bps), the extractor probes the configured quoter at a
-    # small-size "unit" amount and at the candidate swap amount, derives
-    # the implied price impact, and bisects downward until the impact
-    # fits within the threshold (or no amount above the per-token
-    # `--min-amount` floor fits, in which case the token is skipped).
-    # The leftover stays in the contract for the next cron cycle, giving
-    # arbitrage bots time to rebalance the pool. 0 disables the search;
-    # 100 = 1% impact ceiling, sized to absorb USDC/ETH pool depth on
+    # Auto-sizing of the swap input to stay under a self-impact ceiling
+    # (bps). The extractor probes the configured quoter at a small-size
+    # "unit" amount and at the candidate swap amount, derives the implied
+    # price impact, and bisects downward until the impact fits within this
+    # ceiling (or no amount above the per-token `--min-amount` floor fits,
+    # in which case the token is skipped). The leftover stays in the
+    # contract for the next cron cycle, giving arbitrage bots time to
+    # rebalance the pool. The sizing loop ALWAYS runs for swap tokens: a
+    # value of 0 means zero-tolerance (only a zero-impact swap passes), not
+    # "disabled"; 100 = 1% ceiling, sized to absorb USDC/ETH pool depth on
     # the configured Uniswap paths. CLI flag `--max-price-impact-bps`
     # overrides for one-off ops runs.
     extract_max_price_impact_bps: int     = 200

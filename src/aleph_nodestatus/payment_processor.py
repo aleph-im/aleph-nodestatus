@@ -12,7 +12,11 @@ from eth_abi import encode as abi_encode
 from eth_utils import keccak
 from web3 import Web3
 
-from .price_oracle import CreditApiUnavailable, fair_aleph_rate
+from .price_oracle import (
+    CreditApiUnavailable,
+    TokenNotPriced,
+    fair_aleph_rate,
+)
 from .settings import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -619,7 +623,7 @@ def extract_aleph(
     token_filter: Optional[Set[str]] = None,
     max_amounts: Optional[Mapping[str, Decimal]] = None,
     min_amounts: Optional[Mapping[str, Decimal]] = None,
-    max_price_impact_bps: int = 0,
+    max_price_impact_bps: Optional[int] = None,
 ) -> dict:
     """Run process() per token in settings.process_tokens. Returns the
     extract block for the audit post.
@@ -638,12 +642,15 @@ def extract_aleph(
 
     Auto-sizing (price-impact aware):
 
-    - `max_price_impact_bps`: when > 0, the loop probes the quoter at a
-      small-size reference amount and at the candidate (post-cap)
-      amount, derives the implied price impact, and bisects down until
-      the impact fits. The leftover stays in the contract for the next
-      cron cycle. 0 disables the search and falls back to the cap/min
-      behaviour above.
+    - `max_price_impact_bps`: the impact ceiling (bps) the sizing loop
+      bisects the swap amount to stay under — it probes the quoter at a
+      small-size reference amount and at the candidate (post-cap) amount,
+      derives the implied price impact, and bisects down until it fits.
+      The leftover stays in the contract for the next cron cycle. `None`
+      (the default) uses `settings.extract_max_price_impact_bps`; an
+      explicit value is honoured verbatim, so `0` means zero-tolerance
+      (only a zero-impact swap passes), NOT "disabled" — the sizing loop
+      always runs for swap tokens.
     """
     aleph_address = aleph_address or _aleph_token_address()
     effective_slippage = (
@@ -782,6 +789,16 @@ def extract_aleph(
             if settings.extract_price_deviation_enabled:
                 try:
                     fair_rate = fair_aleph_rate(token_symbol)
+                except TokenNotPriced as e:
+                    # This token alone is missing from the price map; skip it
+                    # (can't run the deviation guard without a fair rate) but
+                    # keep extracting the others, instead of aborting the run.
+                    LOGGER.warning(
+                        "Token %s absent from Credit-API price map; skipping "
+                        "this token for the run: %r", token_symbol, e,
+                    )
+                    entry["skipped_reason"] = "token_not_priced"
+                    continue
                 except CreditApiUnavailable:
                     raise
                 except Exception as e:
@@ -804,7 +821,11 @@ def extract_aleph(
                 spot_rate=spot_rate,
                 pool_fee_bps=fee_bps,
                 max_deviation_bps=settings.extract_max_deviation_bps,
-                max_impact_bps=max_price_impact_bps or settings.extract_max_price_impact_bps,
+                max_impact_bps=(
+                    settings.extract_max_price_impact_bps
+                    if max_price_impact_bps is None
+                    else max_price_impact_bps
+                ),
                 dev_pct=dev_pct,
                 is_stable=is_stable,
             )

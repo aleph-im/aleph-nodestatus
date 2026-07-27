@@ -15,7 +15,11 @@ if "plyvel" not in sys.modules:
     _plyvel_stub.DB = object
     sys.modules["plyvel"] = _plyvel_stub
 
-from aleph_nodestatus.commands import max_successful_nonce, nonce_gap_reason
+from aleph_nodestatus.commands import (
+    max_successful_nonce,
+    nonce_gap_reason,
+    signer_next_nonce,
+)
 
 
 def _dist(*nonces_success):
@@ -97,3 +101,31 @@ class TestNonceGapReason:
         )
         # but current 50 with resolved max 42 -> gap blocked
         assert nonce_gap_reason(50, c, get_tx_nonce=lambda _tx: 42) is not None
+
+
+class TestSignerNextNonce:
+    """The guard must read the PENDING nonce, not 'latest'. A batchTransfer a
+    prior run broadcast but that has not yet mined is only visible under
+    'pending'; reading 'latest' would miss it and let a rerun double-pay."""
+
+    class _Eth:
+        def __init__(self):
+            self.calls = []
+
+        def get_transaction_count(self, address, block_identifier=None):
+            self.calls.append((address, block_identifier))
+            return 7
+
+    class _Web3:
+        def __init__(self):
+            self.eth = TestSignerNextNonce._Eth()
+
+        @staticmethod
+        def to_checksum_address(addr):
+            return addr
+
+    def test_reads_pending_not_latest(self):
+        w3 = self._Web3()
+        assert signer_next_nonce(w3, "0xABC") == 7
+        # exactly one read, and it must pass the "pending" tag
+        assert w3.eth.calls == [("0xABC", "pending")]

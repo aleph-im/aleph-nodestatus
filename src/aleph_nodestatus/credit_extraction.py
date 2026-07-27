@@ -98,7 +98,7 @@ async def process_credit_extraction(
     tokens: Tuple[str, ...] = (),
     max_amounts: Optional[Mapping[str, Decimal]] = None,
     min_amounts: Optional[Mapping[str, Decimal]] = None,
-    max_price_impact_bps: int = 0,
+    max_price_impact_bps: Optional[int] = None,
     fork_rpc: Optional[str] = None,
     reconcile_bps: int = 200,
 ) -> int:

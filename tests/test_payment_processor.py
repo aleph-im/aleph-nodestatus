@@ -304,6 +304,128 @@ def test_extract_aleph_slippage_bps_override(monkeypatch):
     assert int(usdc_entry["min_out"]) == 9_500_000
 
 
+def _capture_impact_ceiling(monkeypatch):
+    """Shadow the sizing loop with a stub that records the max_impact_bps it
+    was handed, and return the recording list."""
+    import aleph_nodestatus.payment_processor as pp
+    seen = []
+
+    def _stub(*a, **k):
+        seen.append(k["max_impact_bps"])
+        return {
+            "settled_amount_in": k["upper_amount_in"],
+            "iterations": [],
+            "binding": None,
+        }
+
+    monkeypatch.setattr(pp, "bisect_swap_amount", _stub)
+    return seen
+
+
+def _run_extract_with_impact(monkeypatch, max_price_impact_bps):
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000
+    processor = _mk_extract_processor(is_stable=False)
+    quoters = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+    extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+        max_price_impact_bps=max_price_impact_bps,
+    )
+
+
+def test_extract_aleph_impact_zero_is_zero_tolerance(monkeypatch):
+    """An explicit max_price_impact_bps=0 must reach the sizing loop as 0
+    (zero-tolerance), NOT be coerced back to the settings default."""
+    seen = _capture_impact_ceiling(monkeypatch)
+    _run_extract_with_impact(monkeypatch, max_price_impact_bps=0)
+    assert seen  # at least one swap token was sized
+    assert all(v == 0 for v in seen)
+
+
+def test_extract_aleph_impact_none_uses_settings_default(monkeypatch):
+    """max_price_impact_bps=None resolves to settings.extract_max_price_impact_bps."""
+    from aleph_nodestatus.settings import settings
+    seen = _capture_impact_ceiling(monkeypatch)
+    _run_extract_with_impact(monkeypatch, max_price_impact_bps=None)
+    assert seen
+    assert all(v == settings.extract_max_price_impact_bps for v in seen)
+
+
+def _mk_extract_env(monkeypatch):
+    """Common w3/processor/quoters/erc20 wiring for the price-failure tests."""
+    w3 = MagicMock()
+    w3.to_checksum_address = lambda x: x
+    w3.eth.get_balance.return_value = 1_000_000
+    processor = _mk_extract_processor(is_stable=False)
+    quoters = _mk_quoters_v3(call_return_value=(10_000, [0], [0], 0))
+    erc20_mock = MagicMock()
+    erc20_mock.functions.balanceOf.return_value.call.return_value = 1_000_000
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor._erc20_contract",
+        lambda w3, addr: erc20_mock,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.payment_processor.simulate_process",
+        lambda *a, **kw: None,
+    )
+    return w3, processor, quoters
+
+
+def test_extract_aleph_token_not_priced_skips_only_that_token(monkeypatch):
+    """A TokenNotPriced from the fair-rate lookup skips that token and lets the
+    run finish, instead of aborting every remaining token."""
+    import aleph_nodestatus.payment_processor as pp
+    from aleph_nodestatus.price_oracle import TokenNotPriced
+
+    def _raise(symbol):
+        raise TokenNotPriced(symbol)
+
+    monkeypatch.setattr(pp, "fair_aleph_rate", _raise)
+    w3, processor, quoters = _mk_extract_env(monkeypatch)
+
+    # Does not raise — the run completes.
+    result = extract_aleph(
+        w3, processor, quoters, account=None,
+        from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+        dry_run=True,
+    )
+    skipped = [e for e in result["tokens"]
+               if e["skipped_reason"] == "token_not_priced"]
+    assert skipped, "expected the unpriced swap token(s) to be skipped"
+
+
+def test_extract_aleph_credit_api_unavailable_aborts(monkeypatch):
+    """A run-wide CreditApiUnavailable still propagates out (abort the run)."""
+    import aleph_nodestatus.payment_processor as pp
+    from aleph_nodestatus.price_oracle import CreditApiUnavailable
+
+    def _raise(symbol):
+        raise CreditApiUnavailable("credit api down")
+
+    monkeypatch.setattr(pp, "fair_aleph_rate", _raise)
+    w3, processor, quoters = _mk_extract_env(monkeypatch)
+
+    with pytest.raises(CreditApiUnavailable):
+        extract_aleph(
+            w3, processor, quoters, account=None,
+            from_address="0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E",
+            dry_run=True,
+        )
+
+
 def test_extract_aleph_unsupported_swap_config_is_explicit(monkeypatch, caplog):
     """A v2/v3 swap config makes pool_spot_rate raise NotImplementedError.
     That is a config/code mismatch, not a transient read failure: it must
