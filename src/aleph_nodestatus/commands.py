@@ -856,13 +856,23 @@ async def process_credit_distribution(
             "threshold_days": settings.credit_dist_slash_threshold_days,
             "retroactive": settings.credit_dist_slash_retroactive,
             "streams": list(enabled_slash_streams()) if slash_on else [],
+            # Sum of the `slashed` map — the total nominally withheld,
+            # matching the per-node `nodes` amounts below.
+            "total_aleph": sum(slashed.values()),
             "nodes": slashed_meta_nodes,
         },
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
         "wage_subsidy": wage_totals,
+        # `total` is the GROSS calculation (sums `rewards`, includes slashed
+        # amounts) and mirrors aleph-api-credit's total block — kept for
+        # parity. `payout_total_aleph` is the NET actually transferred on
+        # chain (sum of the post-slash, floored, zero-dropped payout), so it
+        # equals the sum of `targets[]`. The two differ by the withheld slash:
+        # payout_total_aleph == total.totals.aleph - (effective slash).
         "total": build_total_summary(final_rewards, by_address_detailed),
+        "payout_total_aleph": sum(payout_rewards.values()),
         "feature_flags": flags,
         "tags": [status, "credits", settings.filter_tag],
         "sources": transfer_metadata["sources"],
