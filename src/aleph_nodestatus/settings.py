@@ -199,9 +199,18 @@ class Settings(BaseSettings):
     credit_dist_publish_enabled: bool        = True
 
     # === Slashing feature flags (CRN inactivity penalty) ===
+    # Per docs/specs/2026-06-17-crn-slashing-design.md the penalty is meant to
+    # be "default on" across all three CRN reward streams. credit_revenue and
+    # holder_tier were previously shipped as False, which disabled the penalty
+    # exactly where inactive CRNs actually accrue rewards (the execution_crn
+    # 60% share on the credit_revenue stream). wage_subsidy already excludes
+    # low-score CRNs at source, so with only it enabled the feature was a
+    # no-op. All three are now on so an inactive CRN's share is withheld from
+    # the on-chain payout (published `rewards` stay full — parity with
+    # aleph-api-credit's calculation is preserved; only the transfer differs).
     credit_dist_slash_enabled: bool        = True   # master kill switch
-    credit_dist_slash_credit_revenue: bool = False
-    credit_dist_slash_holder_tier: bool    = False
+    credit_dist_slash_credit_revenue: bool = True
+    credit_dist_slash_holder_tier: bool    = True
     credit_dist_slash_wage_subsidy: bool   = True
     credit_dist_slash_threshold_days: int  = 3
     credit_dist_slash_retroactive: bool    = True   # default: retroactive (whole period since last distribution)
