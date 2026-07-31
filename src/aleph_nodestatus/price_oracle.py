@@ -24,10 +24,12 @@ The map is cached for the process lifetime (one HTTP call per run; the
 extract job is a one-shot cron). The guard runs only for non-ALEPH input
 tokens (ALEPH has no swap).
 
-Failure is fail-closed: if the API is unavailable, or a required symbol
-is missing, the caller skips the token for that run. Synchronous
-`requests` is correct here - the whole extract path runs inside
-`asyncio.to_thread`, matching the module's sync web3 calls.
+Failure is fail-closed, with two granularities: a transport failure or a
+map missing the ALEPH reference raises CreditApiUnavailable and aborts the
+whole run (nothing can be priced); a single input token absent from an
+otherwise-healthy map raises TokenNotPriced and skips only that token for
+the run. Synchronous `requests` is correct here - the whole extract path
+runs inside `asyncio.to_thread`, matching the module's sync web3 calls.
 """
 
 import logging
@@ -44,7 +46,23 @@ LOGGER = logging.getLogger(__name__)
 
 class CreditApiUnavailable(RuntimeError):
     """Raised when the Credit-API fair price cannot be obtained and the
-    extract run must abort (the price is essential to sizing)."""
+    extract run must abort (the price is essential to sizing). Reserved for
+    run-wide failures — a transport error, or a price map missing the ALEPH
+    reference every token is priced against. For a single input token that
+    is absent from an otherwise-healthy map, use TokenNotPriced instead."""
+
+
+class TokenNotPriced(RuntimeError):
+    """Raised when one input token is absent from an otherwise-reachable
+    Credit-API price map. Unlike CreditApiUnavailable this is a per-token
+    condition: the caller skips only that token for the run and keeps
+    extracting the rest, rather than aborting the whole run."""
+
+    def __init__(self, symbol: str):
+        super().__init__(
+            f"token {symbol!r} is absent from the Credit-API price map"
+        )
+        self.symbol = symbol
 
 
 @dataclass
@@ -86,9 +104,20 @@ def fair_aleph_rate(token_in_symbol: str) -> float:
     """ALEPH-wei per input-wei (bonus-free) from the cached bulk price map.
 
     The credit unit cancels in the ratio, so no constants/decimals enter.
-    Raises on HTTP/parse/missing-symbol; caller converts to an abort.
+    Raises CreditApiUnavailable on a transport/parse failure or a map with
+    no ALEPH reference (run-wide); raises TokenNotPriced when only
+    `token_in_symbol` is missing (per-token skip). See the two exception
+    classes for the caller's differing responses.
     """
     prices = _price_map(settings.credit_api_blockchain)
+    if "ALEPH" not in prices:
+        # No ALEPH reference means nothing can be priced — a run-wide
+        # failure, not a per-token skip.
+        raise CreditApiUnavailable(
+            "Credit-API price map is missing the ALEPH reference rate"
+        )
+    if token_in_symbol not in prices:
+        raise TokenNotPriced(token_in_symbol)
     rate_in = _rate_credits_per_wei(prices, token_in_symbol)
     rate_aleph = _rate_credits_per_wei(prices, "ALEPH")
     if rate_aleph <= 0:

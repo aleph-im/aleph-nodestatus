@@ -1,6 +1,8 @@
 from aleph_nodestatus.slashing import is_slashable
 from aleph_nodestatus.slashing import SlashAccumulator
 from aleph_nodestatus.slashing import compute_slashing
+from aleph_nodestatus.slashing import enabled_slash_streams
+from aleph_nodestatus.settings import settings
 
 BLOCKS_PER_DAY = 7130
 
@@ -201,3 +203,19 @@ def test_wage_path_feeds_accumulator():
     assert e["post_death"] > 0          # inactive_since set
     assert e["total"] == e["post_death"]
     assert e["inactive_since"] == 42
+
+
+def test_default_flags_enable_all_three_streams():
+    """Per the slashing design ('default on'), an inactive CRN's share is
+    withheld across every reward stream. credit_revenue + holder_tier were
+    previously shipped False, which disabled the penalty exactly where
+    inactive CRNs accrue (the execution_crn share on credit_revenue) while
+    wage_subsidy — the only enabled stream — already excludes low-score CRNs
+    at source, making the feature a no-op. Guard against that regression."""
+    assert settings.credit_dist_slash_enabled is True
+    assert settings.credit_dist_slash_credit_revenue is True
+    assert settings.credit_dist_slash_holder_tier is True
+    assert settings.credit_dist_slash_wage_subsidy is True
+    assert set(enabled_slash_streams()) == {
+        "credit_revenue", "holder_tier", "wage_subsidy",
+    }

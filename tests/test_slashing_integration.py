@@ -142,6 +142,15 @@ async def test_slashing_applied_withholds_payout_and_publishes_meta(
     assert dist["slashed_meta"]["streams"] == list(
         slashing_mod.enabled_slash_streams()
     )
+    # gross total stays the full calculation (parity with aleph-api-credit)
+    assert dist["total"]["totals"]["aleph"] == sum(FINAL_REWARDS.values())  # 15.0
+    # withheld total matches the slashed map
+    assert dist["slashed_meta"]["total_aleph"] == sum(slashed.values())     # 4.0
+    # net payout = gross - slash, floored per address (0xCRN 10-4=6, 0xOther 5)
+    assert dist["payout_total_aleph"] == 11.0
+    assert dist["payout_total_aleph"] == (
+        dist["total"]["totals"]["aleph"] - dist["slashed_meta"]["total_aleph"]
+    )
 
 
 @pytest.mark.asyncio
@@ -169,6 +178,10 @@ async def test_slashing_flag_off_is_noop(patch_pipeline, monkeypatch):
     assert dist["slashed"] == {}
     assert dist["slashed_meta"]["enabled"] is False
     assert dist["slashed_meta"]["streams"] == []
+    # Nothing withheld: net payout equals the gross total.
+    assert dist["slashed_meta"]["total_aleph"] == 0
+    assert dist["payout_total_aleph"] == sum(FINAL_REWARDS.values())
+    assert dist["payout_total_aleph"] == dist["total"]["totals"]["aleph"]
 
 
 # ─────────────────── _payout_after_slash unit coverage ───────────────────

@@ -204,8 +204,29 @@ def test_fair_aleph_rate_ratio(monkeypatch):
     assert abs(rate - (1.0 / (12277 / 1e18))) / rate < 1e-9
 
 
-def test_fair_aleph_rate_missing_symbol_raises(monkeypatch):
+def test_fair_aleph_rate_missing_input_token_raises_token_not_priced(monkeypatch):
+    """Input token absent from an otherwise-healthy map (ALEPH present) is a
+    per-token condition -> TokenNotPriced, so the caller skips only that token
+    rather than aborting the whole run."""
     import aleph_nodestatus.price_oracle as po
-    monkeypatch.setattr(po, "_price_map", lambda chain: {})
-    with pytest.raises(Exception):
+    fake = {
+        "ALEPH": {"tokenSymbol": "ALEPH", "tokenAmount": "1000000000000000000",
+                  "creditAmount": "14732", "creditBonusAmount": "2455"},
+    }
+    monkeypatch.setattr(po, "_price_map", lambda chain: fake)
+    with pytest.raises(po.TokenNotPriced) as exc:
+        po.fair_aleph_rate("USDC")
+    assert exc.value.symbol == "USDC"
+
+
+def test_fair_aleph_rate_missing_aleph_raises_api_unavailable(monkeypatch):
+    """No ALEPH reference means nothing can be priced -> run-wide
+    CreditApiUnavailable, not a per-token skip."""
+    import aleph_nodestatus.price_oracle as po
+    fake = {
+        "USDC": {"tokenSymbol": "USDC", "tokenAmount": "1000000",
+                 "creditAmount": "1000000", "creditBonusAmount": "0"},
+    }
+    monkeypatch.setattr(po, "_price_map", lambda chain: fake)
+    with pytest.raises(po.CreditApiUnavailable):
         po.fair_aleph_rate("USDC")

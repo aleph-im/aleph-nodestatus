@@ -135,6 +135,15 @@ class Settings(BaseSettings):
     process_ttl_seconds: int = 1800
     process_gas_ceiling: int = 1_500_000
 
+    @field_validator("credit_dist_holder_tier_pct")
+    @classmethod
+    def _holder_tier_pct_in_range(cls, v):
+        if not 0 <= v <= 100:
+            raise ValueError(
+                f"credit_dist_holder_tier_pct must be within 0-100, got {v}"
+            )
+        return v
+
     @field_validator("process_ttl_seconds")
     @classmethod
     def _ttl_within_contract_bound(cls, v):
@@ -195,13 +204,29 @@ class Settings(BaseSettings):
     credit_dist_credit_revenue_enabled: bool = True
     credit_dist_wage_subsidy_enabled: bool   = True
     credit_dist_holder_tier_enabled: bool    = True
+    # Scales the holder_tier reward pool, 0-100 (%). 100 = full (current
+    # behaviour), 0 = nothing paid. Lets holder_tier be dialled down during
+    # its sunset (per the tokenomics) without the all-or-nothing
+    # `credit_dist_holder_tier_enabled` switch. Applied at the price so
+    # rewards, totals, and the slash accumulator all scale together. Must be
+    # mirrored by REWARDS_HOLDER_TIER_PCT in aleph-api-credit for 1:1 parity.
+    credit_dist_holder_tier_pct: int         = 100
     credit_dist_transfer_enabled: bool       = True
     credit_dist_publish_enabled: bool        = True
 
     # === Slashing feature flags (CRN inactivity penalty) ===
+    # Per docs/specs/2026-06-17-crn-slashing-design.md the penalty is meant to
+    # be "default on" across all three CRN reward streams. credit_revenue and
+    # holder_tier were previously shipped as False, which disabled the penalty
+    # exactly where inactive CRNs actually accrue rewards (the execution_crn
+    # 60% share on the credit_revenue stream). wage_subsidy already excludes
+    # low-score CRNs at source, so with only it enabled the feature was a
+    # no-op. All three are now on so an inactive CRN's share is withheld from
+    # the on-chain payout (published `rewards` stay full — parity with
+    # aleph-api-credit's calculation is preserved; only the transfer differs).
     credit_dist_slash_enabled: bool        = True   # master kill switch
-    credit_dist_slash_credit_revenue: bool = False
-    credit_dist_slash_holder_tier: bool    = False
+    credit_dist_slash_credit_revenue: bool = True
+    credit_dist_slash_holder_tier: bool    = True
     credit_dist_slash_wage_subsidy: bool   = True
     credit_dist_slash_threshold_days: int  = 3
     credit_dist_slash_retroactive: bool    = True   # default: retroactive (whole period since last distribution)
@@ -225,15 +250,16 @@ class Settings(BaseSettings):
     # for the on-chain price-impact check in the extract sizing loop.
     extract_v4_stateview_address: str     = "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
 
-    # Auto-sizing of the swap input to stay under a self-impact ceiling.
-    # When > 0 (in bps), the extractor probes the configured quoter at a
-    # small-size "unit" amount and at the candidate swap amount, derives
-    # the implied price impact, and bisects downward until the impact
-    # fits within the threshold (or no amount above the per-token
-    # `--min-amount` floor fits, in which case the token is skipped).
-    # The leftover stays in the contract for the next cron cycle, giving
-    # arbitrage bots time to rebalance the pool. 0 disables the search;
-    # 100 = 1% impact ceiling, sized to absorb USDC/ETH pool depth on
+    # Auto-sizing of the swap input to stay under a self-impact ceiling
+    # (bps). The extractor probes the configured quoter at a small-size
+    # "unit" amount and at the candidate swap amount, derives the implied
+    # price impact, and bisects downward until the impact fits within this
+    # ceiling (or no amount above the per-token `--min-amount` floor fits,
+    # in which case the token is skipped). The leftover stays in the
+    # contract for the next cron cycle, giving arbitrage bots time to
+    # rebalance the pool. The sizing loop ALWAYS runs for swap tokens: a
+    # value of 0 means zero-tolerance (only a zero-impact swap passes), not
+    # "disabled"; 100 = 1% ceiling, sized to absorb USDC/ETH pool depth on
     # the configured Uniswap paths. CLI flag `--max-price-impact-bps`
     # overrides for one-off ops runs.
     extract_max_price_impact_bps: int     = 200

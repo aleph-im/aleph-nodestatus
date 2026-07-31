@@ -424,6 +424,58 @@ async def _iter_posts_dedup(client, post_filter, last_end_height=None):
             break
 
 
+# How many extra 1-day windows to walk back looking for a boundary
+# snapshot (latest aggregate with ts <= start_time) when the default
+# 1-day lookback comes back empty — e.g. after a corechannel publisher
+# outage. Mirrors aleph-api-credit `snapshotsStore.loadSnapshotsForRange`
+# (30-iteration day-by-day walk-back).
+_SNAPSHOT_BOUNDARY_LOOKBACK_DAYS = 30
+
+
+async def _fetch_snapshots_between(client, sender, window_start, window_end):
+    """Fetch corechannel aggregate snapshots with msg.time in the window.
+
+    Returns a list of (ts, nodes_dict, resource_nodes_dict, item_hash),
+    unsorted. Skips non-corechannel aggregates, unconfirmed messages and
+    entries without a usable timestamp.
+    """
+    # SDK 1.4.0 rejects bare `int` in start_date/end_date; cast to float.
+    message_filter = MessageFilter(
+        message_types=[MessageType.aggregate],
+        addresses=[sender],
+        start_date=float(window_start),
+        end_date=float(window_end),
+    )
+
+    # AGGREGATE messages on Aleph wrap their body in two `content` layers:
+    #   msg["content"] = {"key": "<name>", "content": {<body>}, ...}
+    # The outer layer carries the aggregate name (here "corechannel") and the
+    # inner layer holds the actual node/resource_node lists.
+    snapshots = []
+    async for msg in _iter_messages_dedup(client, message_filter):
+        content = msg.get("content") or {}
+        if content.get("key") != "corechannel":
+            continue
+
+        if not _is_eth_confirmed(msg):
+            continue
+
+        ts = _normalize_ts_to_seconds(msg.get("time"))
+        if ts is None:
+            continue
+
+        inner = content.get("content") or {}
+        nodes_list          = inner.get("nodes", [])
+        resource_nodes_list = inner.get("resource_nodes", [])
+
+        nodes_dict          = {n["hash"]: n  for n  in nodes_list}
+        resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
+
+        snapshots.append((ts, nodes_dict, resource_nodes_dict,
+                          msg.get("item_hash")))
+    return snapshots
+
+
 async def fetch_node_snapshots(
     api_server, start_time, end_time, sender=None, out_hashes=None,
 ):
@@ -431,8 +483,14 @@ async def fetch_node_snapshots(
     Fetch historical corechannel aggregate snapshots for the period via
     the SDK's auto-paginated message iterator.
 
-    Fetches from 1 day before start_time to ensure we have a snapshot
-    before the first expense.
+    Fetches from 1 day before start_time, then guarantees a *boundary*
+    snapshot — the latest one with `ts <= start_time` — by walking back
+    day-by-day (up to `_SNAPSHOT_BOUNDARY_LOOKBACK_DAYS`) when the
+    default lookback has none, e.g. after a corechannel publisher
+    outage. Only that single boundary snapshot is added, mirroring
+    aleph-api-credit's `loadSnapshotsForRange` minimal covering set.
+    Without it, `_apply_expenses_to_snapshots` drops every expense
+    billed before the first snapshot in range.
 
     Returns:
         List of (ts, nodes_dict, resource_nodes_dict) sorted by ts, where
@@ -449,48 +507,45 @@ async def fetch_node_snapshots(
     if sender is None:
         sender = settings.status_sender
 
-    snapshots = []
-    # SDK 1.4.0 rejects bare `int` in start_date/end_date; cast to float.
-    message_filter = MessageFilter(
-        message_types=[MessageType.aggregate],
-        addresses=[sender],
-        start_date=float(start_time - 86400),
-        end_date=float(end_time),
-    )
-
-    # AGGREGATE messages on Aleph wrap their body in two `content` layers:
-    #   msg["content"] = {"key": "<name>", "content": {<body>}, ...}
-    # The outer layer carries the aggregate name (here "corechannel") and the
-    # inner layer holds the actual node/resource_node lists.
     async with _aleph_client(api_server) as client:
-        async for msg in _iter_messages_dedup(client, message_filter):
-            content = msg.get("content") or {}
-            if content.get("key") != "corechannel":
-                continue
+        snapshots = await _fetch_snapshots_between(
+            client, sender, start_time - 86400, end_time,
+        )
 
-            if not _is_eth_confirmed(msg):
-                continue
+        if not any(ts <= start_time for ts, _, _, _ in snapshots):
+            for day in range(1, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS + 1):
+                older = await _fetch_snapshots_between(
+                    client, sender,
+                    start_time - (day + 1) * 86400,
+                    start_time - day * 86400,
+                )
+                older = [s for s in older if s[0] <= start_time]
+                if older:
+                    boundary = max(older, key=lambda s: s[0])
+                    snapshots.append(boundary)
+                    LOGGER.info(
+                        "Boundary snapshot found %d day(s) back "
+                        "(ts=%.0f <= start_time=%.0f)",
+                        day + 1, boundary[0], start_time,
+                    )
+                    break
+            else:
+                LOGGER.warning(
+                    "No boundary snapshot (ts <= start_time=%.0f) found "
+                    "within %d extra lookback days; expenses billed before "
+                    "the first available snapshot will be skipped",
+                    start_time, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS,
+                )
 
-            ts = _normalize_ts_to_seconds(msg.get("time"))
-            if ts is None:
-                continue
+    if out_hashes is not None:
+        for _, _, _, h in snapshots:
+            if h:
+                out_hashes.append(h)
 
-            inner = content.get("content") or {}
-            nodes_list          = inner.get("nodes", [])
-            resource_nodes_list = inner.get("resource_nodes", [])
-
-            nodes_dict          = {n["hash"]: n  for n  in nodes_list}
-            resource_nodes_dict = {rn["hash"]: rn for rn in resource_nodes_list}
-
-            snapshots.append((ts, nodes_dict, resource_nodes_dict))
-            if out_hashes is not None:
-                h = msg.get("item_hash")
-                if h:
-                    out_hashes.append(h)
-
-    snapshots.sort(key=lambda x: x[0])
-    LOGGER.info(f"Fetched {len(snapshots)} node status snapshots")
-    return snapshots
+    result = [(ts, nodes, rnodes) for ts, nodes, rnodes, _ in snapshots]
+    result.sort(key=lambda x: x[0])
+    LOGGER.info(f"Fetched {len(result)} node status snapshots")
+    return result
 
 
 def _build_crn_to_ccn_map(nodes):
@@ -827,10 +882,19 @@ def _parse_message(msg):
     return None, None, None
 
 
-def _project_expense(expense, src_key):
-    """Synthesize an expense with the chosen list aliased as credits[]."""
+def _project_expense(expense, src_key, price_multiplier=1.0):
+    """Synthesize an expense with the chosen list aliased as credits[].
+
+    `price_multiplier` scales `credit_price_aleph`, which scales the whole
+    projected pool (`total_aleph = Σ amount × price`). Used to dial the
+    holder_tier stream down without disabling it — applying it at the price
+    keeps every downstream figure (rewards, totals, detailed AND the slash
+    accumulator) consistently scaled.
+    """
     return {
-        "credit_price_aleph": expense.get("credit_price_aleph", 0),
+        "credit_price_aleph": (
+            expense.get("credit_price_aleph", 0) * price_multiplier
+        ),
         "credits":            expense.get(src_key, []),
     }
 
@@ -880,6 +944,22 @@ def zero_totals():
             "unallocated_staker_by_id":     {}}
 
 
+def _expense_version(expense):
+    """Best-effort numeric `expense.version`; defaults to 1 (v1).
+
+    v2 producers emit `version: 2` as a JSON number (the TS emitter
+    even gates on `typeof version === "number"`). A numeric string is
+    coerced — matching how the JS `>=` in the TS port would compare it
+    at runtime — and anything non-numeric falls back to v1: this feeds
+    an observability-only check, which must never abort a distribution
+    run over a malformed envelope field.
+    """
+    try:
+        return float(expense.get("version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _validate_hold_aggregates(expense):
     """Cross-check the declared hold aggregates against `expense.hold[]`.
 
@@ -887,16 +967,31 @@ def _validate_hold_aggregates(expense):
     2026-05 by aleph-api-credit) when present, otherwise falls back to
     the legacy top-level `hold_count` / `hold_amount` keys still
     present on pre-migration messages.
+
+    v2 storage expenses (`expense.version >= 2`) aggregate `hold[]` per
+    ADDRESS while `stats.hold.count` keeps per-FILE semantics, so the
+    comparable actual is the sum of the per-entry `count` fields rather
+    than the number of entries (mirrors computeRewards.ts in
+    aleph-api-credit). A v2 entry with a missing or non-numeric `count`
+    contributes 0 and the resulting under-count keeps the warning —
+    observability only.
     """
     stats_hold = (expense.get("stats") or {}).get("hold") or {}
     declared_count = stats_hold.get("count", expense.get("hold_count"))
     declared_amount = stats_hold.get("amount", expense.get("hold_amount"))
 
     hold = expense.get("hold", [])
-    if declared_count is not None and declared_count != len(hold):
+    if _expense_version(expense) >= 2:
+        actual_count = sum(
+            h["count"] if isinstance(h.get("count"), (int, float)) else 0
+            for h in hold
+        )
+    else:
+        actual_count = len(hold)
+    if declared_count is not None and declared_count != actual_count:
         LOGGER.warning(
             f"hold count mismatch: declared={declared_count}, "
-            f"actual={len(hold)}"
+            f"actual={actual_count}"
         )
     if declared_amount is not None:
         actual = sum(h.get("amount", 0) for h in hold)
@@ -1172,7 +1267,10 @@ def _apply_expenses_to_snapshots(
             _apply_expense_to(
                 holder_rewards, holder_totals, holder_detailed,
                 holder_unallocated, exp_type,
-                _project_expense(expense, "hold"),
+                _project_expense(
+                    expense, "hold",
+                    price_multiplier=settings.credit_dist_holder_tier_pct / 100.0,
+                ),
                 nodes, resource_nodes, web3,
                 accumulator=accumulator, stream="holder_tier",
             )

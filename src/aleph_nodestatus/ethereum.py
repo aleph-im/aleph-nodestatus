@@ -125,7 +125,13 @@ async def transfer_tokens(targets, metadata=None):
     max_fee, max_priority = get_gas_info(w3)
 
     if NONCE is None:
-        NONCE = w3.eth.get_transaction_count(account.address)
+        # "pending" (not the default "latest") so a still-unmined batch this
+        # signer already broadcast — e.g. a prior distribution that crashed
+        # after broadcast, before publishing — is counted, and this run signs
+        # the next nonce instead of reusing/colliding with it. Pairs with the
+        # pre-flight nonce-continuity guard in commands.py, which also reads
+        # "pending".
+        NONCE = w3.eth.get_transaction_count(account.address, "pending")
     tx_hash = None
     # Capture the nonce this batch is signed with so the published distribution
     # records it; the next run's pre-flight guard reads it back to detect any

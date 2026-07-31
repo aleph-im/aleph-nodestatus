@@ -361,6 +361,21 @@ def nonce_gap_reason(current_nonce, last_content, get_tx_nonce=None):
     return None
 
 
+def signer_next_nonce(web3, sender):
+    """Signer's next usable nonce, counting PENDING (unmined) transactions.
+
+    Reads with block_identifier='pending', not web3's default 'latest'. The
+    double-pay case the nonce-continuity guard exists to catch is a
+    batchTransfer a prior run broadcast but that has not yet mined (the run
+    crashed before publishing). 'latest' counts only mined txs, so it would
+    hide that pending tx and let a rerun re-broadcast the same payouts;
+    'pending' includes it so `nonce_gap_reason` sees the gap and aborts.
+    """
+    return web3.eth.get_transaction_count(
+        web3.to_checksum_address(sender), "pending"
+    )
+
+
 async def process_credit_distribution(
     start_height, end_height, *,
     act=False, dry_run=False, force=False, force_cap=False,
@@ -696,9 +711,7 @@ async def process_credit_distribution(
         # operator reconciles manually and reruns with --force-nonce-gap.
         # Skipped in fork mode (the fork account nonce isn't the prod cursor).
         if not fork_rpc:
-            current_nonce = web3.eth.get_transaction_count(
-                web3.to_checksum_address(sender)
-            )
+            current_nonce = signer_next_nonce(web3, sender)
 
             # Older distribution posts recorded only the batch tx hash, not the
             # nonce. Recover the nonce on-chain from that hash so the guard works
@@ -843,13 +856,23 @@ async def process_credit_distribution(
             "threshold_days": settings.credit_dist_slash_threshold_days,
             "retroactive": settings.credit_dist_slash_retroactive,
             "streams": list(enabled_slash_streams()) if slash_on else [],
+            # Sum of the `slashed` map — the total nominally withheld,
+            # matching the per-node `nodes` amounts below.
+            "total_aleph": sum(slashed.values()),
             "nodes": slashed_meta_nodes,
         },
         "credit_revenue_totals": credit_totals,
         "holder_tier_totals": {**holder_totals,
                                 "included": flags.get("holder_tier", False)},
         "wage_subsidy": wage_totals,
+        # `total` is the GROSS calculation (sums `rewards`, includes slashed
+        # amounts) and mirrors aleph-api-credit's total block — kept for
+        # parity. `payout_total_aleph` is the NET actually transferred on
+        # chain (sum of the post-slash, floored, zero-dropped payout), so it
+        # equals the sum of `targets[]`. The two differ by the withheld slash:
+        # payout_total_aleph == total.totals.aleph - (effective slash).
         "total": build_total_summary(final_rewards, by_address_detailed),
+        "payout_total_aleph": sum(payout_rewards.values()),
         "feature_flags": flags,
         "tags": [status, "credits", settings.filter_tag],
         "sources": transfer_metadata["sources"],
@@ -1338,10 +1361,11 @@ def _parse_amount_kv(values, *, flag_name: str, configured_symbols: set):
                    "stay within their ceilings; leftover stays in the contract "
                    "for the next cron cycle so the pool can rebalance via "
                    "arbitrage between swaps. Overrides "
-                   "settings.extract_max_price_impact_bps (default 200). "
-                   "Sizing always runs for swap tokens; to disable only the "
-                   "Credit-API deviation half, set "
-                   "extract_price_deviation_enabled=False.")
+                   "settings.extract_max_price_impact_bps (default 200) when "
+                   "given; 0 means zero-tolerance (only a zero-impact swap "
+                   "passes), not disabled. Sizing always runs for swap "
+                   "tokens; to disable only the Credit-API deviation half, "
+                   "set extract_price_deviation_enabled=False.")
 @click.option("--fork-rpc", "fork_rpc", default=None,
               help="URL of a local mainnet fork (e.g. http://localhost:8545 "
                    "for `anvil --fork-url …`). Requires --dry-run; refused "
@@ -1466,10 +1490,11 @@ def extract_credits(verbose, act, dry_run, no_transfer, immediate,
         tokens=tuple(tokens),
         max_amounts=max_amounts,
         min_amounts=min_amounts,
-        max_price_impact_bps=(
-            max_price_impact_bps if max_price_impact_bps is not None
-            else settings.extract_max_price_impact_bps
-        ),
+        # Pass the raw CLI value through: None (unset) resolves to
+        # settings.extract_max_price_impact_bps inside extract_aleph, while an
+        # explicit 0 survives as a real zero-tolerance ceiling instead of being
+        # coerced back to the default.
+        max_price_impact_bps=max_price_impact_bps,
         fork_rpc=resolved_fork_rpc,
         reconcile_bps=(
             reconcile_bps if reconcile_bps is not None
