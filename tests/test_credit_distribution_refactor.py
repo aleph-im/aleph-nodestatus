@@ -519,6 +519,53 @@ def test_compute_rewards_holder_tier_processes_hold_field(monkeypatch):
     assert holder["0xCRN1"] == pytest.approx(0.30)
 
 
+def test_holder_tier_pct_scales_only_holder_pool(monkeypatch):
+    """credit_dist_holder_tier_pct dials the holder_tier pool down without
+    touching credit_revenue. At 25%, holder amounts are quartered; credits
+    are unchanged."""
+    from aleph_nodestatus.settings import settings
+    monkeypatch.setattr(settings, "credit_dist_holder_tier_pct", 25)
+
+    expense = {
+        "credit_price_aleph": 0.001,
+        "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
+        "hold":    [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
+        "hold_amount": 500, "hold_count": 1,
+    }
+    msg = {
+        "item_hash": "h1", "time": 1.5,
+        "confirmations": [{"chain": "ETH", "height": 100}],
+        "content": {"tags": ["credit_expense", "type_execution"],
+                    "expense": expense},
+    }
+
+    async def fake_fetch_msgs(*a, **kw): return [msg]
+    async def fake_fetch_snaps(*a, **kw):
+        return [(1.0, {"n1": _node("n1", 0.9, {"0xS1": 100},
+                                   resource_nodes=["r1"])},
+                     {"r1": _rnode("r1", 0.9, "0xCRN1")})]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
+        fake_fetch_msgs)
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps)
+
+    result = asyncio.run(compute_rewards(
+        start_time=1.0, end_time=2.0, web3=_W3, include_holder_tier=True))
+
+    credit, credit_totals = result["credit_revenue"]
+    holder, holder_totals = result["holder_tier"]
+
+    # credit_revenue untouched
+    assert credit_totals["execution_total_aleph"] == pytest.approx(1.0)
+    assert credit["0xCRN1"] == pytest.approx(0.60)
+    # holder_tier scaled to 25%: pool 0.5 -> 0.125, CRN 0.30 -> 0.075
+    assert holder_totals["execution_total_aleph"] == pytest.approx(0.125)
+    assert holder["0xCRN1"] == pytest.approx(0.075)
+
+
 def test_full_resync_applies_expenses_past_last_state_machine_yield(monkeypatch):
     """`_compute_rewards_full_resync` builds one snapshot per state-machine
     tick (paired with the tick's ETH block timestamp) and then routes

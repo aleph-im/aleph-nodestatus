@@ -882,10 +882,19 @@ def _parse_message(msg):
     return None, None, None
 
 
-def _project_expense(expense, src_key):
-    """Synthesize an expense with the chosen list aliased as credits[]."""
+def _project_expense(expense, src_key, price_multiplier=1.0):
+    """Synthesize an expense with the chosen list aliased as credits[].
+
+    `price_multiplier` scales `credit_price_aleph`, which scales the whole
+    projected pool (`total_aleph = Σ amount × price`). Used to dial the
+    holder_tier stream down without disabling it — applying it at the price
+    keeps every downstream figure (rewards, totals, detailed AND the slash
+    accumulator) consistently scaled.
+    """
     return {
-        "credit_price_aleph": expense.get("credit_price_aleph", 0),
+        "credit_price_aleph": (
+            expense.get("credit_price_aleph", 0) * price_multiplier
+        ),
         "credits":            expense.get(src_key, []),
     }
 
@@ -1258,7 +1267,10 @@ def _apply_expenses_to_snapshots(
             _apply_expense_to(
                 holder_rewards, holder_totals, holder_detailed,
                 holder_unallocated, exp_type,
-                _project_expense(expense, "hold"),
+                _project_expense(
+                    expense, "hold",
+                    price_multiplier=settings.credit_dist_holder_tier_pct / 100.0,
+                ),
                 nodes, resource_nodes, web3,
                 accumulator=accumulator, stream="holder_tier",
             )

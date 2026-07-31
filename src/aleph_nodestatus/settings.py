@@ -135,6 +135,15 @@ class Settings(BaseSettings):
     process_ttl_seconds: int = 1800
     process_gas_ceiling: int = 1_500_000
 
+    @field_validator("credit_dist_holder_tier_pct")
+    @classmethod
+    def _holder_tier_pct_in_range(cls, v):
+        if not 0 <= v <= 100:
+            raise ValueError(
+                f"credit_dist_holder_tier_pct must be within 0-100, got {v}"
+            )
+        return v
+
     @field_validator("process_ttl_seconds")
     @classmethod
     def _ttl_within_contract_bound(cls, v):
@@ -195,6 +204,13 @@ class Settings(BaseSettings):
     credit_dist_credit_revenue_enabled: bool = True
     credit_dist_wage_subsidy_enabled: bool   = True
     credit_dist_holder_tier_enabled: bool    = True
+    # Scales the holder_tier reward pool, 0-100 (%). 100 = full (current
+    # behaviour), 0 = nothing paid. Lets holder_tier be dialled down during
+    # its sunset (per the tokenomics) without the all-or-nothing
+    # `credit_dist_holder_tier_enabled` switch. Applied at the price so
+    # rewards, totals, and the slash accumulator all scale together. Must be
+    # mirrored by REWARDS_HOLDER_TIER_PCT in aleph-api-credit for 1:1 parity.
+    credit_dist_holder_tier_pct: int         = 100
     credit_dist_transfer_enabled: bool       = True
     credit_dist_publish_enabled: bool        = True
 
