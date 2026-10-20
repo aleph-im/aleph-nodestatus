@@ -296,3 +296,42 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     ])
     assert result.exit_code != 0, result.output
     assert "ABORT" in result.output
+
+
+def test_revenue_unavailable_aborts_without_side_effects(patched_pipeline,
+                                                         monkeypatch):
+    from aleph_nodestatus.revenue import RevenueUnavailable
+
+    async def failing_fetch(*a, **kw):
+        raise RevenueUnavailable("CCN has closed periods only up to X")
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_revenue", failing_fetch,
+    )
+    result = CliRunner().invoke(distribute_credits, [
+        "--no-extract", "--start-height", "10", "--end-height", "20",
+    ])
+    assert result.exit_code == 1, result.output
+    assert "ABORT: CCN has closed periods only up to X" in result.output
+    assert patched_pipeline["posts"] == []
+    assert patched_pipeline["transfers"] == []
+
+
+def test_revenue_window_starts_at_previous_run_end(patched_pipeline,
+                                                   monkeypatch):
+    seen = []
+
+    async def recording_fetch(api, start_time, end_time, *a, **kw):
+        seen.append((start_time, end_time))
+        return []
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_revenue", recording_fetch,
+    )
+    result = CliRunner().invoke(distribute_credits, [
+        "--dry-run", "--no-extract", "--start-height", "10",
+        "--end-height", "20",
+    ])
+    assert result.exit_code == 0, result.output
+    # fake block timestamps are 1778050000 + height: ts(start_height - 1)
+    assert seen == [(1778050000 + 9, 1778050000 + 20)]

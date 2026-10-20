@@ -62,6 +62,7 @@ from .payment_processor import (
     get_processor_contract,
     get_quoter_contract,
 )
+from .revenue import RevenueUnavailable
 from .rewards_merge import merge_rewards
 from .settings import settings, PublishMode
 from .solana import solana_monitoring_process
@@ -294,6 +295,18 @@ async def process_credit_distribution(
     act=False, dry_run=False, force=False,
     flags=None, slippage_bps=None, reward_sender=None, full_resync=False,
 ):
+    """Run one credit distribution over blocks [start_height, end_height].
+
+    Steps: (1) extract ALEPH from the payment processor, (2) credit revenue
+    and holder-tier rewards from the CCN revenue periods, (3) wage subsidy,
+    (4) merge, (5) transfer and publish.
+
+    If the CCN revenue is unavailable or incomplete (RevenueUnavailable) the
+    run aborts with exit code 1 before anything is transferred or posted, and
+    the next run resumes from the same last_end. Step 1 runs before Step 2 and
+    is not rolled back: an extraction already sent on-chain stays done (the
+    ALEPH remains in the distribution wallet and is paid out by a later run).
+    """
     flags = flags or {}
     dbs = get_dbs()
     web3 = get_web3()
@@ -327,6 +340,13 @@ async def process_credit_distribution(
 
     start_time = web3.eth.get_block(start_height).timestamp
     end_time = web3.eth.get_block(end_height).timestamp
+    # Revenue windows tile on the previous run's end timestamp, ts(last_end)
+    # with last_end = start_height - 1, not on ts(start_height): otherwise an
+    # hour ending between those two blocks would belong to no run.
+    revenue_start_time = (
+        web3.eth.get_block(start_height - 1).timestamp
+        if start_height > 0 else start_time
+    )
 
     admin_address = settings.payment_processor_admin_address
     admin_account = None
@@ -362,12 +382,16 @@ async def process_credit_distribution(
         "holder_tier":    ({}, zero_totals()),
     }
     if flags.get("credit_revenue"):
-        streams = await compute_rewards(
-            start_time, end_time,
-            full_resync=full_resync,
-            include_holder_tier=flags.get("holder_tier", False),
-            dbs=dbs, end_height=end_height, web3=web3,
-        )
+        try:
+            streams = await compute_rewards(
+                revenue_start_time, end_time,
+                full_resync=full_resync,
+                include_holder_tier=flags.get("holder_tier", False),
+                dbs=dbs, end_height=end_height, web3=web3,
+            )
+        except RevenueUnavailable as exc:
+            click.echo(f"ABORT: {exc}")
+            sys.exit(1)
 
     credit_rewards, credit_totals = streams["credit_revenue"]
     holder_rewards, holder_totals = streams["holder_tier"]
@@ -535,7 +559,13 @@ def distribute_credits(verbose, act, testnet, dry_run, force,
                        enable_holder_tier, no_holder_tier,
                        no_transfer, no_publish,
                        slippage_bps, reward_sender):
-    """Credit-based distribution script (new tokenomics)."""
+    """Credit-based distribution script (new tokenomics).
+
+    Aborts with exit code 1 (nothing transferred or posted) when the CCN
+    credit revenue is unavailable or not yet closed up to the end height.
+    The processor extraction (Step 1) runs before that check and is not
+    rolled back.
+    """
     setup_logging(verbose)
 
     if act and testnet:
