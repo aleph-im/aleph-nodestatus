@@ -177,3 +177,8 @@ class PublishMode:
         if cls._use_testnet:
             return settings.aleph_testnet_api_server
         return settings.aleph_api_server
+
+
+def resolve_credit_revenue_api_server() -> str:
+    """API server for the CCN credits revenue endpoint."""
+    return settings.credit_revenue_api_server or PublishMode.get_publish_api_server()

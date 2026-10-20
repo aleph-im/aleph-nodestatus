@@ -29,7 +29,11 @@ async def _fetch_window(session, api_server, start, end):
             data = await resp.json()
     except (aiohttp.ClientError, TimeoutError) as e:
         raise RevenueUnavailable(f"Revenue endpoint error for {url}: {e}") from e
-    return data.get("periods", [])
+    except ValueError as e:
+        raise RevenueUnavailable(f"Malformed revenue body from {url}: {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("periods"), list):
+        raise RevenueUnavailable(f"Malformed revenue body from {url}: no periods list")
+    return data["periods"]
 
 
 async def fetch_revenue(
@@ -41,7 +45,13 @@ async def fetch_revenue(
     """Fetch hourly revenue periods in [start_time, end_time) from the CCN.
 
     start_time is floored and end_time ceiled to the hour; the range is split
-    into windows of at most 744 periods. Returns periods sorted by `period`,
+    into windows of at most 744 periods.
+
+    Endpoint contract: GET /api/v0/credits/revenue?from=&to= (unix seconds,
+    hour-aligned) returns periods with from <= period < to (from inclusive,
+    to exclusive) and rejects ranges where (to - from) / 3600 > 744. Windows
+    are [from, to) with next from = previous to, so none overlap or leave gaps.
+    Returns periods sorted by `period`,
     de-duplicated.
     """
     start = int(start_time) // HOUR * HOUR
