@@ -31,6 +31,9 @@ def _patch(monkeypatch, periods, snapshots):
         "aleph_nodestatus.credit_distribution.HeightResolver.height_at_or_before",
         lambda self, ts: ts // 12,
     )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.get_web3", lambda: object(),
+    )
 
 
 def _period(period, nodes, price="0.001", storage=0):
@@ -152,3 +155,33 @@ def test_period_between_snapshots_uses_earlier_snapshot(monkeypatch):
     credit, _ = result["credit_revenue"]
     assert credit["0xOLD"] == pytest.approx(0.60)
     assert "0xNEW" not in credit
+
+
+def test_compute_rewards_requires_web3(monkeypatch):
+    _patch(monkeypatch, [], [(100, {}, {})])
+
+    def no_web3():
+        raise RuntimeError("no RPC")
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.get_web3", no_web3,
+    )
+    with pytest.raises(ValueError, match="web3 is required"):
+        asyncio.run(compute_rewards(start_time=HOUR, end_time=2 * HOUR))
+
+
+def test_compute_rewards_empty_revenue_warns_once(monkeypatch, caplog):
+    import logging
+    _patch(
+        monkeypatch,
+        [_period(HOUR, {"r1": {"execution": 0, "hold_equivalent": 0}})],
+        [(100, {}, {})],
+    )
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(compute_rewards(
+            start_time=HOUR, end_time=2 * HOUR,
+        ))
+    assert result["credit_revenue"][0] == {}
+    warnings = [r for r in caplog.records
+                if "No credit revenue" in r.getMessage()]
+    assert len(warnings) == 1

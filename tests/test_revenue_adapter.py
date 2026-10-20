@@ -95,3 +95,43 @@ def test_height_resolver_is_monotonic_and_cached():
     # exact timestamp hit, and ts before genesis-ish / beyond head
     assert r.height_at_or_before(w3.t0 + 7 * 12) == 7
     assert r.height_at_or_before(w3.t0 + 10**12) == w3.eth.block_number
+
+
+def test_adapter_tolerates_missing_node_fields():
+    periods = [{
+        "period": 0, "credit_price_aleph": "1", "storage": 0,
+        "nodes": {"a": {"execution": 4}, "b": {"hold_equivalent": 2}, "c": {}},
+    }]
+    ((_, _, exp),) = revenue_to_expenses(periods, lambda ts: 1)
+    assert exp["credits"] == [{"amount": 4, "node_id": "a"}]
+    assert exp["rewards"] == [{"amount": 2, "node_id": "b"}]
+
+
+class CountingEth:
+    def __init__(self, head, t0=1_000_000_000, step=12):
+        self.head, self.t0, self.step = head, t0, step
+        self.head_reads = 0
+
+    @property
+    def block_number(self):
+        self.head_reads += 1
+        return self.head
+
+    def get_block(self, n):
+        return SimpleNamespace(timestamp=self.t0 + n * self.step)
+
+
+def test_height_resolver_reads_head_once():
+    eth = CountingEth(head=500_000)
+    r = HeightResolver(SimpleNamespace(eth=eth))
+    for k in (10, 2000, 3000, 499_999):
+        assert r.height_at_or_before(eth.t0 + k * 12 + 1) == k
+    assert eth.head_reads == 1
+
+
+def test_height_resolver_upper_bound_skips_head_and_caps():
+    eth = CountingEth(head=500_000)
+    r = HeightResolver(SimpleNamespace(eth=eth), upper_bound=1000)
+    assert r.height_at_or_before(eth.t0 + 500 * 12) == 500
+    assert r.height_at_or_before(eth.t0 + 10**9) == 1000
+    assert eth.head_reads == 0

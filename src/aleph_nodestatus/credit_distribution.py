@@ -27,13 +27,22 @@ class HeightResolver:
     """Map a unix timestamp to the greatest block height whose timestamp is
     <= ts, by binary search over block timestamps. Results are memoised per
     ts; the search starts from the last resolved height when queries are
-    monotonic."""
+    monotonic.
 
-    def __init__(self, web3):
+    The search is bounded above by `upper_bound` when given (the run's
+    end_height), otherwise by the chain head read once per instance."""
+
+    def __init__(self, web3, upper_bound=None):
         self.web3 = web3
+        self._upper_bound = upper_bound
         self._cache = {}
         self._last_ts = None
         self._last_height = 0
+
+    def _hi(self):
+        if self._upper_bound is None:
+            self._upper_bound = self.web3.eth.block_number
+        return self._upper_bound
 
     def _block_ts(self, n):
         return self.web3.eth.get_block(n).timestamp
@@ -44,7 +53,7 @@ class HeightResolver:
         lo = self._last_height if (
             self._last_ts is not None and ts >= self._last_ts
         ) else 0
-        hi = self.web3.eth.block_number
+        hi = self._hi()
         # invariant: answer in [lo, hi]
         while lo < hi:
             mid = (lo + hi + 1) // 2
@@ -66,16 +75,14 @@ def revenue_to_expenses(periods, height_for):
         h = height_for(p["period"] + 3600)
         price = float(p["credit_price_aleph"])
         nodes = p.get("nodes") or {}
-        credits = [
-            {"amount": n["execution"], "node_id": nid}
-            for nid, n in nodes.items()
-            if n["execution"] > 0
-        ]
-        rewards = [
-            {"amount": n["hold_equivalent"], "node_id": nid}
-            for nid, n in nodes.items()
-            if n["hold_equivalent"] > 0
-        ]
+        credits, rewards = [], []
+        for nid, n in nodes.items():
+            execution = int(n.get("execution", 0))
+            hold_equivalent = int(n.get("hold_equivalent", 0))
+            if execution > 0:
+                credits.append({"amount": execution, "node_id": nid})
+            if hold_equivalent > 0:
+                rewards.append({"amount": hold_equivalent, "node_id": nid})
         if credits or rewards:
             out.append((h, "execution", {
                 "credit_price_aleph": price,
@@ -409,20 +416,17 @@ async def compute_rewards(
     )
 
     periods = await fetch_revenue(revenue_server, start_time, end_time)
-    if not periods:
-        LOGGER.warning("No credit revenue found in the given time range")
-        return {
-            "credit_revenue": ({}, zero_totals()),
-            "holder_tier":    ({}, zero_totals()),
-        }
 
     if web3 is None:
         try:
             web3 = get_web3()
         except Exception:
             web3 = None
+    if web3 is None:
+        raise ValueError("web3 is required to map revenue periods to heights")
 
-    parsed = revenue_to_expenses(periods, HeightResolver(web3).height_at_or_before)
+    resolver = HeightResolver(web3, upper_bound=end_height)
+    parsed = revenue_to_expenses(periods, resolver.height_at_or_before)
     if not parsed:
         LOGGER.warning("No credit revenue found in the given time range")
         return {
@@ -559,6 +563,11 @@ async def _compute_rewards_full_resync(
     while idx < len(parsed) and nodes is not None:
         h, exp_type, expense = parsed[idx]
         if end_height is not None and h > end_height:
+            # Unreachable with the floored revenue window (every period ends
+            # at or before end_time); kept as a guard, but never silent.
+            LOGGER.warning(
+                "Dropping revenue at height %s > end_height %s", h, end_height
+            )
             idx += 1
             continue
         _apply_expense_to(credit_rewards, credit_totals, exp_type,
