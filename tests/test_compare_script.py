@@ -44,3 +44,13 @@ def test_old_storage_and_hold_key(caplog):
     assert ex == {"a": 6.0}
     assert hold == {"a": 10.0, "b": 0.0}
     assert "dropped 1" in caplog.text
+
+
+def test_main_returns_1_and_prints_error_on_failure(monkeypatch, capsys):
+    async def boom(args):
+        raise RuntimeError("CCN unreachable")
+
+    monkeypatch.setattr(cmp, "main_async", boom)
+    monkeypatch.setattr("sys.argv", ["cmp", "--from", "0", "--to", "3600"])
+    assert cmp.main() == 1
+    assert "error: CCN unreachable" in capsys.readouterr().err

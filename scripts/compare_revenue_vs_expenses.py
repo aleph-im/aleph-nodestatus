@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Compare per-node ALEPH from CCN revenue periods vs aleph_credit_expense posts.
 
-Cutover tool: always exits 0.
+Cutover tool: exits 0 on success, 1 if fetching or comparing failed (the
+error is printed to stderr). The CCN source raises when the requested range
+is not fully closed yet: use a --to at or before the last closed hour.
 
 Usage:
     python scripts/compare_revenue_vs_expenses.py --from TS --to TS \
@@ -202,8 +204,9 @@ def main():
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     try:
         asyncio.run(main_async(args))
-    except Exception as e:  # cutover tool: never fail the shell
+    except Exception as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
     return 0
 
 
