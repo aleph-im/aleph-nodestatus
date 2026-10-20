@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseSettings
 
@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # account_type: str = Field(..., env='ACCT_TYPE')
     aleph_channel: str = "TEST"
     aleph_api_server: str = "https://api.aleph.im"
+    credit_revenue_api_server: Optional[str] = None
     aleph_testnet_api_server: str = "https://api.twentysix.testnet.network"
     token_symbol: str = "ALEPH"
     chain_name: str = "ETH"
