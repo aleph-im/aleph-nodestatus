@@ -11,14 +11,24 @@ The default --expense-sender is the signer (message `sender`) of the
 production expense posts. The old backoffice address
 0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC is the content owner, not the
 signer; messages.json?addresses= filters on the sender.
+
+The new-source half needs the CCN endpoint: run without --old-only once the
+CCN exposes /api/v0/credits/revenue (live validation is a cutover step).
 """
 import argparse
 import asyncio
 import json
+import logging
 import sys
+from datetime import datetime, timezone
 from collections import defaultdict
 
 import aiohttp
+
+LOGGER = logging.getLogger("compare_revenue")
+# Expense posts before this date use the old 100-credits-per-USD unit
+# (x10,000 relative to today's); we warn but do not convert.
+UNIT_CUTOFF = int(datetime(2026, 2, 2, tzinfo=timezone.utc).timestamp())
 
 DEFAULT_SENDER = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
 
@@ -75,6 +85,7 @@ def parse_message(msg):
 def aggregate_old(messages):
     """-> (exec_by_node, hold_by_node, storage_total) in ALEPH."""
     execs, holds, storage = defaultdict(float), defaultdict(float), 0.0
+    dropped = 0
     for msg in messages:
         etype, exp = parse_message(msg)
         if etype is None:
@@ -85,10 +96,14 @@ def aggregate_old(messages):
             continue
         for c in exp.get("credits", []):
             if c.get("node_id"):
-                execs[c["node_id"]] += c["amount"] * price
+                execs[c["node_id"]] += c.get("amount", 0) * price
+            else:
+                dropped += 1
         for c in exp.get("rewards") or exp.get("hold") or []:
             if c.get("node_id"):
-                holds[c["node_id"]] += c["amount"] * price
+                holds[c["node_id"]] += c.get("amount", 0) * price
+    if dropped:
+        LOGGER.warning("dropped %d execution credit lines with no node_id", dropped)
     return dict(execs), dict(holds), storage
 
 
@@ -149,6 +164,10 @@ def print_report(rep):
 
 
 async def main_async(args):
+    if args.from_time < UNIT_CUTOFF:
+        LOGGER.warning(
+            "window starts before 2026-02-02 00:00 UTC: pre-cutoff expense posts "
+            "use the old 100-credits-per-USD unit (x10,000 vs today's); not converted")
     msgs = await fetch_expense_messages(
         args.api_server, args.from_time, args.to_time, args.expense_sender)
     old = aggregate_old(msgs)
@@ -180,6 +199,7 @@ def main():
     ap.add_argument("--old-only", action="store_true",
                     help="skip the CCN revenue source (not deployed yet)")
     args = ap.parse_args()
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     try:
         asyncio.run(main_async(args))
     except Exception as e:  # cutover tool: never fail the shell

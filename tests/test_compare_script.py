@@ -28,3 +28,19 @@ def test_aggregate_and_diff():
     assert rep["execution"][0]["node_id"] == "a"
     assert rep["execution"][0]["diff"] == 10.0
     assert rep["execution"][1]["diff_pct"] is None
+
+
+def test_old_storage_and_hold_key(caplog):
+    storage = {"content": {"content": {"tags": ["type_storage"], "expense": {
+        "credit_price_aleph": 0.25,
+        "credits": [{"address": "0x1", "amount": 40}, {"address": "0x2", "amount": 20}]}}}}
+    execm = {"content": {"content": {"tags": ["type_execution"], "expense": {
+        "credit_price_aleph": 2,
+        "credits": [{"node_id": "a", "amount": 3}, {"amount": 9}],
+        "hold": [{"node_id": "a", "amount": 5}, {"node_id": "b"}]}}}}
+    with caplog.at_level("WARNING"):
+        ex, hold, st = cmp.aggregate_old([storage, execm])
+    assert st == (40 + 20) * 0.25
+    assert ex == {"a": 6.0}
+    assert hold == {"a": 10.0, "b": 0.0}
+    assert "dropped 1" in caplog.text
