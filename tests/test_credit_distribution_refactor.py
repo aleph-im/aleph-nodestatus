@@ -7,6 +7,45 @@ from aleph_nodestatus.credit_distribution import (
     compute_rewards,
 )
 
+HOUR = 3600
+
+
+def _patch(monkeypatch, periods, snapshots):
+    """Patch revenue fetch, snapshot fetch and the ts -> height mapping
+    (fixed 12 s blocks)."""
+    async def fake_fetch_revenue(*a, **kw):
+        return periods
+
+    async def fake_fetch_snaps(*a, **kw):
+        return snapshots
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_revenue",
+        fake_fetch_revenue,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
+        fake_fetch_snaps,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.HeightResolver.height_at_or_before",
+        lambda self, ts: ts // 12,
+    )
+
+
+def _period(period, nodes, price="0.001", storage=0):
+    return {
+        "period": period, "credit_price_aleph": price, "nodes": nodes,
+        "storage": storage,
+        "execution_total": sum(n["execution"] for n in nodes.values()),
+    }
+
+
+def _snap(height, owner):
+    return (height,
+            {"n1": _node("n1", 0.9, {"0xS1": 100}, resource_nodes=["r1"])},
+            {"r1": _rnode("r1", 0.9, owner)})
+
 
 def _node(hash, score, stakers, resource_nodes=None):
     return {
@@ -46,26 +85,10 @@ def test_distribute_expense_execution_split():
 
 
 def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
-    fake_messages = []  # no expenses
-    fake_snapshots = [(100, {}, {})]
-
-    async def fake_fetch_msgs(*a, **kw):
-        return fake_messages
-
-    async def fake_fetch_snaps(*a, **kw):
-        return fake_snapshots
-
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
-        fake_fetch_snaps,
-    )
+    _patch(monkeypatch, [], [(100, {}, {})])
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=HOUR, end_time=2 * HOUR,
         full_resync=False, include_holder_tier=False,
     ))
     assert "credit_revenue" in result
@@ -78,39 +101,14 @@ def test_compute_rewards_returns_dict_with_two_streams(monkeypatch):
 
 
 def test_compute_rewards_holder_tier_processes_rewards_field(monkeypatch):
-    expense = {
-        "credit_price_aleph": 0.001,
-        "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
-        "rewards": [{"amount":  500, "node_id": "r1", "address": "0xH1"}],
-        "rewards_amount": 500,
-        "rewards_count": 1,
-    }
-    msg = {
-        "item_hash": "h1",
-        "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
-            "tags": ["credit_expense", "type_execution"],
-            "expense": expense,
-        }},
-    }
-
-    async def fake_fetch_msgs(*a, **kw): return [msg]
-    async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
-                                   resource_nodes=["r1"])},
-                     {"r1": _rnode("r1", 0.9, "0xCRN1")})]
-
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
-        fake_fetch_snaps,
+    _patch(
+        monkeypatch,
+        [_period(HOUR, {"r1": {"execution": 1000, "hold_equivalent": 500}})],
+        [_snap(50, "0xCRN1")],
     )
 
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=HOUR, end_time=2 * HOUR,
         include_holder_tier=True,
     ))
 
@@ -123,36 +121,34 @@ def test_compute_rewards_holder_tier_processes_rewards_field(monkeypatch):
     assert holder["0xCRN1"] == pytest.approx(0.30)
 
 
-def test_compute_rewards_holder_tier_off_ignores_rewards_field(monkeypatch):
-    expense = {
-        "credit_price_aleph": 0.001,
-        "credits": [{"amount": 1000, "node_id": "r1", "address": "0xU1"}],
-        "rewards": [{"amount": 500,  "node_id": "r1", "address": "0xH1"}],
-    }
-    msg = {
-        "item_hash": "h1",
-        "confirmations": [{"chain": "ETH", "height": 100}],
-        "content": {"content": {
-            "tags": ["credit_expense", "type_execution"],
-            "expense": expense,
-        }},
-    }
-    async def fake_fetch_msgs(*a, **kw): return [msg]
-    async def fake_fetch_snaps(*a, **kw):
-        return [(50, {"n1": _node("n1", 0.9, {"0xS1": 100},
-                                   resource_nodes=["r1"])},
-                     {"r1": _rnode("r1", 0.9, "0xCRN1")})]
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
-        fake_fetch_snaps,
+def test_holder_tier_zero_when_flag_off(monkeypatch):
+    _patch(
+        monkeypatch,
+        [_period(HOUR, {"r1": {"execution": 1000, "hold_equivalent": 500}})],
+        [_snap(50, "0xCRN1")],
     )
     result = asyncio.run(compute_rewards(
-        start_time=1.0, end_time=2.0,
+        start_time=HOUR, end_time=2 * HOUR,
         include_holder_tier=False,
     ))
     assert result["holder_tier"][0] == {}
     assert result["holder_tier"][1]["execution_total_aleph"] == 0
+    assert result["credit_revenue"][1]["execution_total_aleph"] == pytest.approx(1.0)
+
+
+def test_period_between_snapshots_uses_earlier_snapshot(monkeypatch):
+    # period HOUR*100 -> height (360000+3600)//12 = 30300, strictly between
+    # the snapshots at 30000 and 31000: the earlier one (owner 0xOLD) applies.
+    ts = 100 * HOUR
+    assert 30000 < (ts + HOUR) // 12 < 31000
+    _patch(
+        monkeypatch,
+        [_period(ts, {"r1": {"execution": 1000, "hold_equivalent": 0}})],
+        [_snap(30000, "0xOLD"), _snap(31000, "0xNEW")],
+    )
+    result = asyncio.run(compute_rewards(
+        start_time=ts, end_time=ts + HOUR,
+    ))
+    credit, _ = result["credit_revenue"]
+    assert credit["0xOLD"] == pytest.approx(0.60)
+    assert "0xNEW" not in credit

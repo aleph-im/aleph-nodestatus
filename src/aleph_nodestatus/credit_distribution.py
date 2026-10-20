@@ -2,6 +2,7 @@ import asyncio
 import bisect
 import logging
 from collections import deque
+from typing import Optional
 
 import aiohttp
 from aleph.sdk.client import AlephHttpClient
@@ -12,7 +13,8 @@ from .erc20 import process_contract_history
 from .ethereum import get_web3
 from .messages import process_message_history
 from .monitored import process_balances_history
-from .settings import settings, PublishMode
+from .revenue import fetch_revenue
+from .settings import settings, PublishMode, resolve_credit_revenue_api_server
 from .status import NodesStatus, prepare_items
 from .utils import get_reward_address
 
@@ -364,41 +366,6 @@ def _distribute_expense(
         return 0, total_aleph, dev_fund
 
 
-async def _fetch_expense_messages(api_server, start_time, end_time, sender=None):
-    """Single paginated fetch of aleph_credit_expense messages."""
-    params = {
-        "msgType": "POST",
-        "contentTypes": "aleph_credit_expense",
-        "startDate": int(start_time),
-        "endDate": int(end_time),
-        "pagination": 500,
-        "page": 1,
-        "sort_order": "1",
-        "sort_by": "tx-time",
-    }
-    if sender:
-        params["addresses"] = sender
-    async with aiohttp.ClientSession() as session:
-        return await _fetch_paginated_messages(session, api_server, params)
-
-
-def _parse_message(msg):
-    """Return (height, expense_type, expense_dict) or (None, None, None)."""
-    height = _extract_eth_height(msg)
-    if height is None:
-        return None, None, None
-    content = msg.get("content", {}).get("content", {})
-    tags = content.get("tags", [])
-    expense = content.get("expense", {})
-    if not expense:
-        return None, None, None
-    if "type_storage" in tags:
-        return height, "storage", expense
-    if "type_execution" in tags:
-        return height, "execution", expense
-    return None, None, None
-
-
 def _project_expense(expense, src_key):
     """Synthesize an expense with the chosen list aliased as credits[]."""
     return {
@@ -411,24 +378,6 @@ def zero_totals():
     return {"storage_total_aleph": 0,
             "execution_total_aleph": 0,
             "dev_fund_total_aleph": 0}
-
-
-def _validate_rewards_aggregates(expense):
-    declared_count = expense.get("rewards_count")
-    declared_amount = expense.get("rewards_amount")
-    rewards = expense.get("rewards", [])
-    if declared_count is not None and declared_count != len(rewards):
-        LOGGER.warning(
-            f"rewards_count mismatch: declared={declared_count}, "
-            f"actual={len(rewards)}"
-        )
-    if declared_amount is not None:
-        actual = sum(r.get("amount", 0) for r in rewards)
-        if abs(actual - declared_amount) > 1:
-            LOGGER.warning(
-                f"rewards_amount mismatch: declared={declared_amount}, "
-                f"actual={actual}"
-            )
 
 
 def _apply_expense_to(rewards, totals, exp_type, expense,
@@ -444,8 +393,9 @@ def _apply_expense_to(rewards, totals, exp_type, expense,
 
 async def compute_rewards(
     start_time, end_time, full_resync=False,
-    include_holder_tier=False, sender=None,
+    include_holder_tier=False,
     dbs=None, end_height=None, web3=None,
+    revenue_api_server: Optional[str] = None,
 ):
     """Pure function: produce credit-revenue and optional holder-tier rewards.
 
@@ -454,11 +404,13 @@ async def compute_rewards(
          "holder_tier":    (rewards_dict, totals_dict)}
     """
     api_server = PublishMode.get_publish_api_server()
-    sender = sender or settings.credit_expense_sender
+    revenue_server = (
+        revenue_api_server or resolve_credit_revenue_api_server()
+    )
 
-    msgs = await _fetch_expense_messages(api_server, start_time, end_time, sender)
-    if not msgs:
-        LOGGER.warning("No credit expenses found in the given time range")
+    periods = await fetch_revenue(revenue_server, start_time, end_time)
+    if not periods:
+        LOGGER.warning("No credit revenue found in the given time range")
         return {
             "credit_revenue": ({}, zero_totals()),
             "holder_tier":    ({}, zero_totals()),
@@ -470,6 +422,14 @@ async def compute_rewards(
         except Exception:
             web3 = None
 
+    parsed = revenue_to_expenses(periods, HeightResolver(web3).height_at_or_before)
+    if not parsed:
+        LOGGER.warning("No credit revenue found in the given time range")
+        return {
+            "credit_revenue": ({}, zero_totals()),
+            "holder_tier":    ({}, zero_totals()),
+        }
+
     if full_resync and end_height is None:
         raise ValueError(
             "end_height is required when full_resync=True (state-machine "
@@ -478,11 +438,11 @@ async def compute_rewards(
 
     if full_resync:
         result = await _compute_rewards_full_resync(
-            dbs, end_height, msgs, include_holder_tier, web3
+            dbs, end_height, parsed, include_holder_tier, web3
         )
     else:
         result = await _compute_rewards_snapshots(
-            api_server, start_time, end_time, msgs, include_holder_tier, web3
+            api_server, start_time, end_time, parsed, include_holder_tier, web3
         )
 
     credit_totals = result["credit_revenue"][1]
@@ -501,7 +461,7 @@ async def compute_rewards(
 
 
 async def _compute_rewards_snapshots(
-    api_server, start_time, end_time, msgs, include_holder_tier, web3
+    api_server, start_time, end_time, parsed, include_holder_tier, web3
 ):
     snapshots = await fetch_node_snapshots(api_server, start_time, end_time)
     if not snapshots:
@@ -514,11 +474,7 @@ async def _compute_rewards_snapshots(
     credit_rewards, credit_totals = {}, zero_totals()
     holder_rewards, holder_totals = {}, zero_totals()
 
-    for msg in msgs:
-        height, exp_type, expense = _parse_message(msg)
-        if expense is None:
-            continue
-
+    for height, exp_type, expense in parsed:
         idx = max(0, bisect.bisect_right(snapshot_heights, height) - 1)
         _, nodes, resource_nodes = snapshots[idx]
 
@@ -529,7 +485,6 @@ async def _compute_rewards_snapshots(
         )
 
         if include_holder_tier and expense.get("rewards"):
-            _validate_rewards_aggregates(expense)
             _apply_expense_to(
                 holder_rewards, holder_totals, exp_type,
                 _project_expense(expense, "rewards"),
@@ -543,15 +498,10 @@ async def _compute_rewards_snapshots(
 
 
 async def _compute_rewards_full_resync(
-    dbs, end_height, msgs, include_holder_tier, web3
+    dbs, end_height, parsed, include_holder_tier, web3
 ):
     """Identical math as snapshot mode but driven by the state machine."""
-    parsed = []
-    for msg in msgs:
-        height, exp_type, expense = _parse_message(msg)
-        if expense is not None:
-            parsed.append((height, exp_type, expense))
-    parsed.sort(key=lambda x: x[0])
+    parsed = sorted(parsed, key=lambda x: x[0])
 
     state_machine = NodesStatus()
     last_seen_txs = deque([], maxlen=100)
@@ -596,7 +546,6 @@ async def _compute_rewards_full_resync(
                               _project_expense(expense, "credits"),
                               nodes, resource_nodes, web3)
             if include_holder_tier and expense.get("rewards"):
-                _validate_rewards_aggregates(expense)
                 _apply_expense_to(holder_rewards, holder_totals, exp_type,
                                   _project_expense(expense, "rewards"),
                                   nodes, resource_nodes, web3)
@@ -616,7 +565,6 @@ async def _compute_rewards_full_resync(
                           _project_expense(expense, "credits"),
                           nodes, resource_nodes, web3)
         if include_holder_tier and expense.get("rewards"):
-            _validate_rewards_aggregates(expense)
             _apply_expense_to(holder_rewards, holder_totals, exp_type,
                               _project_expense(expense, "rewards"),
                               nodes, resource_nodes, web3)

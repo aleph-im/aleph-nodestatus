@@ -1,4 +1,5 @@
 """Client for the CCN credits revenue endpoint."""
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -27,7 +28,7 @@ async def _fetch_window(session, api_server, start, end):
                     f"(from={start}, to={end})"
                 )
             data = await resp.json()
-    except (aiohttp.ClientError, TimeoutError) as e:
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         raise RevenueUnavailable(f"Revenue endpoint error for {url}: {e}") from e
     except ValueError as e:
         raise RevenueUnavailable(f"Malformed revenue body from {url}: {e}") from e

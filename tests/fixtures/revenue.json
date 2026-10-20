@@ -1,0 +1,680 @@
+{
+  "periods": [
+    {
+      "period": 1778054400,
+      "credit_price_aleph": "5.7308924861535e-05",
+      "nodes": {
+        "58824ca94b6cbe4e9563eef08c1a64836ce92b383596c7deb2a319d33da44c6b": {
+          "execution": 413308,
+          "hold_equivalent": 0
+        },
+        "96cdbc0dd5823678b279cfe7d1577bb147ecbca861f0d9e98f2fe6a8f0e0c3c4": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "cbc339425aaad4ce9854105e75e92f1afc17f5cc7817413adc01a69f1e9f874d": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "918d8ebe7ea74c7e053a8408f3c0cddd4da77656b9b33edc117db28a1fdb2f02": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "adaabdfd0294449d9c0fd83e1e6cd7707795a5a4f03c8b900985d1ad3924391f": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "b891a4fd8e3917fdfc93a1e086cd944814f370f2000e04001de0fc5ead785d93": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "26ccecc040a39af57b33dd6e2f2de71fc7e4ce861bc9bc51d90f4b39e1409da6": {
+          "execution": 413308,
+          "hold_equivalent": 0
+        },
+        "49bd28e46a2a4799daf4bd9187b4d37b4339c6e0b35ef17f7bccbbe65cfd2561": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "22293ead252b77d1efd9836d57803071998668da4d838d54b51e374f42b0b0f9": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "a18f80b8d0296e0d93900fd627d25b40d755f8a6ed37623ee190c03370e82725": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "08deff229ebd4f63cbd72a4a76f26aea5b9eeacf87884555cc3ec291ba7b838e": {
+          "execution": 1525543,
+          "hold_equivalent": 0
+        },
+        "7972198e5b9522f4e796f487d0ba1b83a90e1bda6c47f6e510d69ed37678c1d8": {
+          "execution": 28504,
+          "hold_equivalent": 0
+        },
+        "44dc485ab2770045e16c2ca66d9a845da50a728e3ef0c92c011582c5671acd79": {
+          "execution": 14252,
+          "hold_equivalent": 0
+        },
+        "651b27e18cd03d99fe8b93668521ac95652c4aaba17a80fd4d4a61c7b81f20b9": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "df42f1c23b061d6e6aaa904d1cfa669cab2ab1e63b2cb5331280c9baa44d8c87": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "cd1cecc9c27510a9d5159e00ac21c71cd3990f61ce4136027ce66a31d22643e0": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "1d1b5a21871a7607cdcd03daaf87cc814daa2046fa9f233ea5dfacb0aa3490b0": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "3380d06e0b88b44d8d6e07fef1f690c5bdb6be6c6225d840d3e7350c0303ebe1": {
+          "execution": 128268,
+          "hold_equivalent": 0
+        },
+        "f240129b30d53a68ae058eb64692d2fb3d8766c0bfb3581b285c6e4ab39bb7f7": {
+          "execution": 327796,
+          "hold_equivalent": 0
+        },
+        "b40215d058f887c6115c5bc28d7d5b303043fa78faff931de85e379fbd8d4af9": {
+          "execution": 71260,
+          "hold_equivalent": 0
+        },
+        "03c47487268dd9e4a7b757695cb0e6cb9a5f9e6399c86cee690c456a432b0b5c": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "445e4a74012e067c965b64597c90dd372c2dc7b3167a74dff410ff0252c3368c": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "03663199f10525d0c0fbaa184a45af5f36d298b4c1621fa460f7ca640abc1b94": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "8b735b3a1f1bc257dd30d257f58d5d96b468f934eae05983730bcb14e7385f29": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "a48cb552167e3ca50033fac727b09a01c8fe978622931fab5c6ee3e8cdc242af": {
+          "execution": 270788,
+          "hold_equivalent": 0
+        },
+        "3d85dda775492a571153986228b258cb115e7b792b0917d2fd75c92a75fee24d": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "7db2b71cab429e84d5350a44079956b309203152ba1d890e0a25c3835effc992": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "e9ec9ff2d6cceae87a4a0a75e5e596ec23f8c6c51a1ec9e59893b73d03f5f106": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "c977c6100c122a5bb9057ae615b49cacb2b332ec564fb9e442402b204f202f52": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "19d9c16adb25069bf9fe9c8bd9249a9b2afbc3fa234351f5a18465f7153e4668": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "ca02d676f9c7cddd5fe587920f0520561affa1eea24a0eb6fb9c212efabb44a6": {
+          "execution": 570080,
+          "hold_equivalent": 0
+        },
+        "ad602c671a9412256573e5e45f272a494c969ca2273b40d001a838a85ff20495": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "cb764fe80f76cd5ec395952263fcbf0f5d2cc0dfe1ed98c90e13734b3fb2df3e": {
+          "execution": 1421445,
+          "hold_equivalent": 0
+        },
+        "251e8c0ce41661292e824899c84dbabc2217791abd93917d11de1291486dfe5a": {
+          "execution": 356300,
+          "hold_equivalent": 0
+        },
+        "bc3495ad0d9ce4856a80e1ccab81313bef973be71a1bb21d10b37b652983505d": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "8dc56ebed35eb7dbcc86c377179dfb7cd135b393d71d15eef6f9c53a758af68c": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "84089e28da7360e94fc2b2a5b159206dbe5352cbc1ef48595991d96f127537fa": {
+          "execution": 85512,
+          "hold_equivalent": 0
+        },
+        "44525e5741c16cd84c4aa02754d396a033e3e29df8c222eeb5304e9a8a16a744": {
+          "execution": 242284,
+          "hold_equivalent": 0
+        },
+        "b4df6da5438f41350a129bcb67dbb7e36225a41f187d4f315fda40f9e74a0be7": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "d5d69a29acb3df8e4aca0c54608e87c66fb39c4e932f651937fa9b57adeedecb": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "d704be0b15e2fb600c5998581cb9af01bd74a9cf61b586ccc849ad78e0709d77": {
+          "execution": 71260,
+          "hold_equivalent": 0
+        },
+        "f71359a28364c54c94bfb52309d20af27f9fa8dcebbc602768e36a373b4e9c53": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "cb7c961ce231ac78f4f90245d0d149ad6dfede74411600283e6c64e9e452895e": {
+          "execution": 1250421,
+          "hold_equivalent": 0
+        },
+        "d6a6bf101b79eb79eb9de73f29a650988d889aad26bdf6333388cda7fb00a32a": {
+          "execution": 1425200,
+          "hold_equivalent": 0
+        },
+        "3c2a7940214a6fa6d6911b12797f134f7aaaf56461f005c42901d3d9f9d587f0": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "8e99e8a5d8c42741f7049680c968ef78a8726bda21f1c27615311100457df68b": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "b2b4568c952d504445d8e6ccef17923df8a7b091bfabe992344e0e011cef2608": {
+          "execution": 456064,
+          "hold_equivalent": 0
+        },
+        "ce7fc29e5dc311e6738554c6cb036e8494d1c09c902a5ddb78a221d63cc8e49e": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "fc011c28fa00392807581efc35d67d7de1b3e27b2e4710c03374a0a03be650b7": {
+          "execution": 327796,
+          "hold_equivalent": 0
+        },
+        "0e5adb4ac76080be2700cf65d75deeb11cffbbe62fa52fa0b1361bdf0d23943c": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "678f12c3a699103572663b85bbcd0142bd1920f833314c222d7beb6fbc3de378": {
+          "execution": 598583,
+          "hold_equivalent": 0
+        },
+        "c69ad08878104021adaddc3fc78529d1d40cc55d4aaf959dac6dd5e8eea0c954": {
+          "execution": 199528,
+          "hold_equivalent": 0
+        },
+        "ea19f4ec4c8c1b73c443381a319f83cfca626fe5dbbd3d617a89ce0468338e53": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "a4b31bc4ed73fdfc44b5c56a8621f855fd6e6644f54d8331533c731175465da2": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "18597eb923d1810e34a3bb8fc1df47372bfb19ecf082fc9e20801de57bacdcd0": {
+          "execution": 299292,
+          "hold_equivalent": 0
+        },
+        "e38ecbc04d5b1eabfbced66cd31ae6f2be3f5f10ebf4c513d2d23f5a1a440229": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "5479a4fba86b2c48a4f51c78427d5d74e751306a10b2ea09d4e384fbc71c5ff2": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "7e7a7561ab041e385c39b309f24d2ebbde970341a095b38e5338fc773df7318d": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "47c239c1adf95df8cff9f878fac53ba6f3cc2b3c705508a618a0b60bbc19ff55": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "71348b82acc2e621ec36ce9e3f623ef0688ed42e6360f29d657d5b84c26dacb4": {
+          "execution": 29318,
+          "hold_equivalent": 0
+        },
+        "c9a99f635d13eca7695dc43a162ce6d0601160651df2f064d2dba15a3899eac6": {
+          "execution": 128268,
+          "hold_equivalent": 0
+        },
+        "6f3d9f424fa8d9362a0584097a02b864638451c7acad7badccf657850477039b": {
+          "execution": 3776780,
+          "hold_equivalent": 0
+        },
+        "1b8e831271178a03f2d0a8f1a7946dc5159f0d4c7b7ebb1c71c48247b35a9dd1": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "8d72408211918d076f32df40d4614307c39ab273ec4a7cf63494c22dc36809d7": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "c218008d10c81f63f3bed086c41a8d2566699101d8a4e909d146c2c80aacb363": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "8f94bfe00a59985d6b7cff84319a95dca33179cfb7b0eb29ce1a908ff5df4f76": {
+          "execution": 427560,
+          "hold_equivalent": 0
+        },
+        "c8e2095d5cef0e2118cf3b257c8c4a5cc152b7f521eb99d37789b73946f4f1ab": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "4f6c7aced6f4bae149683db9b0b5990eac3fcdb02a170d3b84bdec3c41fa4d9c": {
+          "execution": 456064,
+          "hold_equivalent": 0
+        },
+        "3f86f217ae7f9cdfd36ff8c9d255ce56a4c8667616e52ac3f16047933758fb73": {
+          "execution": 256536,
+          "hold_equivalent": 0
+        },
+        "444fab45b6aeec1fe453e73ac08d533f396777fad0113d415498aeb363eb1048": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "8ccb62bd1f482bae0ce94805178d109a5279bb1844015bece5319ea837bc4ef2": {
+          "execution": 14252,
+          "hold_equivalent": 0
+        },
+        "bb0aa1a9fc7566286c0db32cd5c660066017430390ca779da4d3a241fa07c337": {
+          "execution": 530144,
+          "hold_equivalent": 0
+        },
+        "fe80aa6a9f81572bed2104e9bfcccea9f3e13adf0709d1874852a000479d2673": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "34a1ada0ffc59e6b1e7103bc34aa73a3f5c4f52a6b5812e4a988834fdf897150": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "01a3143b384ca43a3af338031b03ae86c0a4e139a24b848475d3ddb9bfbce8fa": {
+          "execution": 356882,
+          "hold_equivalent": 0
+        },
+        "9086d0b7a0fbf2c0c728184414ad96563e67c422b5d8be65bc5784c32c8c1b11": {
+          "execution": 441812,
+          "hold_equivalent": 0
+        },
+        "ed11daa9355ffd5624c11fe643bc265feed6069e3a998257dac08eede591d68f": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "a71db871da007f18d1e9b563924bb876c04083502230a2d0a3a6a2dc95014987": {
+          "execution": 242284,
+          "hold_equivalent": 0
+        },
+        "287c2946294f13b1661772f9764c3a06d36aaa73ead090e0081666487838a9b7": {
+          "execution": 456064,
+          "hold_equivalent": 0
+        },
+        "0f78a2cda1f29210514061a38e01e8ed8b6bf0ca45d51e85653f9f2d8c012672": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "9879f4fbc84abca62cfaa95d6b62f702168336ecf2e2886d3c35a7c867142884": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "4c52cdd772de1e35e539b79aed5d80c7d5c373004705b218084619f8adcb9b00": {
+          "execution": 470316,
+          "hold_equivalent": 0
+        },
+        "bbc5e0a9a9b9d67f59fbb8d79bd7b25b613b8064d5f7130224eb49c65d69fea6": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "b312658603bf733ec76aab382aedd5176dccb768b976e50343bafde51680edec": {
+          "execution": 370552,
+          "hold_equivalent": 0
+        },
+        "ddbcfac08fc45bc5488c53b94d9d25cfa322f1528d2b45432b07c273bd380c3e": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "01249788857fc7fc1b3ad95cc9caab6c1c25aace8bee0298313282c9f2373e90": {
+          "execution": 399056,
+          "hold_equivalent": 0
+        },
+        "1af361cd7602e6f3e654e8dbcee23a40ca94d03006e0dc48a377c8d074f04194": {
+          "execution": 14252,
+          "hold_equivalent": 0
+        },
+        "7214b5033da595105e3fb69c8eaf7f3cf2f62888804340881edada6e69c9f8f7": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "374b7a8564c2a7441206ab5be9b06f2dd776f4146909d88d1eed9a11a7ec67ee": {
+          "execution": 356300,
+          "hold_equivalent": 0
+        },
+        "e0682b744e56456461916398ba8a926a38b8a94174e1cef8cbe1dbe77c0dda46": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "05b50a9554a586dbd6bdeec90c260d3ecb20b154cbf6627ae89c063de526c1e0": {
+          "execution": 399056,
+          "hold_equivalent": 0
+        },
+        "65285db6018b90de6a1e7c0bc6aa02ec30d7a569e6b1e9acd907ed82d6e34ac5": {
+          "execution": 1421445,
+          "hold_equivalent": 0
+        },
+        "1b8dc192a8930eaac6746d0777f32701c7b04969da18b0950e202e467cdd7a39": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "83e344c3d0dfe8ec5e5db93128640e2dfb8aeb6e73b0a4a5f4d9ff3c6633509b": {
+          "execution": 14252,
+          "hold_equivalent": 0
+        },
+        "4b1e1ac7077f6021a4075d3d182346ce605a5c933bc5035cc2f09ccc2a12e336": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "edaf024fc73738ddd8aa9ddea62118aaf79447a56a194234c59df8f97d6437f8": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "698beabe2ad482a2a5100bc18922a3edebbf6f72a09898c6d2cb243c3174e9d7": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "983aefc6a6c16c598f65f658d9792d73d261ea21232d4d34136e246cde2df381": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "216acd7dd3ef9a19fe6203ef989e2186661fb1fafb4ebc2077c6e59244fe3362": {
+          "execution": 199528,
+          "hold_equivalent": 0
+        },
+        "d02cc93b18e23f62556cc574fa3696b350cae36e760c43186cbb866c6677c628": {
+          "execution": 541576,
+          "hold_equivalent": 0
+        },
+        "b170f16e8f1d1531ee7acd0863f6e2164557a640e065f7285c823924c4b293bc": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "7d730cad3a87a2d620a43c176aa1dac5916fba3631e45d7dc022e25f641ac3f0": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "ab3d0378215f1287bdf3bac6406acb09255382b4d512a85be9f57117a42fa708": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "05006d61dc094b1443d3284eaaf813a4ec18b340e695e5d7d65678cd43c7269a": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "a7f62a06c06914d03d336d3091be5fa7a45e76f5a4f19901b7bed905a2a1dca5": {
+          "execution": 399056,
+          "hold_equivalent": 0
+        },
+        "0517794f8dfc4ef4886df0b296d609d533d50e7ace70085e963a213ce0f1ce87": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "2c043143e44c1644831e423e5d8fdca5ce7faaab932c13a177b7c9c390c973b9": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "e3e5904c878d9adc3cc50e88979c4079b2223e4666dff0422a363f2d2327cd1e": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "bf191e73892fdaab8145fbafd37df6b2e38ed940875b84726906289002c35d61": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "17d780db61421b7028525421039319c4037ccbc2c33be749e739a6cc33daeb23": {
+          "execution": 213780,
+          "hold_equivalent": 0
+        },
+        "1ea7989d3dd1e4e69618c946aaa91e9a147086d24f00c19234f8dad6a64d968a": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "5e3ded91189bcf23125d947b669b3d4ead092107899e88914191a31e479a9449": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "b1dff1e98d460f85c7d6cb558f332d697b7b60e49756d3d63327581b406666ad": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "83ed91466ff19d61ceaaeb08a0979ea25e51d1e7d8f7b1f255ff0f9c910531d1": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "569544458a2fed7aedc08896b6a7800d6df3f684bff121bd09d9c3f84ca54b49": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "9cdcb6e710ae3e3df62b59e21f8a313b6f702d602aad2ba05c8d0d4ef64e73e0": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "aaa2e3b1784e33ebf5a4109921fbc2382b7836d4d081a379c46b409afb8d19da": {
+          "execution": 28504,
+          "hold_equivalent": 0
+        },
+        "fef42a45056bda77bdc5091050c637752d4112bee3516abad9bfb1df97faf530": {
+          "execution": 128268,
+          "hold_equivalent": 0
+        },
+        "6ce0489b88e93a991950f42a150a3cb4183410f93262f568bb95488d9f747171": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "acc29691fd793ec75f6d80d7ddfe63848fa3d09af30fc9f4a1efed890f20a005": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "1dac754e9957ca46f5e932a1cfb6659aaad590cb2cd7216433d262924191f7e8": {
+          "execution": 327796,
+          "hold_equivalent": 0
+        },
+        "1610a5d3db136653a0c53474a26701de60b6ab0c9d7a3a5de9c33f51d0c2f6f9": {
+          "execution": 356300,
+          "hold_equivalent": 0
+        },
+        "550ec6cbbab3bbdabd59ad705988e3eba9bd0d5529f4a6c69db8c198a42cfa60": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "48a612d7cf8327894d9d3846dd230fca563758962ba704068d597a17d7619e69": {
+          "execution": 929054,
+          "hold_equivalent": 0
+        },
+        "313beae91e638dceac08d425f4bfa368d4fadb2e9e94d666efc53a02705c3472": {
+          "execution": 2390,
+          "hold_equivalent": 0
+        },
+        "60a22d08f831d1baa8b52ef474e16de8ff1f90b06b898a978482faefdadd02c4": {
+          "execution": 142520,
+          "hold_equivalent": 0
+        },
+        "469970c34871b7f99b5c57a337117307dda7318c7ace2e3afa43f3d809e3f666": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "45b84d314b05144a0ed440ff06d35944aec3958a987ed9f010408863d6a9f581": {
+          "execution": 199528,
+          "hold_equivalent": 0
+        },
+        "f58b8eacf83643164ae469a1bbcf4ea28abea8d9305aa1dc90a4999273c4b8d7": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "2f28be3135cff710969c48bde773a7ffe3e67baa36d5dccd357824849bf043d9": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "9a8845f7a7e8ff59e9cc4054590480b776868c29f5df0af9ac0adf3cd15b0465": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "c3d256e94c9ce8eb2045adc15c724d064bd68f46d7fa16b596574c6cd134d35c": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "0dfee3948e8d2c7f453c854dad07341b4b8bdc44b6179d1327f96577bef1fc2f": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "2d237d1de523ef0db148784094ed067293b30bd76f26ace2c93f0278950e216f": {
+          "execution": 356300,
+          "hold_equivalent": 0
+        },
+        "0553cf4fb2919999209c99acc42f125bb955ab50647a545c583a795ab142dbcf": {
+          "execution": 199528,
+          "hold_equivalent": 0
+        },
+        "d3a92d0ef9c775b6272936132468da423a731b09605ea7c199db3e2f8e044717": {
+          "execution": 28504,
+          "hold_equivalent": 0
+        },
+        "da75ff278a9dc5e9ff213462e497faf2f1d4c7e1f110a302c997adf89d25605c": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "31c1035d41c79d876e3d57f5a44647c2352ebcc607cded10b2b1e432ae2bcae0": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "498d37ea039fe81830bd654427991cf41017127b8cf1085d1d8e0f6766b91c8b": {
+          "execution": 513072,
+          "hold_equivalent": 0
+        },
+        "11644dd10d38f2f8569588852b570f601a839bc81dc61ee0fc7a9f2142f9062b": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "e6f7bd8ae68c5565bc7988543e0fe2ce209fd1ffdbe46639c694a81eb14d1e4a": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "7190f04503dd7e01e525695820da1ded5b044aa3c9ac55b329fe1fe8eb729121": {
+          "execution": 342636,
+          "hold_equivalent": 0
+        },
+        "9cc1950e623edf5a27d728d1b1280565cdc2aa1cefacfe1b1441cfaaebd01cba": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "ec212b1bbc1c847afe348a897ba28876324142c4211ad1005352fb43c159af6c": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "4580565cf15ba7bde7bd520093766dbb1e0c4ce18c4dbbfb91666803e96d3b2c": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "dc3d1d194a990b5c54380c3c0439562fefa42f5a46807cba1c500ec3affecf04": {
+          "execution": 2596004,
+          "hold_equivalent": 0
+        },
+        "a5bc6edcedc63e644253720c9ffdc72f44daeff82cbfeb1cf6ba4a0de1f284e6": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "c62cfa4c9f8ef45c8207910bf8feb878dddd8bc91d603923137b166094394ebe": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "9ad5c8b7bb6f135d9f632b4bb4ec25848e8445aaf9b8e6ddfef1b95233cad934": {
+          "execution": 342048,
+          "hold_equivalent": 0
+        },
+        "8535dd3a410b31512434bda89a3ecfaab5cf91d98ed462c051565b254954f2d0": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "7394952904ea052eeed8d8820bc1749263b86402ecd940766e72123b844676e7": {
+          "execution": 285040,
+          "hold_equivalent": 0
+        },
+        "21adb56408c69607290512a24d166b3156b62304e42ef4a402442e28095722b8": {
+          "execution": 299292,
+          "hold_equivalent": 0
+        },
+        "68413852460735f13bf8390173498fc9f9cf542f0ad8d46f3815d5652fa0e800": {
+          "execution": 128268,
+          "hold_equivalent": 0
+        },
+        "514e2c9000063bf73dbfa5d9742831173d7a6aae6593c8bd5a29fa27cf6de7f6": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "d388eed507fa8adc2f58291877d03391f5c9a5831268b6f696b9e4b83de74275": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "d346c5d0d6f1641c91ffcc646517d0ff49c43bf71d82f0e9c7ca2dd605687f6d": {
+          "execution": 30348,
+          "hold_equivalent": 0
+        },
+        "cd05579fee090e7e4e4dcde254a75ccd0e76dacc216692e3e5f789f8ca0c449d": {
+          "execution": 399056,
+          "hold_equivalent": 0
+        },
+        "7db9abf0424251cd47167d851db2e7d7a5c5805ff63ce98dc29e52d425b6ad5f": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "3ed9e18fa8583b3bb5b0956ecf6eee696339f1eb8f11bd28ecdbb05d6140dd6e": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "4bc3ae293ab2e06277f499fcd1b433a6f96481a19586472ae26d4bc41c6c3f0b": {
+          "execution": 114016,
+          "hold_equivalent": 0
+        },
+        "d5338f98b66ceecbeb09d43acc03889e54be063fc700d751fae432d366b5c396": {
+          "execution": 228032,
+          "hold_equivalent": 0
+        },
+        "5a8b4f5d339be99b8ea3fcb85c2799191277bddd30e605559188ff5bdd97e641": {
+          "execution": 14252,
+          "hold_equivalent": 0
+        },
+        "18de7c5d3112f5f189dfdf031ec204e8ac38ef8681796107d21254cf01d84887": {
+          "execution": 199528,
+          "hold_equivalent": 0
+        },
+        "47e6118e87587485777f645d9bb4f9b349168c713826600821c5c62d6cf2e1af": {
+          "execution": 185276,
+          "hold_equivalent": 0
+        },
+        "b23cdb737b34eb1aaa30a80ac163323b488a830d8405c44ba3457e731100c90c": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        },
+        "851272d9feb779bf3ad6db2ec1865f77f1f53cfa63b0d0592e762d055c56fc49": {
+          "execution": 413308,
+          "hold_equivalent": 0
+        },
+        "e0785c70ac8077509365819001af480cc24bcaf14f52ad2a5290543442facfa1": {
+          "execution": 171024,
+          "hold_equivalent": 0
+        }
+      },
+      "storage": 0,
+      "execution_total": 49856661
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 """End-to-end dry-run integration test against recorded fixtures.
 
-Mocks the high-level fetchers (expense messages, node snapshots), the on-chain
+Mocks the high-level fetchers (CCN revenue periods, node snapshots), the on-chain
 process() extraction, and the Aleph post. Asserts that --dry-run produces no
 side effects and emits a DRY-RUN summary.
 """
@@ -28,24 +28,33 @@ from aleph_nodestatus.commands import distribute_credits
 FIX = Path(__file__).parent / "fixtures"
 
 
+def _patch_revenue(monkeypatch, revenue):
+    """Patch the CCN revenue fetch and the timestamp->height mapping."""
+    async def fake_fetch_revenue(*a, **kw):
+        return revenue["periods"]
+
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.fetch_revenue",
+        fake_fetch_revenue,
+    )
+    monkeypatch.setattr(
+        "aleph_nodestatus.credit_distribution.HeightResolver.height_at_or_before",
+        lambda self, ts: ts // 12,
+    )
+
+
 @pytest.fixture
 def patched_pipeline(monkeypatch):
     """Patch external I/O so the orchestrator runs end-to-end in-memory."""
-    expense_msg = json.loads((FIX / "expense_execution.json").read_text())
+    revenue = json.loads((FIX / "revenue.json").read_text())
     snapshot = json.loads((FIX / "snapshot.json").read_text())
-
-    async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
         return [(snapshot["height"], nodes, rnodes)]
 
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
+    _patch_revenue(monkeypatch, revenue)
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
         fake_fetch_snaps,
@@ -123,10 +132,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     as unallocated rather than silently zeroed.
     """
     import json as _json
-    expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
-
-    async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
+    revenue = _json.loads((FIX / "revenue.json").read_text())
 
     # Return empty snapshot list — but compute_rewards needs at least one
     # snapshot for the credit-revenue path. So we have to disable credit_revenue
@@ -134,10 +140,7 @@ def test_wage_unallocated_when_no_snapshots(monkeypatch):
     async def fake_fetch_snaps(*a, **kw):
         return []
 
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
+    _patch_revenue(monkeypatch, revenue)
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
         fake_fetch_snaps,
@@ -189,26 +192,19 @@ def test_balance_safety_aborts_when_short(monkeypatch):
     (credit_revenue, holder_tier, wage_subsidy) produced the rewards.
     """
     import json as _json
-    expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
-    # Inject rewards[] into the fixture so holder_tier path produces rewards
-    expense_msg["message"]["content"]["content"]["expense"]["rewards"] = [
-        {"amount": 10_000_000, "node_id": "test-crn-1",
-         "address": "0xH1"},
-    ]
+    revenue = _json.loads((FIX / "revenue.json").read_text())
+    # Inject a hold_equivalent so the holder_tier path produces rewards
+    revenue["periods"][0]["nodes"]["test-crn-1"] = {
+        "execution": 0, "hold_equivalent": 10_000_000,
+    }
     snapshot = _json.loads((FIX / "snapshot.json").read_text())
-
-    async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
         return [(snapshot["height"], nodes, rnodes)]
 
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
+    _patch_revenue(monkeypatch, revenue)
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
         fake_fetch_snaps,
@@ -254,21 +250,15 @@ def test_balance_safety_aborts_for_credit_revenue_only(monkeypatch):
     holder_tier, no wage) — the previous gate was too narrow.
     """
     import json as _json
-    expense_msg = _json.loads((FIX / "expense_execution.json").read_text())
+    revenue = _json.loads((FIX / "revenue.json").read_text())
     snapshot = _json.loads((FIX / "snapshot.json").read_text())
-
-    async def fake_fetch_msgs(*a, **kw):
-        return [expense_msg["message"]]
 
     async def fake_fetch_snaps(*a, **kw):
         nodes = {n["hash"]: n for n in snapshot["nodes"]}
         rnodes = {r["hash"]: r for r in snapshot["resource_nodes"]}
         return [(snapshot["height"], nodes, rnodes)]
 
-    monkeypatch.setattr(
-        "aleph_nodestatus.credit_distribution._fetch_expense_messages",
-        fake_fetch_msgs,
-    )
+    _patch_revenue(monkeypatch, revenue)
     monkeypatch.setattr(
         "aleph_nodestatus.credit_distribution.fetch_node_snapshots",
         fake_fetch_snaps,

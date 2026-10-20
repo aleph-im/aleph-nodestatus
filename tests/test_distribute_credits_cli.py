@@ -41,7 +41,7 @@ def test_cli_help_lists_new_flags():
 
 
 def test_resolve_feature_flags_holder_tier_requires_credit_revenue(capsys):
-    """holder_tier piggy-backs on credit_revenue's expense fetch; if
+    """holder_tier piggy-backs on credit_revenue's revenue fetch; if
     credit_revenue is disabled, holder_tier must be forced off (and a
     warning emitted) rather than silently producing an empty stream."""
     from aleph_nodestatus.commands import _resolve_feature_flags

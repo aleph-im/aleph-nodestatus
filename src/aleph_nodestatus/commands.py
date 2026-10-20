@@ -366,7 +366,6 @@ async def process_credit_distribution(
             start_time, end_time,
             full_resync=full_resync,
             include_holder_tier=flags.get("holder_tier", False),
-            sender=settings.credit_expense_sender,
             dbs=dbs, end_height=end_height, web3=web3,
         )
 

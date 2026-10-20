@@ -90,7 +90,6 @@ class Settings(BaseSettings):
 
     voucher_indexer_endpoint = "https://vouchers.api.2n6.io"
 
-    credit_expense_sender: str = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
     status_sender: str = "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"
 
     # Credit distribution shares (storage, 95% total)
