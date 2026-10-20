@@ -6,6 +6,11 @@ Cutover tool: always exits 0.
 Usage:
     python scripts/compare_revenue_vs_expenses.py --from TS --to TS \
         [--api-server URL] [--expense-sender ADDR] [--json] [--old-only]
+
+The default --expense-sender is the signer (message `sender`) of the
+production expense posts. The old backoffice address
+0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC is the content owner, not the
+signer; messages.json?addresses= filters on the sender.
 """
 import argparse
 import asyncio
@@ -15,7 +20,7 @@ from collections import defaultdict
 
 import aiohttp
 
-DEFAULT_SENDER = "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC"
+DEFAULT_SENDER = "0x6aeaEEb08720DEc9d6dae1A8fc49344Dd99391Ac"
 
 
 async def fetch_expense_messages(api_server, start_time, end_time, sender):
@@ -166,7 +171,11 @@ def main():
     ap.add_argument("--from", dest="from_time", type=int, required=True)
     ap.add_argument("--to", dest="to_time", type=int, required=True)
     ap.add_argument("--api-server", default="https://api2.aleph.im")
-    ap.add_argument("--expense-sender", default=DEFAULT_SENDER)
+    ap.add_argument(
+        "--expense-sender", default=DEFAULT_SENDER,
+        help="signer (message sender) of the production expense posts; "
+             "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC is the content owner, "
+             "not the signer, and messages.json?addresses= filters on the sender")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--old-only", action="store_true",
                     help="skip the CCN revenue source (not deployed yet)")
