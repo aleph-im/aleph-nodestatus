@@ -21,6 +21,74 @@ LOGGER = logging.getLogger(__name__)
 CREDIT_DISTRIBUTION_POST_TYPE = "credit-rewards-distribution"
 
 
+class HeightResolver:
+    """Map a unix timestamp to the greatest block height whose timestamp is
+    <= ts, by binary search over block timestamps. Results are memoised per
+    ts; the search starts from the last resolved height when queries are
+    monotonic."""
+
+    def __init__(self, web3):
+        self.web3 = web3
+        self._cache = {}
+        self._last_ts = None
+        self._last_height = 0
+
+    def _block_ts(self, n):
+        return self.web3.eth.get_block(n).timestamp
+
+    def height_at_or_before(self, ts):
+        if ts in self._cache:
+            return self._cache[ts]
+        lo = self._last_height if (
+            self._last_ts is not None and ts >= self._last_ts
+        ) else 0
+        hi = self.web3.eth.block_number
+        # invariant: answer in [lo, hi]
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self._block_ts(mid) <= ts:
+                lo = mid
+            else:
+                hi = mid - 1
+        self._cache[ts] = lo
+        if self._last_ts is None or ts >= self._last_ts:
+            self._last_ts, self._last_height = ts, lo
+        return lo
+
+
+def revenue_to_expenses(periods, height_for):
+    """Adapt CCN revenue periods to (height, expense_type, expense) tuples,
+    sorted by height, "execution" before "storage"."""
+    out = []
+    for p in periods:
+        h = height_for(p["period"] + 3600)
+        price = float(p["credit_price_aleph"])
+        nodes = p.get("nodes") or {}
+        credits = [
+            {"amount": n["execution"], "node_id": nid}
+            for nid, n in nodes.items()
+            if n["execution"] > 0
+        ]
+        rewards = [
+            {"amount": n["hold_equivalent"], "node_id": nid}
+            for nid, n in nodes.items()
+            if n["hold_equivalent"] > 0
+        ]
+        if credits or rewards:
+            out.append((h, "execution", {
+                "credit_price_aleph": price,
+                "credits": credits,
+                "rewards": rewards,
+            }))
+        if p.get("storage", 0) > 0:
+            out.append((h, "storage", {
+                "credit_price_aleph": price,
+                "credits": [{"amount": p["storage"]}],
+            }))
+    out.sort(key=lambda t: (t[0], t[1] != "execution"))
+    return out
+
+
 def _shares_for(expense_type):
     if expense_type == "storage":
         return dict(
