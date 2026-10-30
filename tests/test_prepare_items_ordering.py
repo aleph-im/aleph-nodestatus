@@ -12,7 +12,7 @@ The fix: tiebreak deterministically on (message_time, item_hash).
 """
 import asyncio
 
-from aleph_nodestatus.status import prepare_items
+from aleph_nodestatus.status import item_sort_key, prepare_items
 from aleph_nodestatus.utils import merge
 
 
@@ -44,7 +44,7 @@ async def _drain():
         for msg in APICULTOR_OPS
     ]
     return [item for _, _, (_, item) in
-            [tup async for tup in merge(*iterators)]]
+            [tup async for tup in merge(*iterators, key=item_sort_key)]]
 
 
 def test_prepare_items_orders_deterministically_within_block():
@@ -70,3 +70,24 @@ def test_prepare_items_orders_create_before_link_within_block():
             f"{link} merged before ccn_create — link precondition would fail "
             f"and the linkage would be silently dropped"
         )
+
+
+def test_merge_does_not_compare_dict_payloads():
+    """Two balance updates at the same height share tiebreak (0, "") and item
+    type, so a payload comparison would raise dict < dict. The sort key must
+    stop before the payload."""
+    height = 15_179_070
+    first = ({"0xa": 1}, "ETH", ["0xa"])
+    second = ({"0xb": 2}, "ETH", ["0xb"])
+    iterators = [
+        prepare_items("balance-update", _async_iter([(height, item)]))
+        for item in (first, second)
+    ]
+    out = asyncio.run(
+        _collect(merge(*iterators, key=item_sort_key))
+    )
+    assert [item for _, _, (_, item) in out] == [first, second]
+
+
+async def _collect(iterator):
+    return [item async for item in iterator]

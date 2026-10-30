@@ -32,6 +32,16 @@ EDITABLE_FIELDS = [
 ]
 
 
+def item_sort_key(item):
+    """Total order for merge: height, deterministic tiebreak, item type.
+
+    Payloads may contain dicts, so they must never take part in heap
+    comparisons; equal (height, tiebreak) must fall through to a scalar.
+    """
+    height, tiebreak, (item_type, _payload) = item
+    return height, tiebreak, item_type
+
+
 async def prepare_items(item_type, iterator):
     async for height, item in iterator:
         # Tiebreaker for items sharing a block height. For Aleph messages, prefer
@@ -183,7 +193,9 @@ class NodesStatus:
         return multiaddress
 
     async def process(self, iterators):
-        async for height, rnd, (evt_type, content) in merge(*iterators):
+        async for height, rnd, (evt_type, content) in merge(
+            *iterators, key=item_sort_key
+        ):
             changed = True
             if evt_type == "balance-update":
                 balances, platform, changed_addresses = content
