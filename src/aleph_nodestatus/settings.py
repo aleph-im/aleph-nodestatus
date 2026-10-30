@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     scores_senders: List[str] = ["0x4D52380D3191274a04846c89c069E6C3F2Ed94e4", "0x4Ec8b55e73F5f32118a90B8FD555706bD5dd42e7"]
     scores_post_type: str = "aleph-scoring-scores"
     
-    scores_discard_periods: List[List[int]] = [[23579375, 23631694]]
+    scores_discard_periods: List[List[int]] = [[23579375, 23631694], [24451300, 24566100]]
 
     reward_start_height: int = 11519440
     reward_nodes_daily: int = 15000
