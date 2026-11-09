@@ -21,6 +21,12 @@ DEFAULT_WINDOW_SIZE = 86400
 # Default start timestamp (Jan 1, 2020) - before Aleph mainnet launch
 DEFAULT_START_TIMESTAMP = 1577836800
 
+DEFAULT_PAGE_SIZE = 1000
+DEFAULT_MAX_RETRIES = 8
+DEFAULT_RETRY_DELAY = 5
+MAX_RETRY_DELAY = 60
+MAX_PAGES = 10000
+
 
 def parse_window_size(window_str: str) -> int:
     """
@@ -135,6 +141,123 @@ async def get_message_result(
         return earliest, message
 
 
+async def _fetch_message_page(
+    session,
+    url,
+    params,
+    max_retries=DEFAULT_MAX_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+):
+    last_error = "unknown error"
+    for attempt in range(max_retries):
+        try:
+            async with session.get(url, params=params, timeout=30) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                last_error = f"HTTP {resp.status}"
+                if resp.status not in (408, 429) and resp.status < 500:
+                    raise RuntimeError(
+                        f"API error {resp.status} for window "
+                        f"{params['startDate']}-{params['endDate']}"
+                    )
+        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as exc:
+            last_error = str(exc)
+
+        if attempt + 1 < max_retries:
+            delay = min(retry_delay * (2 ** attempt), MAX_RETRY_DELAY)
+            logger.warning(
+                "API error for window %s-%s page %s (attempt %s/%s): %s; "
+                "retrying in %ss",
+                params["startDate"],
+                params["endDate"],
+                params["page"],
+                attempt + 1,
+                max_retries,
+                last_error,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Failed to fetch window {params['startDate']}-{params['endDate']} "
+        f"page {params['page']} after {max_retries} attempts: {last_error}"
+    )
+
+
+async def _fetch_message_window(
+    session,
+    api_server,
+    base_params,
+    start_timestamp,
+    end_timestamp,
+    page_size=DEFAULT_PAGE_SIZE,
+    max_retries=DEFAULT_MAX_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+):
+    url = f"{api_server}/api/v0/messages.json"
+    messages = []
+    seen_hashes = set()
+    total = None
+    page = 1
+
+    while True:
+        params = {
+            **base_params,
+            "startDate": start_timestamp,
+            "endDate": end_timestamp,
+            "pagination": page_size,
+            "page": page,
+        }
+        payload = await _fetch_message_page(
+            session,
+            url,
+            params,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+        )
+        page_messages = payload.get("messages", [])
+        if not isinstance(page_messages, list):
+            raise RuntimeError(
+                f"Invalid messages payload for window "
+                f"{start_timestamp}-{end_timestamp} page {page}"
+            )
+
+        for message in page_messages:
+            item_hash = message.get("item_hash")
+            if item_hash is None:
+                raise RuntimeError(
+                    f"Message without item_hash in window "
+                    f"{start_timestamp}-{end_timestamp} page {page}"
+                )
+            if item_hash not in seen_hashes:
+                seen_hashes.add(item_hash)
+                messages.append(message)
+
+        payload_total = payload.get("pagination_total")
+        if payload_total is not None:
+            total = int(payload_total)
+
+        if not page_messages:
+            break
+        if total is not None and len(messages) >= total:
+            break
+        if page >= MAX_PAGES:
+            raise RuntimeError(
+                f"Exceeded {MAX_PAGES} pages for window "
+                f"{start_timestamp}-{end_timestamp}"
+            )
+
+        page += 1
+
+    if total is not None and len(messages) < total:
+        raise RuntimeError(
+            f"Incomplete response for window {start_timestamp}-{end_timestamp}: "
+            f"expected {total} messages, got {len(messages)}"
+        )
+
+    return messages
+
+
 async def process_message_history(
     tags,
     content_types,
@@ -240,7 +363,6 @@ async def process_message_history(
         "msgType": message_type,
         "tags": ",".join(tags),
         "contentTypes": ",".join(content_types),
-        "pagination": 10000000000,  # High value to get all messages in window
         "sort_order": "1",  # Always ascending within window for consistency
         "sort_by": "tx-time"
     }
@@ -249,9 +371,6 @@ async def process_message_history(
         base_params["addresses"] = address_param
 
     logger.info(f"Starting window-based iteration from {start_timestamp} to {end_timestamp} (window_size={window_size}s)")
-
-    max_retries = 3
-    retry_delay = 5  # seconds
 
     async with aiohttp.ClientSession() as session:
         current_start = start_timestamp
@@ -262,70 +381,41 @@ async def process_message_history(
             window_end = min(current_start + window_size, end_timestamp)
             window_count += 1
 
-            params = {
-                **base_params,
-                "startDate": current_start,
-                "endDate": window_end
-            }
+            messages = await _fetch_message_window(
+                session,
+                api_server,
+                base_params,
+                current_start,
+                window_end,
+            )
 
-            # Retry logic for failed API calls
-            success = False
-            for attempt in range(max_retries):
-                try:
-                    async with session.get(
-                        f"{api_server}/api/v0/messages.json", params=params, timeout=30
-                    ) as resp:
-                        if resp.status != 200:
-                            logger.warning(f"API error {resp.status} for window {current_start}-{window_end} (attempt {attempt + 1}/{max_retries})")
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(retry_delay)
-                                continue
-                            else:
-                                logger.error(f"Failed to fetch window after {max_retries} attempts, skipping")
-                                break
+            logger.debug(
+                f"Window {window_count}: {current_start}-{window_end}, "
+                f"got {len(messages)} messages"
+            )
 
-                        items = await resp.json()
-                        messages = items.get("messages", [])
+            for message in messages:
+                item_hash = message["item_hash"]
 
-                        logger.debug(f"Window {window_count}: {current_start}-{window_end}, got {len(messages)} messages")
+                # Skip if already seen (handles boundary duplicates)
+                if item_hash in seen_hashes:
+                    continue
 
-                        for message in messages:
-                            item_hash = message["item_hash"]
+                seen_hashes.add(item_hash)
 
-                            # Skip if already seen (handles boundary duplicates)
-                            if item_hash in seen_hashes:
-                                continue
-
-                            seen_hashes.add(item_hash)
-
-                            result = await get_message_result(
-                                message,
-                                yield_unconfirmed=yield_unconfirmed,
-                                last_block=last_block,
-                                min_height=min_height,
-                                last_seen=last_seen,
-                                addresses=addresses,
-                                db=db,
-                                db_prefix=prefix
-                            )
-                            if result is not None:
-                                message_count += 1
-                                yield result
-
-                        success = True
-                        break  # Success, exit retry loop
-
-                except asyncio.TimeoutError:
-                    logger.warning(f"Timeout fetching window {current_start}-{window_end} (attempt {attempt + 1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                except aiohttp.ClientError as e:
-                    logger.warning(f"Network error fetching window {current_start}-{window_end}: {e} (attempt {attempt + 1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-
-            if not success:
-                logger.error(f"SKIPPING window {current_start}-{window_end} after {max_retries} failed attempts")
+                result = await get_message_result(
+                    message,
+                    yield_unconfirmed=yield_unconfirmed,
+                    last_block=last_block,
+                    min_height=min_height,
+                    last_seen=last_seen,
+                    addresses=addresses,
+                    db=db,
+                    db_prefix=prefix
+                )
+                if result is not None:
+                    message_count += 1
+                    yield result
 
             current_start = window_end
 
