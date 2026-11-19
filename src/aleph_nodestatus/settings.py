@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     balances_platforms: List[str] = ["ALEPH_ETH_SABLIER"]
     balances_senders: List[str] = ["0xF45f6F13BF2A2Eb6Afa83FCC9e530DcF238b5D74"]
 
-    scores_senders: List[str] = ["0x4D52380D3191274a04846c89c069E6C3F2Ed94e4", "0x4Ec8b55e73F5f32118a90B8FD555706bD5dd42e7"]
+    scores_senders: List[str] = ["0xDBCED11DFc1b95cb6683a89e6c7beF32Facfc0F6"]
     scores_post_type: str = "aleph-scoring-scores"
     
     scores_discard_periods: List[List[int]] = [[23579375, 23631694], [24451300, 24566100]]
