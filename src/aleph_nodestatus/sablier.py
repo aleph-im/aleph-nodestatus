@@ -64,10 +64,10 @@ async def process_contract_history(
     to_append = list()
 
     async for i in get_logs(web3, contract, start_height):
-        message_topics = [t.hex() for t in i["topics"]]
+        message_topics = {t.hex().removeprefix("0x") for t in i["topics"]}
         evt_data = None
         for topic, (abi, topic_hash) in contract_events.items():
-            if topic_hash in message_topics:
+            if topic_hash.removeprefix("0x") in message_topics:
                 print("found", topic)
                 evt_data = get_event_data(web3.codec, abi, i)
 
@@ -158,7 +158,7 @@ async def update_balances(account, height, balances):
 
 
 async def sablier_monitoring_process():
-    from .ethereum import get_account
+    from .ethereum import get_aleph_account
 
     last_seen_txs = deque([], maxlen=100)
     account = get_aleph_account()
@@ -168,14 +168,15 @@ async def sablier_monitoring_process():
         last_seen=last_seen_txs,
     )
     balances = {}
-    last_height = settings.ethereum_min_height
+    streams = {}
+    last_height = settings.ethereum_sablier_min_height
     # async for height, (balances, streams, changed_addresses) in items:
     #     print(changed_addresses)
     async for height, (balances, streams, changed_items) in items:
         last_height = height
         balances = balances
 
-    await update_balances(account, height, balances)
+    await update_balances(account, last_height, balances)
 
     while True:
         changed_items = None

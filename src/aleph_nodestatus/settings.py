@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     ethereum_sablier_min_height: int = 13245838
 
     balances_platforms: List[str] = ["ALEPH_ETH_SABLIER"]
-    balances_senders: List[str] = ["0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"]
+    balances_senders: List[str] = ["0xF45f6F13BF2A2Eb6Afa83FCC9e530DcF238b5D74"]
 
     scores_senders: List[str] = ["0x4D52380D3191274a04846c89c069E6C3F2Ed94e4", "0x4Ec8b55e73F5f32118a90B8FD555706bD5dd42e7"]
     scores_post_type: str = "aleph-scoring-scores"
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # account is accepted by `/messages.json` filters but not by `/posts.json`,
     # which only indexes the materialized post's owner.
     credit_expense_sender: str = "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC"
-    status_sender: str = "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10"
+    status_sender: str = "0xF45f6F13BF2A2Eb6Afa83FCC9e530DcF238b5D74"
 
     # Credit distribution shares (storage, 95% total)
     credit_storage_ccn_share: float = 0.75
