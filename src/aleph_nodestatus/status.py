@@ -320,7 +320,7 @@ class NodesStatus:
                 message_content = content["content"]
                 post_type = message_content["type"]
                 post_content = message_content["content"]
-                post_action = post_content["action"]
+                post_action = post_content.get("action")
                 address = message_content["address"]
 
                 print(
