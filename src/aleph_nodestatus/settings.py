@@ -117,8 +117,17 @@ class Settings(BaseSettings):
     # === AlephPaymentProcessor ===
     payment_processor_address: str = "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
     payment_processor_admin_pkey: str = ""
-    payment_processor_admin_address: str = "0xC870B0Ca4B3d65f33E2a3c732ab3cD2aE555b14E"
-    distribution_recipient: str = "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25"
+    payment_processor_admin_address: str = "0x723B7Df717Bf95D99A2004B1A05048d2ce62e258"
+    distribution_recipient: str = "0x38fBAbCAb680072543De11d7a2938bd1Acd68485"
+
+    # Distribution senders included in the cursor lookup during rotation.
+    # Keep the old sender until the new recipient has a confirmed successful
+    # distribution; otherwise the cursor can fall back to
+    # CREDIT_DIST_FLOOR_HEIGHT and replay old expenses.
+    credit_distribution_lookup_senders: List[str] = [
+        "0x3a5CC6aBd06B601f4654035d125F9DD2FC992C25",
+        "0x38fBAbCAb680072543De11d7a2938bd1Acd68485",
+    ]
 
     # Tokens to process, in order. address(0) for ETH.
     process_tokens: List[tuple] = [

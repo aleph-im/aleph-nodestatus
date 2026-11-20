@@ -163,12 +163,18 @@ async def get_latest_successful_credit_distribution(sender=None):
 
     In the documented two-instance deployment, only `distribution_recipient`
     publishes status='distribution'; `status_sender` is queried defensively
-    to handle single-instance / dev setups.
+    to handle single-instance / dev setups. Historical senders are included
+    so rotating `distribution_recipient` does not reset the cursor to
+    CREDIT_DIST_FLOOR_HEIGHT and replay already-settled expenses.
     """
     if sender is None:
-        senders = [settings.status_sender, settings.distribution_recipient]
+        senders = list(dict.fromkeys([
+            settings.status_sender,
+            settings.distribution_recipient,
+            *settings.credit_distribution_lookup_senders,
+        ]))
     elif isinstance(sender, (list, tuple)):
-        senders = list(sender)
+        senders = list(dict.fromkeys(sender))
     else:
         senders = [sender]
 

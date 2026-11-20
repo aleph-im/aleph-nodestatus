@@ -7,11 +7,17 @@ def test_payment_processor_settings_defaults():
     assert settings.payment_processor_address.lower() == \
         "0x6b55f32ea969910838defd03746ced5e2ae8cb8b"
     assert settings.distribution_recipient.lower() == \
-        "0x3a5cc6abd06b601f4654035d125f9dd2fc992c25"
+        "0x38fbabcab680072543de11d7a2938bd1acd68485"
     assert settings.uniswap_v3_quoter_address.lower() == \
         "0x61ffe014ba17989e743c5f6cb21bf9697530b21e"
     assert settings.payment_processor_admin_address.lower() == \
-        "0xc870b0ca4b3d65f33e2a3c732ab3cd2ae555b14e"
+        "0x723b7df717bf95d99a2004b1a05048d2ce62e258"
+
+
+def test_credit_distribution_lookup_senders_include_old_and_new_recipients():
+    senders = [a.lower() for a in settings.credit_distribution_lookup_senders]
+    assert "0x3a5cc6abd06b601f4654035d125f9dd2fc992c25" in senders
+    assert "0x38fbabcab680072543de11d7a2938bd1acd68485" in senders
 
 
 def test_token_list_default():
