@@ -573,11 +573,10 @@ def test_full_resync_applies_expenses_past_last_state_machine_yield(monkeypatch)
     ts is past the last tick falls onto the final snapshot — exactly
     what the previous tail-loop did, just via the unified ts lookup.
 
-    Setup: state machine yields ONCE at height=100 (ts=1500). Two
-    expenses — one at ts=1200 (before the yield → still mapped to that
-    one snapshot via the helper's `idx<0` guard? No — it gets dropped
-    with a warning since no snapshot covers it) and one at ts=1900
-    (after the yield → maps to the only snapshot).
+    Setup: state machine yields ONCE at height=100 (ts=1500). Both test
+    expenses are at/after that yield: ts=1600 and ts=1900 map to the sole
+    snapshot. An expense before ts=1500 would now fail closed instead of
+    being silently dropped.
     """
     nodes = {"ccn1": _node("ccn1", 0.9, {"0xS1": 100},
                             resource_nodes=["r1"])}

@@ -482,6 +482,87 @@ async def _fetch_snapshots_between(client, sender, window_start, window_end):
     return snapshots
 
 
+def _snapshot_senders(sender=None):
+    """Resolve the ordered snapshot publishers for a fetch.
+
+    The current `status_sender` is always first; `snapshot_senders` adds
+    historical publishers used during a rotation. When `sender` is
+    supplied explicitly (tests/audits), it is the complete list.
+    """
+    if sender is None:
+        configured = [settings.status_sender, *settings.snapshot_senders]
+    elif isinstance(sender, str):
+        configured = [sender]
+    else:
+        configured = list(sender)
+    if not configured:
+        configured = [settings.status_sender]
+    return list(dict.fromkeys(configured))
+
+
+def _dedupe_snapshot_messages(snapshots):
+    """Drop duplicate aggregates without discarding same-timestamp updates."""
+    seen = set()
+    result = []
+    for snapshot in snapshots:
+        item_hash = snapshot[3]
+        if item_hash:
+            if item_hash in seen:
+                continue
+            seen.add(item_hash)
+        result.append(snapshot)
+    return result
+
+
+async def _fetch_sender_snapshots(
+    client, sender, start_time, end_time, *, max_ts=None,
+):
+    """Fetch one publisher's in-range snapshots plus its boundary.
+
+    `max_ts`, when set, excludes snapshots at or after that timestamp.
+    This is used to stop trusting a historical publisher once the current
+    publisher has produced its first aggregate.
+    """
+    window_start = start_time - 86400
+    window_end = end_time if max_ts is None else min(end_time, max_ts)
+    if window_end <= window_start:
+        return []
+
+    snapshots = await _fetch_snapshots_between(
+        client, sender, window_start, window_end,
+    )
+    if max_ts is not None:
+        snapshots = [s for s in snapshots if s[0] < max_ts]
+
+    if not any(ts <= start_time for ts, _, _, _ in snapshots):
+        for day in range(1, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS + 1):
+            older_start = start_time - (day + 1) * 86400
+            older_end = start_time - day * 86400
+            if max_ts is not None:
+                older_end = min(older_end, max_ts)
+            if older_end <= older_start:
+                break
+
+            older = await _fetch_snapshots_between(
+                client, sender, older_start, older_end,
+            )
+            older = [
+                s for s in older
+                if s[0] <= start_time and (max_ts is None or s[0] < max_ts)
+            ]
+            if older:
+                boundary = max(older, key=lambda s: s[0])
+                snapshots.append(boundary)
+                LOGGER.info(
+                    "Boundary snapshot found %d day(s) back "
+                    "(ts=%.0f <= start_time=%.0f, sender=%s)",
+                    day + 1, boundary[0], start_time, sender,
+                )
+                break
+
+    return snapshots
+
+
 async def fetch_node_snapshots(
     api_server, start_time, end_time, sender=None, out_hashes=None,
 ):
@@ -489,14 +570,21 @@ async def fetch_node_snapshots(
     Fetch historical corechannel aggregate snapshots for the period via
     the SDK's auto-paginated message iterator.
 
+    Fetches the current publisher (`status_sender`) and any historical
+    publishers configured in `snapshot_senders`. Historical snapshots are
+    accepted only until the current publisher's first in-range snapshot,
+    so an old key cannot influence later calculations. This keeps the
+    cursor-safe rotation behavior needed when the previous publisher has
+    data that the new publisher does not.
+
     Fetches from 1 day before start_time, then guarantees a *boundary*
     snapshot — the latest one with `ts <= start_time` — by walking back
     day-by-day (up to `_SNAPSHOT_BOUNDARY_LOOKBACK_DAYS`) when the
     default lookback has none, e.g. after a corechannel publisher
-    outage. Only that single boundary snapshot is added, mirroring
-    aleph-api-credit's `loadSnapshotsForRange` minimal covering set.
-    Without it, `_apply_expenses_to_snapshots` drops every expense
-    billed before the first snapshot in range.
+    outage. Only that single boundary snapshot is added per publisher,
+    mirroring aleph-api-credit's `loadSnapshotsForRange` minimal covering
+    set. Without it, `_apply_expenses_to_snapshots` raises rather than
+    silently dropping expenses billed before the first snapshot.
 
     Returns:
         List of (ts, nodes_dict, resource_nodes_dict) sorted by ts, where
@@ -510,38 +598,51 @@ async def fetch_node_snapshots(
     the source-message set actually consumed by the calculation so it
     can be diffed against other services' inputs.
     """
-    if sender is None:
-        sender = settings.status_sender
+    senders = _snapshot_senders(sender)
+    current_sender, historical_senders = senders[0], senders[1:]
 
     async with _aleph_client(api_server) as client:
-        snapshots = await _fetch_snapshots_between(
-            client, sender, start_time - 86400, end_time,
+        snapshots = await _fetch_sender_snapshots(
+            client, current_sender, start_time, end_time,
         )
 
-        if not any(ts <= start_time for ts, _, _, _ in snapshots):
-            for day in range(1, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS + 1):
-                older = await _fetch_snapshots_between(
-                    client, sender,
-                    start_time - (day + 1) * 86400,
-                    start_time - day * 86400,
+        current_first_in_window = min(
+            (ts for ts, _, _, _ in snapshots if ts >= start_time),
+            default=None,
+        )
+        history_limit = (
+            current_first_in_window
+            if current_first_in_window is not None
+            and current_first_in_window > start_time
+            else None
+        )
+        if current_first_in_window is None or history_limit is not None:
+            for historical_sender in historical_senders:
+                historical = await _fetch_sender_snapshots(
+                    client, historical_sender, start_time, end_time,
+                    max_ts=history_limit,
                 )
-                older = [s for s in older if s[0] <= start_time]
-                if older:
-                    boundary = max(older, key=lambda s: s[0])
-                    snapshots.append(boundary)
+                # A historical publisher only contributes while it has
+                # snapshots inside the transition window. Its boundary alone
+                # must not resurrect a stale state for a later calculation.
+                if any(ts >= start_time for ts, _, _, _ in historical):
+                    snapshots.extend(historical)
+                else:
                     LOGGER.info(
-                        "Boundary snapshot found %d day(s) back "
-                        "(ts=%.0f <= start_time=%.0f)",
-                        day + 1, boundary[0], start_time,
+                        "Historical snapshot sender %s has no in-window "
+                        "snapshots; ignoring it",
+                        historical_sender,
                     )
-                    break
-            else:
-                LOGGER.warning(
-                    "No boundary snapshot (ts <= start_time=%.0f) found "
-                    "within %d extra lookback days; expenses billed before "
-                    "the first available snapshot will be skipped",
-                    start_time, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS,
-                )
+
+        snapshots = _dedupe_snapshot_messages(snapshots)
+        if not any(ts <= start_time for ts, _, _, _ in snapshots):
+            LOGGER.warning(
+                "No boundary snapshot (ts <= start_time=%.0f) found "
+                "within %d extra lookback days from any configured sender; "
+                "the calculation will be refused if expenses fall before "
+                "the first snapshot",
+                start_time, _SNAPSHOT_BOUNDARY_LOOKBACK_DAYS,
+            )
 
     if out_hashes is not None:
         for _, _, _, h in snapshots:
@@ -550,7 +651,10 @@ async def fetch_node_snapshots(
 
     result = [(ts, nodes, rnodes) for ts, nodes, rnodes, _ in snapshots]
     result.sort(key=lambda x: x[0])
-    LOGGER.info(f"Fetched {len(result)} node status snapshots")
+    LOGGER.info(
+        "Fetched %d node status snapshots from %d sender(s)",
+        len(result), len(senders),
+    )
     return result
 
 
@@ -1221,7 +1325,7 @@ def _parse_expenses(msgs, out_hashes=None, window_start=None, window_end=None):
 
 def _apply_expenses_to_snapshots(
     parsed, snapshots, include_holder_tier, web3,
-    accumulator=None,
+    accumulator=None, *, strict_uncovered=True,
 ):
     """Apply a sorted list of (ts_s, exp_type, expense) to snapshots.
 
@@ -1236,6 +1340,12 @@ def _apply_expenses_to_snapshots(
     Window enforcement is upstream: `_fetch_expense_messages` already
     filters by `start_date/end_date` at the API level, so callers can
     trust that `parsed` only contains expenses inside the run window.
+
+    If an expense falls before the first snapshot, the default behavior
+    is to raise instead of silently dropping it. A partial calculation is
+    worse than a failed one: publishing or distributing it would advance
+    the cursor and permanently leave the uncovered billing windows
+    unpayable.
     """
     if not snapshots:
         raise ValueError("Cannot apply expenses with empty snapshot list")
@@ -1252,11 +1362,16 @@ def _apply_expenses_to_snapshots(
     for ts_s, exp_type, expense in parsed:
         idx = bisect.bisect_right(snapshot_times, ts_s) - 1
         if idx < 0:
-            LOGGER.warning(
-                "Expense at ts=%.0f falls before first snapshot (ts=%.0f); "
-                "skipping — snapshot range does not cover expense range",
-                ts_s, snapshot_times[0],
+            message = (
+                f"Expense at ts={ts_s:.0f} falls before first snapshot "
+                f"(ts={snapshot_times[0]:.0f}); snapshot range does not "
+                f"cover expense range"
             )
+            if strict_uncovered:
+                raise ValueError(
+                    f"{message}; refusing to calculate partial rewards"
+                )
+            LOGGER.warning("%s; skipping", message)
             continue
         _, nodes, resource_nodes = snapshots[idx]
 

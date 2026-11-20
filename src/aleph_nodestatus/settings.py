@@ -97,6 +97,15 @@ class Settings(BaseSettings):
     credit_expense_sender: str = "0x2E4454fAD1906c0Ce6e45cBFA05cE898Ac3AC1dC"
     status_sender: str = "0xF45f6F13BF2A2Eb6Afa83FCC9e530DcF238b5D74"
 
+    # The calculation consumes corechannel snapshots from the current
+    # publisher and, during a publisher rotation, from the previous one.
+    # Keep the old publisher only until a corrected distribution has moved
+    # the cursor past the period it covers, then remove it from this list.
+    snapshot_senders: List[str] = [
+        "0xF45f6F13BF2A2Eb6Afa83FCC9e530DcF238b5D74",
+        "0xa1B3bb7d2332383D96b7796B908fB7f7F3c2Be10",
+    ]
+
     # Credit distribution shares (storage, 95% total)
     credit_storage_ccn_share: float = 0.75
     credit_storage_staker_share: float = 0.20

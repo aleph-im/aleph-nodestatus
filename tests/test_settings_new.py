@@ -20,6 +20,12 @@ def test_credit_distribution_lookup_senders_include_old_and_new_recipients():
     assert "0x38fbabcab680072543de11d7a2938bd1acd68485" in senders
 
 
+def test_snapshot_senders_cover_publisher_rotation():
+    senders = [a.lower() for a in settings.snapshot_senders]
+    assert "0xf45f6f13bf2a2eb6afa83fcc9e530dcf238b5d74" in senders
+    assert "0xa1b3bb7d2332383d96b7796b908fb7f7f3c2be10" in senders
+
+
 def test_token_list_default():
     syms = [s for s, _ in settings.process_tokens]
     assert syms == ["USDC", "ETH", "ALEPH"]
